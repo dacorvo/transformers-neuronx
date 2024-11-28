@@ -131,12 +131,18 @@ def sample_greedy(model, input_ids, start_ids=None, sequence_length=128):
 def sample_loop(model, input_ids, start_ids, next_token_scores, sequence_length, eos_token_id=2,
                 top_k=50, streamer=None, output_scores=False, neuron_config=None, log_softmax_scores=None, cache_ids=None):
     log_softmax = neuron_config and neuron_config.log_softmax_scores
-    tokens = [input_ids]
-    _, start = input_ids.shape
+    if len(input_ids.shape) == 3:
+        tokens = []
+        _, start, _ = input_ids.shape
+    else:
+        tokens = [input_ids]
+        _, start = input_ids.shape
+        
     if cache_ids:
         start=cache_ids.item() + 1
     scores = []
     ls_scores = []
+    
     for cur_len in range(start, sequence_length):
         next_len = cur_len + 1
 
@@ -322,8 +328,12 @@ def sample_loop_llama(model, input_ids, start_ids, next_token_scores, sequence_l
         eos_token_id = [eos_token_id]
     eos_token_id = torch.tensor(eos_token_id, dtype=torch.int32)
     done_flags = torch.full((input_ids.size(dim=0), 1), False)
-    tokens = [input_ids]
-    _, start_length = input_ids.shape
+    if len(input_ids.shape) == 3:
+        tokens = []
+        _, start_length, _ = input_ids.shape
+    else:
+        tokens = [input_ids]
+        _, start_length = input_ids.shape
     if cache_ids is None:
         cache_ids = torch.as_tensor([start_length - 1], dtype=torch.int32)
     else:
@@ -331,7 +341,7 @@ def sample_loop_llama(model, input_ids, start_ids, next_token_scores, sequence_l
 
     for current_length in range(start_length, sequence_length):
 
-        if ngram_size:
+        if ngram_size and tokens != []:
             next_token_scores = filter_ngrams(ngram_size, torch.cat(tokens, dim=-1), next_token_scores, current_length)
 
         if temperature != 1.0:

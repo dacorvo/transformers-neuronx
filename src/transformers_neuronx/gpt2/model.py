@@ -148,7 +148,11 @@ class GPT2ForSampling(base.NeuronModelBase):
         self.num_processed_tokens = 0
 
     def forward(self, input_ids, cache_ids, start_ids=None):
-        batch_size, context_length = input_ids.shape
+        if len(input_ids.shape) == 3:
+            batch_size, context_length, _ = input_ids.shape
+        else:
+            batch_size, context_length = input_ids.shape
+        
         if cache_ids is None:
             cache_ids = torch.arange(context_length, dtype=torch.int32)
         # Check if sliding window attention is applied
@@ -163,13 +167,19 @@ class GPT2ForSampling(base.NeuronModelBase):
         curr_window_start = torch.as_tensor([curr_window_start], dtype=torch.int32)
         last_token_id = torch.as_tensor([0], dtype=torch.int32)
 
-        if not self.neuron_config.on_device_embedding:
-            input_ids = self.chkpt_model.transformer.wte(input_ids)
-            position_ids, start_ids = self.decoder_lm_head.embed_positions_ids(cache_ids, start_ids)
-            position_embeds = self.chkpt_model.transformer.wpe(position_ids)
-            input_ids = input_ids + position_embeds
-            if self.neuron_config.attention_layout == LAYOUT_HSB:
-                input_ids = input_ids.transpose(0, 2).contiguous()
+        if len(input_ids.shape) == 3:
+            if not self.neuron_config.on_device_embedding:
+                position_ids, start_ids = self.decoder_lm_head.embed_positions_ids(cache_ids, start_ids)
+                if self.neuron_config.attention_layout == LAYOUT_HSB:
+                    input_ids = input_ids.transpose(0, 2).contiguous()
+        else:
+            if not self.neuron_config.on_device_embedding:
+                input_ids = self.chkpt_model.transformer.wte(input_ids)
+                position_ids, start_ids = self.decoder_lm_head.embed_positions_ids(cache_ids, start_ids)
+                position_embeds = self.chkpt_model.transformer.wpe(position_ids)
+                input_ids = input_ids + position_embeds
+                if self.neuron_config.attention_layout == LAYOUT_HSB:
+                    input_ids = input_ids.transpose(0, 2).contiguous()
         logits = self.decoder_lm_head(input_ids, cache_ids, start_ids, last_token_id, curr_window_start)
 
         if self.neuron_config.on_device_generation:
