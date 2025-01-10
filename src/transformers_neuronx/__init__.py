@@ -22,6 +22,4 @@ from transformers_neuronx.generation_utils import HuggingFaceGenerationModelAdap
 
 from transformers_neuronx.llama.model import LlamaForSampling
 
-from transformers_neuronx.modeling_auto import NeuronAutoModelForCausalLM
-
 from . import testing
