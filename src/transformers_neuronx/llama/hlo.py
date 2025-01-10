@@ -16,7 +16,6 @@ from typing import Optional
 
 from transformers_neuronx import hlo, utils
 from transformers_neuronx import constants
-from transformers_neuronx import utils
 from transformers_neuronx.layers import transformer, rotary, attention, attention_utils, flash_decoding
 from transformers_neuronx.llama.config import LlamaConfig
 from transformers_neuronx.config import NeuronConfig
@@ -196,19 +195,17 @@ class LlamaForSamplingNoEmbeddingHlo:
         enable_qkv_kernel, enable_mlp_kernel = False, False
         if self.neuron_config and self.neuron_config.fused_rmsnorm_qkv:
             try:
-                from neuronxcc.nki._private_kernels.qkv import rmsnorm_qkv_isa_fused_add_kernel
                 enable_qkv_kernel = True
-            except:
+            except Exception:
                 logging.warning("No QKV kernel found")
         if self.neuron_config and self.neuron_config.fused_rmsnorm_mlp:
             try:
-                from neuronxcc.nki._private_kernels.mlp import mlp_isa_kernel
                 enable_mlp_kernel = True
-            except:
+            except Exception:
                 logging.warning("No MLP kernel found")
             enable_mlp_kernel = True
 
-        if (not enable_qkv_kernel and not enable_mlp_kernel) or active_mask != None:
+        if (not enable_qkv_kernel and not enable_mlp_kernel) or active_mask is not None:
             return self.flat_compiler_layer(**local_args)
 
         local_args['enable_qkv_kernel'] = enable_qkv_kernel
@@ -256,7 +253,7 @@ class LlamaForSamplingNoEmbeddingHlo:
         norm_hidden = hlo.rms_norm(hidden, pre_mlp_ln_weight, eps, dim=rms_norm_dim, neuron_config=self.neuron_config, tp_degree=self.config.tp_degree)
         if self.neuron_config.fuse_mlp:
             assert all(map(lambda x: not(x), [in0_weight, in1_weight, out_weight, in0_scales, in1_scales, out_scales])) ,\
-                f"in0, in1 and out weights have to be None"
+                "in0, in1 and out weights have to be None"
             in0_weight, in0_scales = mlp_in_weight, mlp_in_scales
             out_weight, out_scales = mlp_out_weight, mlp_out_scales
 

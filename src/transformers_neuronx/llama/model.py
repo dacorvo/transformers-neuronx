@@ -40,7 +40,7 @@ class LlamaForSampling(base.NeuronModelBase):
         if self.neuron_config.shard_over_sequence:
             n_kv_head = self.config.num_key_value_heads
             kv_shard_degree = self.config.tp_degree // n_kv_head
-            assert kv_shard_degree <= KV_SHARD_PAD, f"increase kv_shard degree is higher than default 128"
+            assert kv_shard_degree <= KV_SHARD_PAD, "increase kv_shard degree is higher than default 128"
             warnings.warn(f"shard over sequence enabled, increasing n_positions {n_positions} by 128")
             if isinstance(n_positions, list):
                 npos = sorted(n_positions)

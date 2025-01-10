@@ -21,7 +21,8 @@ import warnings
 import contextlib
 from typing import Optional, List
 
-from transformers_neuronx import GQA, Layout, SparseAttnConfig
+from .constants import GQA, Layout
+from .sparse_attn_utils import SparseAttnConfig
 
 import torch
 
@@ -349,7 +350,7 @@ class NeuronConfig():
         self.mlp_out_weight_transpose = mlp_out_weight_transpose
 
         if self.shard_over_sequence:
-            assert self.sparse_attn is None, f"sparse attn is not supported with flash decoding"
+            assert self.sparse_attn is None, "sparse attn is not supported with flash decoding"
             if not (self.continuous_batching and self.continuous_batching.optimized_paged_attention):
                 assert self.cache_layout == Layout.SBH, f"flash decoding only support SBH layout , got {self.cache_layout}"
 
@@ -405,7 +406,7 @@ class NeuronConfig():
         num_layers_per_stage = math.ceil(num_layers / self.pp_stages)
 
         for i in range(self.pp_stages):
-            self.layer_partition[i] = [l for l in range(i*num_layers_per_stage, min((i+1)*num_layers_per_stage, num_layers))]
+            self.layer_partition[i] = [ly for ly in range(i*num_layers_per_stage, min((i+1)*num_layers_per_stage, num_layers))]
 
         logging.debug(f"auto_layer_partition: {self.layer_partition}")
 
@@ -487,7 +488,8 @@ def maybe_dump_config(config, neuron_config):
             }
             key_mapping = {}  # inverted and flattened key_aliases
             for key, aliases in key_aliases.items():
-                for alias in aliases: key_mapping[alias] = key
+                for alias in aliases:
+                    key_mapping[alias] = key
             model_config = { key_mapping.get(k, k): v for k, v in config.__dict__.items() }
             config_to_dump['model_config'] = model_config
         config_dump_path = os.path.join(dump_to, 'neuron_model_config.json')

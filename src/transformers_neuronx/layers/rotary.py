@@ -129,14 +129,13 @@ def rotate_half(query, key, sin_cos, rotary_percentage=1, tp_degree=None, shard_
     specific models: GPT-J/GPT-NeoX/Llama).
 
     """
-    dtype = key.dtype
     if shard_over_batch:
-        n_active_tokens, n_seqs_per_nc, n_kv_heads, d_head = active_sizes = key.sizes
+        n_active_tokens, n_seqs_per_nc, n_kv_heads, d_head = key.sizes
         _, _, n_heads, _ = query.sizes
         broadcast_sizes = n_active_tokens, n_seqs_per_nc, n_heads, int((d_head // 2) * rotary_percentage)
         kv_broadcast_sizes = n_active_tokens, n_seqs_per_nc, n_kv_heads, int((d_head // 2) * rotary_percentage)
     else:
-        n_active_tokens, n_seqs, n_kv_heads_tp, d_head = active_sizes = key.sizes
+        n_active_tokens, n_seqs, n_kv_heads_tp, d_head = key.sizes
         _, _, n_heads_tp, _ = query.sizes
 
         """

@@ -38,7 +38,7 @@ def create_blk_mask(blks_q, blks_kv, num_global_blks=0, num_local_blks=1, num_ra
 def build_dense_mask(q_seq_len, k_seq_len, mask, blk_size=128, causal=False):
     row_blks = (q_seq_len + blk_size - 1) // blk_size
     col_blks = (k_seq_len + blk_size - 1) // blk_size
-    assert tuple(mask.shape) == (row_blks, col_blks), f'Mask must have shape (q_seq_len // blk_size, k_seq_len // blk_size)'
+    assert tuple(mask.shape) == (row_blks, col_blks), 'Mask must have shape (q_seq_len // blk_size, k_seq_len // blk_size)'
     dense_mask = torch.zeros((q_seq_len, k_seq_len), dtype=torch.bool)
 
     for row_id in range(row_blks):

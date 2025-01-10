@@ -13,7 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 import torch
-import torch_neuronx  # registers torch.ops.neuron
 
 
 def init():

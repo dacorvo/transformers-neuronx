@@ -251,7 +251,6 @@ class ParallelProgram:
         inputs = self.input_buffers + parameters
 
         aliases = HloMetadata.aliases(hlo)
-        inverse = {value: key for key, value in aliases.items()}
 
         for index, ((shape, dtype), parameter) in enumerate(zip(inputs_metadata[self.num_inputs:], parameters)):
             assert parameter.dtype == dtype, (
@@ -343,7 +342,7 @@ class BucketedParallelProgram:
 
     def __init__(
             self,
-            hlo_modules: List['HloModuleProto'],
+            hlo_modules: List['HloModuleProto'], # noqa F821
             selector: Selector,
             num_inputs: int,
             num_outputs: int,

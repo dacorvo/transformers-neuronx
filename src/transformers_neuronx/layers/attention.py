@@ -23,7 +23,6 @@ from transformers_neuronx.config import NeuronConfig
 from transformers_neuronx.layers import attention, attention_utils
 from transformers_neuronx.nki.compile import nki_call
 from transformers_neuronx.hlo import quantize_kv_cache_direct_cast
-import logging
 
 
 def query_key_value(
@@ -64,7 +63,7 @@ def query_key_value(
     fuse_qkv = neuron_config and neuron_config.fuse_qkv
     if fuse_qkv:
         # If KV head count explicit, find Q head count
-        if n_kv_heads_tp != None:
+        if n_kv_heads_tp is not None:
             n_total_heads_tp = hidden_size_tp // d_head
             n_heads_tp = n_total_heads_tp - 2 * n_kv_heads_tp
             # Q hidden size
@@ -372,7 +371,7 @@ def fused_kv_update_cache(cached_keys, cached_vals, cache_ids, keys, vals, start
 def reorder_kv_cache(cached_keys, cached_values, priv_cache_ids, reorder_mapping, neuron_config=None):
     """
     Reordering of the KV cache is required for tree based attention. While speculating using a tree based
-    attention, the model decodes multiple tokens (flattened token tree) and updates the kv cache linearly 
+    attention, the model decodes multiple tokens (flattened token tree) and updates the kv cache linearly
     based on the cache_ids. Post accceptance, the KV cache needs to be reordered as the cache might not have
     accepted tokens in the very beginning of the previous cache_ids window. So this step brings those
     accepted token index to the very beginning of the previous kv cache_ids window.
@@ -561,7 +560,7 @@ def context(past_scores, active_score, past_values, active_values,
             constant propagation.
     """
 
-    if dtype == None:
+    if dtype is None:
         dtype = active_score.dtype
     scribe = active_score.scribe
     f32 = scribe.f32
@@ -789,10 +788,10 @@ def context_combined(score, values, sparse_mask=None, n_kv_heads=0, dtype=None, 
 
 
 def output(
-    context: 'HloShape',
-    out_weight: 'HloShape',
-    out_scales: 'HloShape',
-    out_bias: 'HloShape',
+    context: 'HloShape', # noqa F821
+    out_weight: 'HloShape', # noqa F821
+    out_scales: 'HloShape', # noqa F821
+    out_bias: 'HloShape', # noqa F821
     tp_degree: int,
     neuron_config: Optional[NeuronConfig] = None,
     transposed: Optional[bool] = False,

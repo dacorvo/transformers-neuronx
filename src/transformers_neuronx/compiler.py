@@ -271,7 +271,6 @@ class Kernel:
 
     def __init__(self, hlo_module, neff_bytes, metaneff, tp_degree):
         self.hlo_module = hlo_module
-        logging.debug(f"Total input tensor size of the module (per rank): {get_input_tensor_size(self.hlo_module)} bytes")
         self.neff_bytes = neff_bytes
         metaneff_bytes = metaneff.SerializeToString()
         model_cls = torch.classes.neuron.Model
@@ -512,7 +511,7 @@ class ParallelKernel:
         self.neff_bytes = compile_hlo_module(self.hlo_module, self.tag, num_exec_repetition)
 
     def load(self, io_ring_cache_size=1):
-        assert self.neff_bytes is not None, f"Try to load with neff bytes as None, might due to compilation failure"
+        assert self.neff_bytes is not None, "Try to load with neff bytes as None, might due to compilation failure"
         self.model = torch.classes.neuron.ParallelModel(self.neff_bytes, self.tp_degree, self.g_start_device_id, self.g_device_count)
         with io_ring_cache_context(io_ring_cache_size):
             logging.debug(f"loading model with tp_degree {self.tp_degree}, g_start_device_id {self.g_start_device_id} g_device_count {self.g_device_count}")

@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-import logging
 from transformers_neuronx import hlo
 from transformers_neuronx.constants import LAYOUT_BSH
 
@@ -265,8 +264,6 @@ def rms_lm_head(tp_degree, hidden, last_token_id, rms_weight, lm_head_weight, lm
             n_active_tokens = 1
 
     rms_hidden = hlo.rms_norm(hidden, rms_weight, eps, neuron_config=None, tp_degree=tp_degree) if is_bsh else hlo.rms_norm(hidden, rms_weight, eps, dim=0, neuron_config=None, tp_degree=tp_degree)
-
-    output_hidden = rms_hidden
 
     if is_bsh:
         rms_hidden = hlo.transpose210(rms_hidden)

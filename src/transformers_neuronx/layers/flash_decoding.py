@@ -14,7 +14,6 @@
 # ==============================================================================
 from transformers_neuronx import hlo
 from transformers_neuronx import utils
-from transformers_neuronx.layers import attention
 
 """
     Helper functions for shard over sequence / Flash decoding implementaions
@@ -24,9 +23,8 @@ def gather_query_group(query, cores_per_kv_head, n_heads, tp_degree):
 
     # Communication 1: all-gather query from cores
     # Notice that this is not necessary for context encoding because we don't read from the KV cache
-    cores_per_q_head = tp_degree // n_heads
     group_size = cores_per_kv_head # note this cores per kv head is already divide by cores_per_q_head
-    num_groups = tp_degree // group_size 
+    num_groups = tp_degree // group_size
     interleave=False
     n_kv_heads = tp_degree // cores_per_kv_head
     interleave = utils.is_attn_node_interleaved(n_heads, n_kv_heads, tp_degree)
@@ -36,8 +34,8 @@ def gather_query_group(query, cores_per_kv_head, n_heads, tp_degree):
     return query
 
 def context(past_scores, active_score, past_values, active_values,
-                        core_id, past_mask, active_mask, n_kv_heads=0, n_heads=None, 
-                        sparse_mask=None, dtype=None, shard_over_batch=False, tp_degree=None, 
+                        core_id, past_mask, active_mask, n_kv_heads=0, n_heads=None,
+                        sparse_mask=None, dtype=None, shard_over_batch=False, tp_degree=None,
                         neuron_config=None):
     """
     Context method with sharding over sequence under a GQA scenario.
@@ -48,7 +46,7 @@ def context(past_scores, active_score, past_values, active_values,
     assert n_kv_heads > 0 and n_heads > 0 , "n_kv_heads and n_heads has to be non-zero"
 
 
-    if dtype == None:
+    if dtype is None:
         dtype = active_score.dtype
     scribe = active_score.scribe
     f32 = scribe.f32
@@ -155,7 +153,7 @@ def context(past_scores, active_score, past_values, active_values,
     cores_per_q_head = tp_degree // n_heads
     cores_per_kv_head = tp_degree // n_kv_heads
     if cores_per_q_head:
-        # handle casese where we have single q per core or q is replicated 
+        # handle casese where we have single q per core or q is replicated
         group_size = cores_per_kv_head // cores_per_q_head
         size = 1
     else:
@@ -200,7 +198,7 @@ def convert_attn_mask_and_cache_id(cache_ids, start_ids,  core_id, n_positions, 
     batch_size = start_ids.sizes[0] if not is_2d_cache else cache_ids.sizes[0]
     n_batches, n_active_tokens = cache_ids.sizes if is_2d_cache else (batch_size, cache_ids.sizes[0])
     seq_dim = 1 if is_2d_cache else 0
-    
+
     is_context_encoding = n_active_tokens == n_positions
 
     cache_size = n_positions // cores_per_kv_head
@@ -226,7 +224,7 @@ def convert_attn_mask_and_cache_id(cache_ids, start_ids,  core_id, n_positions, 
 
         return converted_cache_ids, converted_mask, converted_active_mask
     else:
-        # token generation / windowed / speculative 
+        # token generation / windowed / speculative
         converted_mask_size = batch_size, n_active_tokens, cache_size
 
         # For prior mask, we compute how many tokens are there in this core's KV cache
@@ -268,7 +266,6 @@ def convert_attn_mask_and_cache_id(cache_ids, start_ids,  core_id, n_positions, 
 
 
 def select_values_within_bound(cache_ids, values, keys, cores_per_kv_head, core_id, dim, n_positions):
-    dtype = cache_ids.dtype
 
     core_id = hlo.reshape(core_id,[])
     num_cache_splits = cores_per_kv_head
@@ -288,9 +285,9 @@ def select_values_within_bound(cache_ids, values, keys, cores_per_kv_head, core_
         values = hlo.dynamic_slice_along(values,dim,curr_core_id_in_head, slice_size)
         keys = hlo.dynamic_slice_along(keys,dim,curr_core_id_in_head, slice_size)
         cache_ids = hlo.dynamic_slice_along(cache_ids,cache_dim,curr_core_id_in_head, cache_slice_size)
-    
+
         values =  hlo.slice_along(values, dim=dim,limit=slice_size,stride=stride)
         keys =  hlo.slice_along(keys, dim=dim,limit=slice_size,stride=stride)
         cache_ids = hlo.slice_along(cache_ids, dim=cache_dim,limit=cache_slice_size, stride=stride)
-        
+
     return cache_ids, values, keys

@@ -26,7 +26,7 @@ exec(open(version_py_path()).read())
 
 def get_version():
     # please make sure the major.minor version matches the interface version in Config
-    version = os.environ.get('TRANSFORMERS_NEURONX_VERSION', __version__)
+    version = os.environ.get('TRANSFORMERS_NEURONX_VERSION', __version__) # noqa F821
     today = datetime.today().strftime('%Y%m%d')
     return version.replace('.x', f'.{today}')
 

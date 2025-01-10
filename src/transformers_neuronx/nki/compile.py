@@ -13,13 +13,8 @@
 # limitations under the License.
 # ==============================================================================
 
-import json
 import torch
-import base64
-import numpy as np
-import inspect
 from transformers_neuronx import compiler
-from neuronxcc.nki import trace
 import neuronxcc.nki.language as nl
 from neuronxcc.nki import FrameworkKernel
 from torch_neuronx.pyhlo.scribe import HloShape

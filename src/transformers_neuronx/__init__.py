@@ -12,14 +12,4 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-from transformers_neuronx.version import __version__
-
-
-from transformers_neuronx.constants import GQA, Layout
-from transformers_neuronx.sparse_attn_utils import SparseAttnConfig
-from transformers_neuronx.config import NeuronConfig, QuantizationConfig, ContinuousBatchingConfig, GenerationConfig
-from transformers_neuronx.generation_utils import HuggingFaceGenerationModelAdapter
-
-from transformers_neuronx.llama.model import LlamaForSampling
-
-from . import testing
+from transformers_neuronx.version import __version__ as __version__

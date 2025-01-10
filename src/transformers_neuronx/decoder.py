@@ -397,7 +397,7 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
 
     def build_weight_shared(self, n_positions_list=None, n_active_tokens=None, batch_size=None,
                             unroll=None, share_caches=False, new=None, embed_weight=None):
-        if new == None:
+        if new is None:
             cls = type(self)
             new = cls(
                 self.tp_degree, self.n_positions_list, self.n_active_tokens, self.batch_size, self.attention_head_size,
@@ -522,7 +522,7 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
                     tensor = tensor[tuple(slices)].contiguous()
                 input_tensors.append(tensor)
             max_id = cache_ids.max().item()
-            min_id = cache_ids.min().item()
+            cache_ids.min().item()
             # When context_length == m * n_active_tokens, bucket-size of n_active_tokens should be chosen.
             # This is useful for Fusion-In-Decoder case, where 2nd n_active_tokens don't need to attend to
             # 1st n_active_tokens.
@@ -800,7 +800,7 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
         save_file(save_dict, os.path.join(directory, 'DecoderLMHead.safetensors'))
 
     def load_presharded_weights(self, ps_dir):
-        with safe_open(os.path.join(ps_dir, f"DecoderLMHead.safetensors"), framework='pt') as f:
+        with safe_open(os.path.join(ps_dir, "DecoderLMHead.safetensors"), framework='pt') as f:
             lm_head_attr_names = get_attribute_names(f)
             presharded_weights_to_neuron(f, self, lm_head_attr_names)
 
@@ -850,7 +850,7 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
             return hidden
 
         assert self.embedding_builder is not None, (
-            f"On-device embedding may only be used on models which provide this functionality"
+            "On-device embedding may only be used on models which provide this functionality"
         )
         hidden = self.embedding_builder(hidden, *tensors, *params)
         return hidden
@@ -1041,12 +1041,13 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
                and not isinstance(generation_config.top_p, list) \
                and not isinstance(generation_config.top_p_min_tokens, list) \
                and not isinstance(generation_config.temperature, list) \
-               , f"Sampling parameters cannot be of type list when per_batch_line = False"
+               , "Sampling parameters cannot be of type list when per_batch_line = False"
 
     def update_generation_config(self, generation_config: config.GenerationConfig):
         self.validate_generation_configs(generation_config)
         num_cores = self.neuron_config.get_local_tp(self.tp_degree)
-        duplicate = lambda tensor, dtype: [torch.tensor(tensor, dtype=dtype) for _ in range(num_cores)]
+        def duplicate(tensor, dtype):
+            return [torch.tensor(tensor, dtype=dtype) for _ in range(num_cores)]
         ops.parallel_write(self.top_k, duplicate(generation_config.top_k, dtype=torch.int32))
         ops.parallel_write(self.top_p, duplicate(generation_config.top_p, dtype=torch.float32))
         ops.parallel_write(self.temperature, duplicate(generation_config.temperature, dtype=torch.float32))
@@ -1185,7 +1186,7 @@ class MaybePadder:
             if weight is None:
                 return weight
             assert self.padding == "interleaved", f"Invalid padding mode {self.padding}"
-            assert self.interleaved_factor, f"interleaved_factor is not provided"
+            assert self.interleaved_factor, "interleaved_factor is not provided"
             # when split_size is set, we first split the target weight at dim
             # into (split_size x ?), for example, to do interleaved padding on of KV weight
             # we first need to reshape it into (hidden, num_kv_head, d_head)
@@ -2360,7 +2361,7 @@ class DecoderProgramMultiLayer(DecoderProgram):
         self.ode_kernels = []
         if self.neuron_config.on_device_embedding:
             for ode_hlo in ode_hlo_modules:
-                self.ode_kernels.append(compiler.ParallelKernel(ode_hlo, self.neuron_config.get_local_tp(tp_degree), self.neuron_config.get_g_start_device_id(tp_degree), self.neuron_config.get_g_device_count(tp_degree), tag=f"ode-hlo"))
+                self.ode_kernels.append(compiler.ParallelKernel(ode_hlo, self.neuron_config.get_local_tp(tp_degree), self.neuron_config.get_g_start_device_id(tp_degree), self.neuron_config.get_g_device_count(tp_degree), tag="ode-hlo"))
             self.ode_hlo_modules = ode_hlo_modules
             self.input_ids_buffer = []
             for i in range(len(ode_hlo_modules)):
@@ -2553,7 +2554,8 @@ class PipelineParallelProgram(DecoderProgramMultiLayer):
 
 
     def get_pp_sync_kernels(self):
-        get_kernels = lambda x: list(x.values())
+        def get_kernels(x):
+            return list(x.values())
         return get_kernels(self.send_hidden_kernels) + get_kernels(self.recv_hidden_kernels) + get_kernels(self.send_logits_kernels) + get_kernels(self.recv_logits_kernels)
 
     def setup_pp_sync_programs(self):

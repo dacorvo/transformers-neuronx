@@ -231,7 +231,7 @@ def gather_blocks_active(key_cache, block_tables):
             where max_model_len=max_num_blocks_per_seq*block_size
     """
     num_blocks, block_size, n_kv_heads, d_head = key_cache.sizes
-    assert len(block_tables.sizes) == 1, f"invalid block_table input shape."
+    assert len(block_tables.sizes) == 1, "invalid block_table input shape."
     n_active_blocks, = block_tables.sizes
     dtype = key_cache.dtype
     hidden_size = n_kv_heads * d_head
@@ -413,24 +413,24 @@ def sharded_slot_mapping(slot_mapping, position_ids, block_size, core_sos_rank, 
     block_size   = 6
     sos_degree   = 3
     -->
-    KV cache in cache block format: (position_id, slot_mapping) 
+    KV cache in cache block format: (position_id, slot_mapping)
     new token: <position_id, slot_mapping>
 
     Block ID
-             <---- NC0 ---->  | <---- NC1 ---->  | <---- NC2 ----> 
+             <---- NC0 ---->  | <---- NC1 ---->  | <---- NC2 ---->
         0    (0, 0), (1, 1)   | (2, 0), (3, 1)   | (4, 0), <5, 1>     (seq 0)
         2    (0, 4), (1, 5)   | (2, 4), (3, 5)   | (4, 4), (5, 5)     (seq 1)
         3    (6, 6), (7, 7)   | <8, 6>, <9, 7>   | <10, 6>, <11, 7>   (seq 1)
         4    <12, 8>,         |                  |                    (seq 1)
         6    <0, 12>, <1, 13> | <2, 12>, <3, 13> | <4, 12>,           (seq 2)
 
-    Args:    
+    Args:
         slot_mapping  = [5, 20, 21, 22, 23, 24, 36, 37, 38, 39, 40]
         position_ids  = [5, 8, 9, 10, 11, 12, 0, 1, 2, 3, 4]
         block_size    = 6
         core_sos_rank = 2
         sos_degree    = 3
-        
+
         We first map slot_mapping from global view to local view.
         slot_mapping = [1, 6, 7, 6, 7, 8, 12, 13, 12, 13, 12]
 
@@ -465,12 +465,12 @@ def sharded_kv_indexing(seq_lens, new_token_lens, position_ids, max_num_keys, n_
     block_size   = 6
     sos_degree   = 3
     -->
-    KV cache in cache block format: (position_id, slot_mapping) 
+    KV cache in cache block format: (position_id, slot_mapping)
     new token: <position_id, slot_mapping>
     We suppose all the tokens have been written into the KV cache.
 
     Block ID
-             <---- NC0 ---->  | <---- NC1 ---->  | <---- NC2 ----> 
+             <---- NC0 ---->  | <---- NC1 ---->  | <---- NC2 ---->
         0    (0, 0), (1, 1)   | (2, 0), (3, 1)   | (4, 0), <5, 1>     (seq 0)
         2    (0, 4), (1, 5)   | (2, 4), (3, 5)   | (4, 4), (5, 5)     (seq 1)
         3    (6, 6), (7, 7)   | <8, 6>, <9, 7>   | <10, 6>, <11, 7>   (seq 1)
@@ -629,7 +629,7 @@ def sharded_softmax_correction(context, max_score_local, l_sum_score_local, core
     comm_res_reshaped = hlo.reshape(comm_res, (1, sos_degree, 2, n_head_per_core, num_tokens))
     all_max_scores = hlo.slice_along(comm_res_reshaped, dim=2, limit=1, start=0)
     all_l_sums = hlo.slice_along(comm_res_reshaped, dim=2, limit=2, start=1)
-    
+
     all_max_scores = hlo.reshape(all_max_scores, (1, sos_degree, n_head_per_core, num_tokens))
     max_score = hlo.reduce_max(all_max_scores, dim=1)
     max_score_br = hlo.broadcast(max_score, all_max_scores.sizes, broadcast_dimensions=[0, 2, 3])
@@ -649,8 +649,6 @@ def sharded_softmax_correction(context, max_score_local, l_sum_score_local, core
 def blockwise_qk_matmul(query, keys, block_to_seq):
     num_seqs, _, num_heads, d_head = query.sizes
     num_blocks, block_size, num_kv_heads, _ = keys.sizes
-    o_dtype = query.dtype
-    o_sizes = (num_blocks, num_heads, 1, block_size)
 
     block_to_seq_vec = hlo.reshape(block_to_seq, (num_blocks, 1))
     replicated_queries = gather_blocks_all(query, block_to_seq_vec)
@@ -813,7 +811,7 @@ def prior_context(past_scores, past_values,
     If dtype is None, uses past_scores datatype.
     """
 
-    if dtype == None:
+    if dtype is None:
         dtype = past_scores.dtype
     scribe = past_scores.scribe
     f32 = scribe.f32
@@ -827,7 +825,6 @@ def prior_context(past_scores, past_values,
         n_seqs, n_positions, n_kv_heads_tp, d_head = past_values.sizes
     else:
         n_positions, n_seqs, n_kv_heads_tp, d_head = past_values.sizes
-    reduce_sizes = n_seqs, n_heads, n_active_tokens
 
     # Upcast to f32 before computation
     past_scores = hlo.cast(past_scores, f32)

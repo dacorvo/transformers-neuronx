@@ -19,10 +19,8 @@ from typing import Optional
 import torch
 import torch.nn.functional as F
 
-from transformers_neuronx.constants import FUSED_QKV_TP_FACTOR
-from transformers_neuronx import GQA
-from transformers_neuronx import NeuronConfig
-from transformers_neuronx.constants import TRN1_WORLD_SIZE
+from .constants import FUSED_QKV_TP_FACTOR, GQA, TRN1_WORLD_SIZE
+from .config import NeuronConfig
 
 
 def parse_dtype_replica_groups(neuron_config, tp_degree):

@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-import os
 import functools
 import operator
 from typing import Optional, List, Callable, Union
@@ -263,7 +262,7 @@ def dot_general(lhs, rhs, dimension_numbers, dtype=None):
     """
     General dot product. Allows contracting and batch dimension numbers to be specified for both the lhs and rhs.
     Reference: https://www.tensorflow.org/xla/operation_semantics#dotgeneral
-    
+
     Args:
         lhs, rhs: operands
         dimension_numbers: contracting and batch dimension numbers
@@ -300,7 +299,7 @@ def dot_general(lhs, rhs, dimension_numbers, dtype=None):
 
 
 def blockwise_qk_matmul(query, keys, neuron_config):
-    output_dot = hlo.full(0, )
+    output_dot = full(0, )
     return output_dot
 
 
@@ -334,13 +333,13 @@ def canonicalize_lhs_rhs_dtype(lhs, rhs, neuron_config):
 
 
 def dot_add(
-    lhs: 'HloShape',
-    rhs: 'HloShape',
-    bias: 'HloShape' = None,
+    lhs: 'HloShape', # noqa F821
+    rhs: 'HloShape', # noqa F821
+    bias: 'HloShape' = None, # noqa F821
     lhs_contracting_dimension: List[int] = 0,
     rhs_contracting_dimension: List[int] = 0,
     bias_dimension: int = 0,
-    scales: Optional['HloShape'] = None,
+    scales: Optional['HloShape'] = None, # noqa F821
     neuron_config: Optional[NeuronConfig] = None,
 ):
     """
@@ -1298,9 +1297,9 @@ def _all_to_all(tensor, split_dim, concat_dim, tp_degree):
 def all_to_all(tensor, split_dim, concat_dim, tp_degree):
     # Handle the case when split_dim==0 and concat_dim=0
     if split_dim == 0 and concat_dim == 0:
-        tensor = hlo.unsqueeze(tensor, dim=0)
+        tensor = unsqueeze(tensor, dim=0)
         tensor = _all_to_all(tensor, split_dim=1, concat_dim=0, tp_degree=tp_degree)
-        tensor = hlo.squeeze(tensor, dim=1)
+        tensor = squeeze(tensor, dim=1)
     else:
         tensor = _all_to_all(tensor, split_dim, concat_dim, tp_degree)
     return tensor
@@ -1576,7 +1575,7 @@ def embedding(weight, index, tp_degree=1, dim=1, dtype=None, core_id=None, seque
         if core_id is None:
 
             raise NotImplementedError(
-                f'Embedding `dim` may not be 0. ReplicaId instruction unsupported'
+                'Embedding `dim` may not be 0. ReplicaId instruction unsupported'
             )
             replica_id = index.dtype.ReplicaId() # XXX: Unsupported
         else:
@@ -1957,7 +1956,7 @@ def dynamic_slice_along(tensor, dim, start, size):
         f"Parameter 'start' must be a scalar. Found shape={start.sizes}"
     )
     assert start.dtype in (s32, u32, s64, u64), (
-        f"Parameter 'start' must be an integer type."
+        "Parameter 'start' must be an integer type."
     )
 
     sizes = list(tensor.sizes)
@@ -3323,12 +3322,12 @@ def sharded_decoder_attention_block_diagonal_causal_from_bottomright_mask(
     block_size    = 6
     sos_degree    = 3
     -->
-    KV cache in cache block format: (position_id, slot_mapping) 
+    KV cache in cache block format: (position_id, slot_mapping)
     new token: <position_id, slot_mapping>
     We suppose all the tokens have been written into the KV cache.
 
     Block ID
-             <---- NC0 ---->  | <---- NC1 ---->  | <---- NC2 ----> 
+             <---- NC0 ---->  | <---- NC1 ---->  | <---- NC2 ---->
         0    (0, 0), (1, 1)   | (2, 0), (3, 1)   | (4, 0), <5, 1>     (seq 0)
         2    (0, 4), (1, 5)   | (2, 4), (3, 5)   | (4, 4), (5, 5)     (seq 1)
         3    (6, 6), (7, 7)   | <8, 6>, <9, 7>   | <10, 6>, <11, 7>   (seq 1)
@@ -3349,8 +3348,8 @@ def sharded_decoder_attention_block_diagonal_causal_from_bottomright_mask(
         [0, 0, 0, 0, 0, 0, 0, 0, 0],         [0, 0, 0, 0, 0, 0, 0],
         [0, 0, 0, 0, 0, 0, 0, 0, 0],         [0, 0, 0, 0, 0, 0, 1],
     ]                                    ]
-        
-    In this function, we will first compute the full mask for the non-sharded case (with 
+
+    In this function, we will first compute the full mask for the non-sharded case (with
     function decoder_attention_block_diagonal_causal_from_bottomright_mask), and then slice
     the mask to the corresponding sharded region.
     """
@@ -3771,7 +3770,7 @@ def select_from(
         from_indices = broadcast(from_indices, to_sizes, [0, 1, 2])
         from_values = broadcast(from_values, to_sizes, [0, 1, 2])
         eq = cast(equal(to_indices, from_indices), from_values.dtype)
-        print(from_indices.sizes, eq.sizes, from_values.sizes) 
+        print(from_indices.sizes, eq.sizes, from_values.sizes)
         to_values = multiply(from_values, eq)
 
     return to_values
@@ -4107,12 +4106,12 @@ def sliding_window_slice(cached_keys, cached_values, mask, cache_ids, window_siz
                 batch_size = list(cached_keys.sizes)[0]
                 seq_len = list(cached_keys.sizes)[1]
                 assert list(cached_keys.sizes)[1] == list(cached_values.sizes)[1] == list(mask.sizes)[2], \
-                    f"Sequence length not equal for K/V cache and mask"
+                    "Sequence length not equal for K/V cache and mask"
             elif cache_layout == constants.LAYOUT_SBH:
                 batch_size = list(cached_keys.sizes)[1]
                 seq_len = list(cached_keys.sizes)[0]
                 assert list(cached_keys.sizes)[0] == list(cached_values.sizes)[0] == list(mask.sizes)[2], \
-                    f"Sequence length not equal for K/V cache and mask"
+                    "Sequence length not equal for K/V cache and mask"
             else:
                 raise RuntimeError(f"Unsupported cache layout: {cache_layout}")
 
@@ -4130,7 +4129,7 @@ def sliding_window_slice(cached_keys, cached_values, mask, cache_ids, window_siz
             curr_window_start = subtract(cache_ids, window_size - 1)
             curr_window_start = maximum(curr_window_start, 0)
             assert list(cached_keys.sizes)[0] == list(cached_values.sizes)[0] == list(mask.sizes)[2], \
-                f"Sequence length not equal for K/V cache and mask"
+                "Sequence length not equal for K/V cache and mask"
             seq_len = list(cached_keys.sizes)[0]
             if seq_len > window_size:
                 batch_size = list(cached_keys.sizes)[1]

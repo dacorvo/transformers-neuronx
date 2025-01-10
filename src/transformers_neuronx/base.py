@@ -17,8 +17,7 @@ import os
 import torch
 import logging
 import hashlib
-import warnings
-from typing import Optional, Union, List, Dict
+from typing import Optional, Union, List
 from transformers_neuronx import bucket
 from transformers_neuronx import utils
 from transformers_neuronx import module
@@ -243,7 +242,7 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
             if current == estimate:
                 if self.neuron_config.enable_chunked_prefill:
                     # here the "batch_size" bucket is determined based on the number of blocks needed
-                    block_tables, context_lens = rest[0], rest[1]
+                    _, context_lens = rest[0], rest[1]
                     block_size = self.neuron_config.continuous_batching.block_size
                     seq_lens = context_lens + last_token_id
                     n_active_blocks = ((seq_lens+block_size-1) // block_size).sum().item()
