@@ -233,8 +233,6 @@ class NeuronConfig():
         fused_rmsnorm_mlp: bool = False,
         mlp_out_weight_transpose: bool = False,
         fuse_mlp: bool = False,
-        is_eagle_target: bool = False,
-        is_eagle_draft: bool = False,
         has_pre_attention_norm: bool = True,
         compilation_worker_count: Optional[int] = None,
         duplicate_q_weight_sos: bool = False,
@@ -357,8 +355,6 @@ class NeuronConfig():
 
         self.duplicate_q_weight_sos = duplicate_q_weight_sos
 
-        self.is_eagle_target = is_eagle_target
-        self.is_eagle_draft = is_eagle_draft
         self.has_pre_attention_norm = has_pre_attention_norm
         self.compilation_worker_count = compilation_worker_count
 

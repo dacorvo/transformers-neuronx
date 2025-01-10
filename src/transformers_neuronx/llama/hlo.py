@@ -53,36 +53,6 @@ class LlamaForSamplingNoEmbeddingHlo:
 
         return tensors, dims
 
-    def eagle_draft_inputs(self, scribe, dtype, n_active_tokens, batch_size, token_tree=False, k=0, n_leaves=0, depth=0, n_entrees=0, width=0):
-        tensors, dims = self.inputs(scribe, dtype, n_active_tokens, batch_size)
-        hidden_sizes = batch_size, n_active_tokens, self.config.hidden_size
-        prev_hidden = dtype[hidden_sizes].Parameter(parameter_number=6)
-        if not token_tree:
-            return (*tensors, prev_hidden), (*dims, 1)
-        s32 = scribe.s32
-        tree_mask_sizes = k, k
-        tree_mask = s32[tree_mask_sizes].Parameter(parameter_number=7)
-        indices_sizes = batch_size, k-1
-        update_indices = s32[indices_sizes].Parameter(parameter_number=8)
-        hidden_update_sizes = batch_size, k-1
-        hidden_update_indices = s32[hidden_update_sizes].Parameter(parameter_number=9)
-        cache_update_sizes = batch_size, depth
-        cache_gather_indices = s32[cache_update_sizes].Parameter(parameter_number=10)
-        cache_scatter_indices = s32[cache_update_sizes].Parameter(parameter_number=11)
-        pos_sizes = batch_size, k
-        position_ids = s32[pos_sizes].Parameter(parameter_number=12)
-        path_sizes = n_leaves, depth
-        all_paths = s32[path_sizes].Parameter(parameter_number=13)
-        return (*tensors,
-                prev_hidden,
-                tree_mask,
-                update_indices,
-                hidden_update_indices,
-                cache_gather_indices,
-                cache_scatter_indices,
-                position_ids,
-                all_paths), (*dims, 1, 1, 1, 1, 1, 1, 1, 1)
-
     def embedding(self, input_ids, cache_ids, start_ids, last_token_id, block_tables, context_lens, *weights):
         core_id = None
         if ((self.neuron_config.shard_over_sequence or self.neuron_config.sequence_parallel_norm)
@@ -200,25 +170,6 @@ class LlamaForSamplingNoEmbeddingHlo:
 
         return hidden, last_token_id, pos_embed, cache_ids, start_ids, block_to_seq, mask, active_mask, core_id, \
                block_tables, cached_mask, cached_to_contexted, active_to_contexted
-
-    def eagle_draft_pre_layer(self, hidden, cache_ids, start_ids, last_token_id, block_tables, context_lens, *weights, position_ids=None):
-
-        if ((self.neuron_config.shard_over_sequence or self.neuron_config.sequence_parallel_norm)
-                and self.neuron_config.on_device_embedding):
-            core_id, embed_weight, *rst = weights
-        else:
-            embed_weight, *rst = weights
-
-        if self.config.bias:
-            fc_weight, fc_bias, *rst = rst
-        else:
-            fc_weight, *rst = rst
-            fc_bias = None
-        hidden = hlo.dot_add(fc_weight, hidden, fc_bias, 0, 2, 0)
-        hidden = hlo.permute(hidden, [1, 2, 0])
-        hidden = hlo.all_gather(hidden, 2, self.config.tp_degree)
-        #hidden = hlo.dot_add(hidden, fc_weight, fc_bias, 2, 0, 2)
-        return self.pre_layer(hidden, cache_ids, start_ids, last_token_id, block_tables, context_lens, *weights, position_ids=position_ids)
 
     def layer(self, hidden, last_token_id, pos_embed, cache_ids, start_ids, block_to_seq, mask, active_mask, core_id,
             block_tables, cached_mask, cached_to_contexted, active_to_contexted,

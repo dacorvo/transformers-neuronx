@@ -26,7 +26,6 @@ from transformers_neuronx import ops
 from transformers_neuronx.compiler import ParallelKernel
 from transformers_neuronx.constants import LAYOUT_BSH
 from transformers_neuronx.config import GenerationConfig, maybe_dump_config
-from transformers_neuronx.util.token_tree import validate_token_tree
 from concurrent.futures import ProcessPoolExecutor
 import json
 
@@ -113,23 +112,6 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
         self.decoder_lm_head.save_presharded_weights(directory)
         for layer in self.decoder_lm_head.layers:
             layer.save_presharded_weights(directory)
-
-    def enable_token_tree_decoder(self, token_tree: Dict[int, List[int]], batch_sizes: Optional[Union[List[int], int]]=None):
-        speculation_length, depth = validate_token_tree(token_tree)
-        self.enable_speculative_decoder(speculation_length, batch_sizes, token_tree)
-
-    # top level api
-    def enable_speculative_decoder(self, speculation_length: Optional[Union[List[int], int]], batch_sizes: Optional[Union[List[int], int]]=None, token_tree=None):
-        if isinstance(speculation_length, int):
-            speculation_length = [speculation_length]
-        if batch_sizes is None:
-            batch_sizes = self.decoder_param_set.batch_size
-        if isinstance(batch_sizes, int):
-            batch_sizes = [batch_sizes]
-        for k in speculation_length:
-            for batch_size in batch_sizes:
-                self.decoder_lm_head_for_speculation[k, batch_size] = \
-                    self.decoder_param_set.init_speculative_decoder(unroll=self.unroll, buckets=self.token_buckets, model_obj=self, n_active_tokens=k, batch_size=batch_size, token_tree=token_tree)
 
     def enable_window_context_decoder(self, window_context_length:Optional[Union[List[int], int]], unroll: Optional[int] = None):
         if isinstance(window_context_length, int):
@@ -273,8 +255,6 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
                     model = self.decoder_lm_head_for_context[estimate, batch_size]
                 if self.neuron_config.log_softmax_scores:
                     logits, scores = model(hidden_context, cache_context, start_ids, last_token_id, *rest)
-                elif self.neuron_config.is_eagle_target:
-                    logits, hidden = model(hidden_context, cache_context, start_ids, last_token_id, *rest)
                 else:
                     logits = model(hidden_context, cache_context, start_ids, last_token_id, *rest)
                 if self.neuron_config.output_all_logits:
@@ -319,8 +299,6 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
 
         if self.neuron_config.log_softmax_scores:
             return logits, scores
-        elif self.neuron_config.is_eagle_target:
-            return logits, hidden
         return logits
 
     def _prepare_for_par_ctx_rhs_padding(self, input_ids, cache_ids, start_ids=None, **kwargs):
@@ -365,13 +343,7 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
                 last_token_id = utils.pad(last_token_id, 1, max_num_blocks_per_seq, left=False)
             return input_ids, cache_ids, last_token_id, block_tables, context_lens
 
-        # TODO: check context_buckets for compatibility with OPT
-        if (cache_ids is not None and cache_ids.flatten()[0].item() > 0) and not self.neuron_config.enable_chunked_prefill:
-            # Speculative forward: n_active_tokens > 1 and cache_ids start from position > 0
-            # For chunked prefill we use context buckets below
-            speculation_buckets = list(set([k for k, batch_size in self.decoder_lm_head_for_speculation.keys()]))
-            estimate = bucket.find(speculation_buckets, context_length)
-        elif hasattr(self, "context_buckets"):
+        if hasattr(self, "context_buckets"):
             estimate = bucket.find(self.context_buckets, context_length)
         else:
             estimate = self.context_length_estimate
@@ -499,8 +471,7 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
 
         batch_size = self.neuron_config.continuous_batching.batch_size_for_shared_caches
 
-        if (((self.neuron_config.is_eagle_draft or self.neuron_config.is_eagle_target) \
-                or n_active_tokens > 1) and cache_ids.flatten()[0].item() == 0) or self.neuron_config.enable_chunked_prefill:
+        if ((n_active_tokens > 1) and cache_ids.flatten()[0].item() == 0) or self.neuron_config.enable_chunked_prefill:
             # context encoding
             n_active_seqs, n_active_tokens = input_ids.shape
             continuous_batching_n_positions = bucket.find(self.context_buckets, n_active_tokens)
@@ -534,31 +505,6 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
                     start_idx = new_seq_ids[-1].item() + 1
                     end_idx = (continuous_batching_n_positions - n_active_tokens) + start_idx
                     seq_ids = torch.concat([new_seq_ids, torch.arange(start_idx, end_idx)])
-            return input_ids, cache_ids_pad, seq_ids
-
-        elif n_active_tokens > 1 and cache_ids.flatten()[0].item() > 0:
-            # speculative forward
-            n_active_seqs, n_active_tokens = input_ids.shape
-            speculative_n_positions = bucket.find(self.context_buckets, n_active_tokens)
-            assert n_active_tokens <= speculative_n_positions, \
-                f"invalid input prompt length ({n_active_tokens} <= {speculative_n_positions})"
-            prompt_buckets = list(set([k for k, batch_size in self.decoder_lm_head_for_speculation.keys()]))
-            speculation_bucket = bucket.find(prompt_buckets, n_active_tokens)
-            # validate the speculative head was compiled for the given batch size
-            speculation_batches = [batch_size for (k, batch_size) in self.decoder_lm_head_for_speculation.keys()]
-            assert n_active_seqs in speculation_batches, \
-                    f"invalid batch size for speculative forward ({n_active_seqs} not in {speculation_batches})"
-            # make cache ids 2d if needed and pad to match speculation bucket
-            if len(cache_ids.shape) == 1:
-                cache_ids = cache_ids.unsqueeze(0)
-            assert cache_ids.shape[0] == n_active_seqs, \
-                    f"invalid n_active_seqs ({n_active_seqs} vs {cache_ids.shape[0]}) in speculative forward"
-            # pad cache IDs with max(n_positions) - 1
-            # unlike context encoding, padding with 0
-            # during speculative_forward will contaminate kv-cache history
-            cache_ids_pad = torch.full((n_active_seqs, speculation_bucket), max(self.context_buckets) - 1, dtype=cache_ids.dtype, device="cpu")
-            for seq_id in range(n_active_seqs):
-                cache_ids_pad[seq_id, :n_active_tokens] = cache_ids[seq_id, :n_active_tokens]
             return input_ids, cache_ids_pad, seq_ids
 
         # token generation
@@ -659,8 +605,6 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
             n_iters = input_batch_size // running_batch_size
             all_logits = []
             cache_ids, start_ids, last_token_id = args[0], args[1], args[2]
-            if self.neuron_config.is_eagle_draft:
-                prev_hiddens = args[5]
             for iter_id in range(n_iters):
                 start_idx = iter_id*running_batch_size
                 end_idx = (iter_id+1)*running_batch_size
@@ -671,24 +615,11 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
                 cache_ids_per_batch = cache_ids[start_idx:end_idx, :]
                 start_ids_per_batch = start_ids[start_idx:end_idx]
                 last_token_id_per_batch = last_token_id[start_idx:end_idx]
-                if self.neuron_config.is_eagle_draft:
-
-                    # Chuncked prefill is not enabled for Eagle right now, setting block_tables and context_lens to default values
-                    prev_hidden_per_batch = prev_hiddens[start_idx:end_idx, ...]
-                    logits_per_batch = self.context(hidden_per_batch, cache_ids_per_batch,
-                        start_ids_per_batch, last_token_id_per_batch, torch.tensor([0]), torch.tensor([0]), prev_hidden_per_batch)
-                else:
-                    logits_per_batch = self.context(hidden_per_batch, cache_ids_per_batch,
-                                                start_ids_per_batch, last_token_id_per_batch)
+                logits_per_batch = self.context(hidden_per_batch, cache_ids_per_batch,
+                                            start_ids_per_batch, last_token_id_per_batch)
                 all_logits.append(logits_per_batch)
             if self.neuron_config.on_device_generation:
-                if self.neuron_config.is_eagle_target:
-                    logits_list, hidden_list = zip(*all_logits)
-                    logits_cat = torch.cat(logits_list, dim=0)
-                    hidden_cat = torch.cat(hidden_list, dim=0)
-                    logits = (logits_cat, hidden_cat)
-                else:
-                    logits = torch.cat(all_logits, dim=0)
+                logits = torch.cat(all_logits, dim=0)
             else:
                 logits = torch.cat(all_logits, dim=-1)
         else:

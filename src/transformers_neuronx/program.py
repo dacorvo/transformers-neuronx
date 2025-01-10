@@ -426,27 +426,3 @@ class TokenSelector(Selector):
         batch_size, *_ = input_ids.shape
         position = self.get_position(cache_ids)
         return self.index(batch_size, position)
-
-
-class FusedSpeculativeSelector(TokenSelector):
-    """
-    Select a program using batch size, sequence length, and speculation length.
-
-    Unlike normal token selection, this uses a `k` offset to select the
-    correct network since a fused speculative network will need to update
-    the KV cache `k` positions ahead of the current maximum position.
-
-    Args:
-        sizes: The pairs of batch sizes and maximum sequence lengths
-            corresponding to each program.
-        k: The speculation length.
-        kv_shard: sharding degree in shard over sequence
-    """
-
-    def __init__(self, sizes: List[Tuple[int, int]], k, kv_shard=0):
-        self.k = k
-        self.kv_shard = kv_shard
-        super().__init__(sizes)
-
-    def get_position(self, cache_ids):
-        return cache_ids.max().item() + self.k + self.kv_shard

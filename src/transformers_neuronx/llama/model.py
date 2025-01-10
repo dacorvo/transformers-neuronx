@@ -18,7 +18,6 @@ import warnings
 from transformers_neuronx import base
 from transformers_neuronx import bucket
 from transformers_neuronx import decoder
-from transformers_neuronx import sampling
 from transformers_neuronx import utils
 from transformers_neuronx.config import NeuronConfig
 from transformers_neuronx.constants import LAYOUT_HSB, KV_SHARD_PAD
@@ -109,7 +108,6 @@ class LlamaForSampling(base.NeuronModelBase):
         self.decoder_lm_head_for_context = self.decoder_param_set.init_context_decoder(unroll=self.context_unroll,
                                                                                        buckets=self.context_buckets,
                                                                                        model_obj=self, context_batch_sizes=self.context_batch_sizes)
-        self.decoder_lm_head_for_speculation = {}
         self.decoder_lm_head_for_window_context = {}
 
     def load_weights(self):
@@ -202,11 +200,10 @@ class LlamaForSampling(base.NeuronModelBase):
         # 2) we don't needs these for intermediate pp stages, but to keep things simple, just include ln_lm_head for all pp stages for now
         # 3) to get ln_lm_head hlo, we need to do weight loading and sharding
         # 4) this will introduce extra memory allocation, but ln_lm_head i/o tensor is much smaller and we can get rid of it when we can construct hlo in init
-        if not self.neuron_config.is_eagle_draft:
-            ln_f = self.chkpt_model.model.norm
-            ln_f.materialize()
-            self.decoder_lm_head.add_final_layer_norm(ln_f.weight.detach(), None)
-            ln_f.nullify()
+        ln_f = self.chkpt_model.model.norm
+        ln_f.materialize()
+        self.decoder_lm_head.add_final_layer_norm(ln_f.weight.detach(), None)
+        ln_f.nullify()
 
         lm_head = self.chkpt_model.lm_head
         lm_head.materialize()
@@ -220,13 +217,6 @@ class LlamaForSampling(base.NeuronModelBase):
             else:
                 self.decoder_lm_head.add_pre_layer_parameter(self.chkpt_model.model.embed_tokens.weight, sharding=1,
                                                              allow_pad=True)
-        if self.neuron_config.is_eagle_draft:
-            self.chkpt_model.model.fc.materialize()
-            self.decoder_lm_head.add_pre_layer_parameter(self.chkpt_model.model.fc.weight.detach().T, sharding=1, allow_pad=True)
-            if self.chkpt_model.model.fc.bias is not None:
-                self.decoder_lm_head.add_pre_layer_parameter(self.chkpt_model.model.fc.bias.detach(), sharding=0, allow_pad=True)
-            self.chkpt_model.model.fc.nullify()
-
         self.decoder_lm_head.to_neuron()
         self.init_rest_of_model()
         self.maybe_nullify_embeddings()
@@ -255,13 +245,6 @@ class LlamaForSampling(base.NeuronModelBase):
                     if self.context_unroll == self.config.num_hidden_layers and not self.neuron_config.is_pp():
                         model.use_executor = True
                     self.decoder_lm_head_for_context[context_length_estimate, batch_size] = model
-
-        if self.decoder_lm_head_for_speculation:
-            for i, k in enumerate(self.decoder_lm_head_for_speculation):
-                model = self.decoder_lm_head.build_weight_shared(share_caches=True,
-                                                                 new=self.decoder_lm_head_for_speculation[k],
-                                                                 embed_weight=self.chkpt_model.model.embed_tokens.weight)
-                self.decoder_lm_head_for_speculation[k] = model
 
         if self.decoder_lm_head_for_window_context:
             for i, k in enumerate(self.decoder_lm_head_for_window_context):
@@ -298,9 +281,4 @@ class LlamaForSampling(base.NeuronModelBase):
         if 'prev_hidden' in kwargs:
             rst = *rst, kwargs['prev_hidden']
         logits = self._forward(inputs, *rst)
-        if self.neuron_config.is_eagle_target:
-            logits, hidden = logits
-            logits = self._postprocess(original_input_ids, logits, start_ids=start_ids, **kwargs)
-            return logits, hidden
-        else:
-            return self._postprocess(original_input_ids, logits, start_ids=start_ids, **kwargs)
+        return self._postprocess(original_input_ids, logits, start_ids=start_ids, **kwargs)

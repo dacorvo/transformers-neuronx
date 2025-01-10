@@ -33,7 +33,6 @@ from transformers_neuronx import global_debugger
 from transformers_neuronx.layers import generation
 from transformers_neuronx.config import NeuronConfig, GenerationConfig
 from transformers_neuronx.utils import interleave_qkv
-from transformers_neuronx.util.token_tree import generate_attention_mask
 from transformers_neuronx.llama.hlo import LlamaForSamplingNoEmbeddingHlo
 
 from safetensors.torch import save_file
@@ -406,16 +405,10 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
                 unroll=self.unroll, neuron_config=self.neuron_config, allow_pad=self.allow_pad,
                 prefixed_length=self.prefixed_length, return_all_outputs=self.return_all_outputs
             )
-        if new.token_tree is not None:
-            new.add_inputs_builder(self.builder.token_tree_inputs)
-            new.add_embedding_builder(self.builder.token_tree_embedding)
-            new.add_pre_layer_builder(self.builder.token_tree_pre_layer)
-            new.add_layer_builder(self.builder.token_tree_layer)
-        else:
-            new.add_inputs_builder(self.inputs_builder)
-            new.add_embedding_builder(self.embedding_builder)
-            new.add_pre_layer_builder(self.pre_layer_builder)
-            new.add_layer_builder(self.layer_builder)
+        new.add_inputs_builder(self.inputs_builder)
+        new.add_embedding_builder(self.embedding_builder)
+        new.add_pre_layer_builder(self.pre_layer_builder)
+        new.add_layer_builder(self.layer_builder)
         new.add_ln_lm_head_builder(self.ln_lm_head_builder)
         new._cpu_compile = self._cpu_compile
         if self.neuron_config.log_softmax_scores:
@@ -431,14 +424,7 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
             else:
                 new_layer.init_caches()
             new_layer.extra_parameters = layer.extra_parameters
-        if new.token_tree is not None:
-            if self.neuron_config.on_device_embedding:
-                new.add_pre_layer_parameter(embed_weight, sharding=1, allow_pad=True)
-            new.add_pre_layer_parameter(generate_attention_mask(new.token_tree))
-            manipulator = MaybeParallelTensorManipulator(self.tp_degree, on_cpu=self._cpu_compile, rank_id=self.neuron_config.rank_id, local_tp_degree=self.neuron_config.get_local_tp(new.tp_degree))
-            new.pre_layer_parameters = self._prepare_pre_layer_params(manipulator, new.pre_layer_parameters)
-        else:
-            new.pre_layer_parameters = self.pre_layer_parameters
+        new.pre_layer_parameters = self.pre_layer_parameters
         new.add_final_layer_norm(self.ln_f_weight, self.ln_f_bias)
         new.add_lm_head(self.lm_head_weight, self.lm_head_bias)
         ln_lm_head_params = [new.ln_f_weight, new.ln_f_bias, new.lm_head_weight]
@@ -663,40 +649,6 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
         logits = self.ln_lm_head_builder(hidden, last_token_id, *lm_head_params, return_all_outputs=self.return_all_outputs)
         return logits, out_caches
 
-    def _hlo_eagle_target_unroll(self, hidden, tensors, layers_caches, layers_weights, pre_layer_params, lm_head_params, tree_mask=None, position_ids=None):
-        """
-        This is the special unroll function that returns the output hidden for EAGLE target model
-        """
-        last_token_id = tensors[2]
-
-        hidden = self._hlo_embedding(hidden, tensors, pre_layer_params)
-        hidden, tensors = self._hlo_pre_layer(hidden, tensors, pre_layer_params, position_ids=position_ids)
-        # tensors = last_token_id, pos_embed, cache_ids, start_ids, block_to_seq, mask, active_mask, core_id
-        if tree_mask is not None:
-            active_mask = tensors[6]
-            tensors[6] = hlo.token_tree_attention_mask(tree_mask, active_mask)
-        hidden, out_caches = self._hlo_layers(hidden, tensors, self.layers, layers_caches, layers_weights, alias_caches=False)
-        logits, hidden = self.ln_lm_head_builder(hidden, last_token_id, *lm_head_params, return_all_outputs=self.return_all_outputs)
-        return logits, hidden, out_caches
-
-    def _hlo_eagle_draft_unroll(self, hidden, tensors, layers_caches, layers_weights, pre_layer_params, lm_head_params, tree_mask=None, position_ids=None):
-        """
-        This is the special unroll function that returns the output hidden for EAGLE draft model.
-        """
-        last_token_id = tensors[2]
-        prev_hidden = tensors[5]
-        tensors = tensors[0:5]
-        hidden = self._hlo_embedding(hidden, tensors, pre_layer_params)
-        hidden = hlo.concatenate([hidden, prev_hidden], 2)
-        hidden, *tensors = self.builder.eagle_draft_pre_layer(hidden, *tensors, *pre_layer_params, position_ids=position_ids)
-        # tensors = last_token_id, pos_embed, cache_ids, start_ids, block_to_seq, mask, active_mask, core_id
-        if tree_mask is not None:
-            active_mask = tensors[6]
-            tensors[6] = hlo.token_tree_attention_mask(tree_mask, active_mask)
-        hidden, out_caches = self._hlo_layers(hidden, tensors, self.layers, layers_caches, layers_weights, alias_caches=False)
-        logits, hidden = self.ln_lm_head_builder(hidden, last_token_id, *lm_head_params, return_all_outputs=self.return_all_outputs)
-        return logits, hidden, out_caches
-
     def _hlo_fully_unrolled(self, n_positions, batch_size):
         self.builder.n_positions = n_positions
         if self.neuron_config.optimized_paged_attention and self.n_active_tokens == 1:
@@ -712,9 +664,6 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
             if self.neuron_config.optimized_paged_attention and self.n_active_tokens == 1:
                 (hidden, *tensors), self.inputs_sdim = self.inputs_builder(
                     scribe, dtype, self.n_active_tokens, self.neuron_config.continuous_batching.max_num_seqs)
-            elif self.neuron_config.is_eagle_draft:
-                (hidden, *tensors), self.inputs_sdim = self.builder.eagle_draft_inputs(
-                    scribe, dtype, self.n_active_tokens, batch_size)
             # Create user parameters
             else:
                 (hidden, *tensors), self.inputs_sdim = self.inputs_builder(
@@ -725,12 +674,7 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
             in_caches, layers_weights, pre_layer_params, lm_head_params, generation_params = self._hlo_parameters(n_positions, batch_size, param_builder)
 
             # Unroll the graph
-            if self.neuron_config.is_eagle_target:
-                logits, hidden, out_caches = self._hlo_eagle_target_unroll(hidden, tensors, in_caches, layers_weights, pre_layer_params, lm_head_params)
-            elif self.neuron_config.is_eagle_draft:
-                logits, hidden, out_caches = self._hlo_eagle_draft_unroll(hidden, tensors, in_caches, layers_weights, pre_layer_params, lm_head_params)
-            else:
-                logits, out_caches = self._hlo_unroll(hidden, tensors, in_caches, layers_weights, pre_layer_params, lm_head_params)
+            logits, out_caches = self._hlo_unroll(hidden, tensors, in_caches, layers_weights, pre_layer_params, lm_head_params)
             self._hlo_cache_aliases(in_caches, out_caches)
             output = self._hlo_generation(logits, generation_params, start_ids=tensors[1])
 
@@ -739,8 +683,6 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
             if self.neuron_config.log_softmax_scores:
                 logits, scores = self._hlo_post_layer(logits)
                 outputs = [logits, scores, *out_caches]
-            elif self.neuron_config.is_eagle_target:
-                outputs = [output, hidden, *out_caches]
             else:
                 outputs = [output, *out_caches]
 
@@ -899,10 +841,7 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
 
     def _hlo_pre_layer(self, hidden, tensors, params, position_ids=None):
         if self.pre_layer_builder is not None:
-            if self.neuron_config.is_eagle_draft or self.neuron_config.is_eagle_target:
-                (hidden, *tensors) = self.pre_layer_builder(hidden, *tensors, *params, position_ids=position_ids)
-            else:
-                (hidden, *tensors) = self.pre_layer_builder(hidden, *tensors, *params)
+            (hidden, *tensors) = self.pre_layer_builder(hidden, *tensors, *params)
         return hidden, tensors
 
     def _hlo_embedding(self, hidden, tensors, params):
@@ -2146,7 +2085,7 @@ class DecoderProgram:
     def setup(self, layers, pre_layer_params, ln_lm_head_params, io_ring_cache_size=1):
         self.input_buffers = [[self.manipulator.duplicate(buf) for buf in input_buffers_for_batch_size] for input_buffers_for_batch_size in self.input_buffers]
         if self.logits_buffer:
-            if self.neuron_config.log_softmax_scores or self.neuron_config.is_eagle_target:
+            if self.neuron_config.log_softmax_scores:
                 self.logits_buffer = [[self.manipulator.duplicate(buf) for buf in logits_buffer_batch_size] for logits_buffer_batch_size in self.logits_buffer]
             else:
                 self.logits_buffer = [self.manipulator.duplicate(buf) for buf in self.logits_buffer]
@@ -2208,7 +2147,7 @@ class DecoderProgram:
         if self.logits_buffer:
             if self.tp_degree == self.neuron_config.get_local_tp(self.tp_degree):
 
-                if self.neuron_config.log_softmax_scores or self.neuron_config.is_eagle_target:
+                if self.neuron_config.log_softmax_scores:
                     return [self.manipulator.unshard_along(val, dim=0) for val in self.logits_buffer[idx]]
                 else:
                     logits = self.manipulator.unshard_along(self.logits_buffer[idx], dim=0)
@@ -2331,7 +2270,7 @@ class DecoderProgramFullyUnrolled(DecoderProgram):
         super().__init__(neuron_config, layers, hlo_modules, debug_tensors, num_inputs, tp_degree, n_positions_list, batch_sizes, prefixed_length, batch_size_for_shared_caches, tag=tag, on_cpu=on_cpu)
         hlos_for_input = list()
         hlos_for_input = [hlo_modules[self.n_positions_list[0],batch_size] for batch_size in self.batch_sizes]
-        if self.neuron_config.log_softmax_scores or self.neuron_config.is_eagle_target:
+        if self.neuron_config.log_softmax_scores:
             self.logits_buffer = [[compiler.gen_zero_output(hlo, 0), compiler.gen_zero_output(hlo, 1)] for hlo in hlos_for_input]
         else:
             self.logits_buffer = [compiler.gen_zero_output(hlo, 0) for hlo in hlos_for_input]
@@ -2350,7 +2289,7 @@ class DecoderProgramFullyUnrolled(DecoderProgram):
         for bs_idx, batch_size in enumerate(self.batch_sizes):
             for npos in self.n_positions_list:
                 input_tensors = [*self.input_buffers[bs_idx]]
-                if self.neuron_config.log_softmax_scores or self.neuron_config.is_eagle_target:
+                if self.neuron_config.log_softmax_scores:
                     output_tensors = [*self.logits_buffer[bs_idx]]
                 else:
                     output_tensors = [self.logits_buffer[bs_idx]]
@@ -2372,10 +2311,7 @@ class DecoderProgramFullyUnrolled(DecoderProgram):
         for bs_idx, batch_size in enumerate(self.batch_sizes):
             for npos in self.n_positions_list:
                 input_tensors = [*self.input_buffers[bs_idx]]
-                if self.neuron_config.is_eagle_target:
-                    output_tensors = [*self.logits_buffer[bs_idx]]
-                else:
-                    output_tensors = [self.logits_buffer[bs_idx]]
+                output_tensors = [self.logits_buffer[bs_idx]]
                 executor = self.kernels[npos,batch_size].build_executor(self.memories[npos,batch_size], input_tensors, output_tensors)
                 self.executors[npos,batch_size] = executor
 
@@ -2411,7 +2347,7 @@ class DecoderProgramMultiLayer(DecoderProgram):
         super().__init__(neuron_config, layers, hlo_modules, debug_tensors, num_inputs, tp_degree, n_positions_list, batch_sizes, prefixed_length, batch_size_for_shared_caches, tag=tag, num_exec_repetition=self.num_exec_repetition, on_cpu=on_cpu)
         self.num_layers = num_layers
         assert len(ln_lm_head_hlo_modules) == len(batch_sizes)
-        if self.neuron_config.log_softmax_scores or self.neuron_config.is_eagle_target:
+        if self.neuron_config.log_softmax_scores:
             self.logits_buffer = [[compiler.gen_zero_output(hm, 0), compiler.gen_zero_output(hm, 1)] for hm in ln_lm_head_hlo_modules]
         else:
             self.logits_buffer = [compiler.gen_zero_output(hm) for hm in ln_lm_head_hlo_modules]
@@ -2484,7 +2420,7 @@ class DecoderProgramMultiLayer(DecoderProgram):
 
         if self.neuron_config.is_valid_lm_head():
             for head_idx in range(0,len(self.ln_lm_head_kernels)):
-                output_tensors = [*self.logits_buffer[head_idx]] if self.neuron_config.log_softmax_scores or self.neuron_config.is_eagle_target else [self.logits_buffer[head_idx]]
+                output_tensors = [*self.logits_buffer[head_idx]] if self.neuron_config.log_softmax_scores else [self.logits_buffer[head_idx]]
                 self.ln_lm_head_memories[head_idx].setup([hidden_buffers[head_idx], last_token_id_buffers[head_idx], start_ids_buffers[head_idx], *ln_lm_head_params], output_tensors)
                 self.ln_lm_head_kernels[head_idx].build()
                 self.ln_lm_head_kernels[head_idx].load()
