@@ -3744,7 +3744,6 @@ def select_from(
 
     if to_sizes == from_sizes:
         size = to_sizes[-1]
-        rank = len(to_sizes)
         new_sizes = *to_sizes, size
 
         to_indices = broadcast(to_indices, new_sizes, [0, 1, 3])

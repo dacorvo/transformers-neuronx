@@ -51,7 +51,6 @@ def query_key_value(
     if neuron_config and neuron_config.attention_layout == LAYOUT_BSH:
         hidden = hlo.transpose210(hidden)
 
-    dtype = hidden.dtype
     hidden_size, n_active_tokens, n_seqs = hidden.sizes
     weight_tiling = False
     if len(q_weight.sizes) == 4:
@@ -244,7 +243,6 @@ def fused_kv_update_cache(cached_keys, cached_vals, cache_ids, keys, vals, start
         chunked_prefill = neuron_config and neuron_config.enable_chunked_prefill
 
     dtype = cached_keys.dtype
-    cache_ids_dtype = cache_ids.dtype
     use_2d_cache_ids = len(cache_ids.sizes) > 1
     if not use_2d_cache_ids:
         updated_keys = update_cache(cached_keys, cache_ids, keys)
@@ -378,12 +376,10 @@ def reorder_kv_cache(cached_keys, cached_values, priv_cache_ids, reorder_mapping
     """
 
     bsh_cache_layout = False
-    batch_dim = 1
     seq_dim = 0
     if neuron_config is not None:
         bsh_cache_layout = neuron_config.cache_layout == constants.LAYOUT_BSH
     if bsh_cache_layout:
-        batch_dim = 0
         seq_dim = 1
 
     use_2d_cache_ids = len(priv_cache_ids.sizes) > 1
@@ -413,7 +409,6 @@ def update_cache(cache, cache_ids, values):
     Cache[I] = X
     """
     dtype = cache.dtype
-    cache_ids_dtype = cache_ids.dtype
     # 1D cache_ids
     scatter_dims = dict(update_window_dims=[1,2,3],
                         inserted_window_dims=[0],
@@ -509,7 +504,6 @@ def mask(score, mask, tp_degree=None, shard_over_batch=False, constant_value=-30
     scribe = score.scribe
     dtype = score.dtype
     score_sizes = score.sizes
-    pred = scribe.pred
 
     # Note: This value can cause NaN issues if it is too large
     large_neg = dtype.Constant(constant_value=constant_value) # Valid for fp32/fp16/bf16
@@ -571,13 +565,12 @@ def context(past_scores, active_score, past_values, active_values,
         shard_over_batch = neuron_config.group_query_attention == constants.GQA.SHARD_OVER_BATCH
         bsh_cache_layout = neuron_config.cache_layout == constants.LAYOUT_BSH
 
-    n_seqs, n_heads, n_active_tokens, n_active_tokens = active_score_sizes = active_score.sizes
+    n_seqs, n_heads, n_active_tokens, n_active_tokens = active_score.sizes
     _, _, _, n_positions = past_scores.sizes
     if shard_over_batch:
         n_positions, n_seqs_per_nc, n_kv_heads, d_head = past_values.sizes
         n_seqs = n_seqs_per_nc * tp_degree
         n_heads_tp = n_heads // tp_degree
-        reduce_sizes = n_seqs_per_nc, n_heads, n_active_tokens
     else:
         if bsh_cache_layout:
             _, n_positions, n_kv_heads_tp, d_head = past_values.sizes
@@ -586,7 +579,6 @@ def context(past_scores, active_score, past_values, active_values,
             n_positions, _, n_kv_heads_tp, d_head = past_values.sizes
             n_seqs = active_values.sizes[1]
         _, n_heads_tp, _, _ = active_score.sizes
-        reduce_sizes = n_seqs, n_heads_tp, n_active_tokens
 
     # Upcast to f32 before computation
     past_scores = hlo.cast(past_scores, f32)
@@ -769,10 +761,6 @@ def context_combined(score, values, sparse_mask=None, n_kv_heads=0, dtype=None, 
 
     if n_kv_heads != 0:
         if shard_over_batch:
-            scribe = result.scribe
-            s32 = scribe.s32
-            zero = s32.Constant(constant_value=0)
-
             result_sizes = n_seqs_per_nc, n_heads, n_active_tokens, d_head
             result = hlo.reshape(result, result_sizes)
 

@@ -92,36 +92,6 @@ def update_indices_context(cached_keys, cache_ids, start_ids, neuron_config=None
     return indices
 
 
-def update_indices_speculative(cached_keys, cache_ids, start_ids, neuron_config=None):
-    # Check K/V cache layout: similar to `update_indices_context` above,
-    # but handles the case where n_active_tokens > 1 and n_active_tokens < n_positions
-    bsh_cache_layout = False
-    if neuron_config is not None:
-        bsh_cache_layout = neuron_config.cache_layout == constants.LAYOUT_BSH
-    if bsh_cache_layout:
-        n_seqs, n_positions, n_kv_heads, d_head = cached_keys.sizes
-    else:
-        n_positions, n_seqs, n_kv_heads, d_head = cached_keys.sizes
-    cache_ids_dtype = cache_ids.dtype
-    if bsh_cache_layout:
-        # start_ids * n_positions + iota
-        n_active_tokens, batch_size = cache_ids.sizes
-        n_positions_br = hlo.full(n_positions, cache_ids_dtype, cache_ids.sizes)
-        start_ids_br = hlo.broadcast(start_ids, cache_ids.sizes, [1])
-        offset = hlo.multiply(start_ids_br, n_positions_br)
-        indices = hlo.add(indices, cache_ids)
-        indices = hlo.reshape(indices, [n_active_tokens * batch_size])
-    else:
-        # start_ids + cache_ids * n_seqs
-        n_active_tokens, batch_size = cache_ids.sizes
-        batch_size_br = hlo.full(n_seqs, cache_ids_dtype, cache_ids.sizes)
-        start_ids_br = hlo.broadcast(start_ids, cache_ids.sizes, [1])
-        indices = hlo.multiply(cache_ids, batch_size_br)
-        indices = hlo.add(indices, start_ids_br)
-        indices = hlo.reshape(indices, [n_active_tokens * batch_size])
-    return indices
-
-
 def gather_blocks(key_cache, block_tables, neuron_config=None):
     if neuron_config and neuron_config.optimized_paged_attention:
         return gather_blocks_active(key_cache, block_tables)
@@ -233,7 +203,6 @@ def gather_blocks_active(key_cache, block_tables):
     num_blocks, block_size, n_kv_heads, d_head = key_cache.sizes
     assert len(block_tables.sizes) == 1, "invalid block_table input shape."
     n_active_blocks, = block_tables.sizes
-    dtype = key_cache.dtype
     hidden_size = n_kv_heads * d_head
     chunk_size = block_size * hidden_size
     key_cache = hlo.reshape(key_cache, (num_blocks, chunk_size))
@@ -263,12 +232,10 @@ def gather_blocks_all(key_cache, block_tables):
     """
     num_blocks, block_size, n_kv_heads, d_head = key_cache.sizes
     n_seqs, max_num_blocks_per_seq = block_tables.sizes
-    dtype = key_cache.dtype
     hidden_size = n_kv_heads * d_head
     chunk_size = block_size * hidden_size
     key_cache = hlo.reshape(key_cache, (num_blocks, chunk_size))
     index = hlo.reshape(block_tables, (n_seqs * max_num_blocks_per_seq,))
-    o_sizes = (n_seqs * max_num_blocks_per_seq, chunk_size)
     cached_keys = hlo.index_select(key_cache, dim=0, index=index)
     cached_keys = hlo.reshape(cached_keys, (n_seqs, max_num_blocks_per_seq * block_size, n_kv_heads, d_head))
     return cached_keys
@@ -697,7 +664,6 @@ def block_to_seq_indexing(context_lens, num_seqs, num_blocks, block_size):
     block_to_seq_vec = hlo.full(0, context_lens.dtype, (num_blocks, N))
     context_lens = hlo.reshape(context_lens, (num_seqs,))
 
-    zero = hlo.reshape(s32.Constant(constant_value=0), (1,))
     assign_func = hlo.gen_assign_func(block_to_seq_vec.dtype)
     scatter_dims = dict(update_window_dims=[1],
                         inserted_window_dims=[0],

@@ -522,7 +522,6 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
                     tensor = tensor[tuple(slices)].contiguous()
                 input_tensors.append(tensor)
             max_id = cache_ids.max().item()
-            cache_ids.min().item()
             # When context_length == m * n_active_tokens, bucket-size of n_active_tokens should be chosen.
             # This is useful for Fusion-In-Decoder case, where 2nd n_active_tokens don't need to attend to
             # 1st n_active_tokens.
