@@ -191,7 +191,7 @@ class LlamaForSampling(base.NeuronModelBase):
                                                 allow_quantize=True, out_feature_dim=0)
             new_layer.to_neuron()
             layer.nullify()
-        
+
         # Adding core_id for sos or seq-norm (vocab parallel is used as default with seq-par norm)
         add_core_id = (self.neuron_config.shard_over_sequence or
                        (self.neuron_config.sequence_parallel_norm and self.neuron_config.on_device_embedding))

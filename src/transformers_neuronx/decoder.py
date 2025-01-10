@@ -1045,7 +1045,7 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
             self.neuron_config.on_device_generation.top_p = top_p
             self.neuron_config.on_device_generation.temperature = temperature
             self.neuron_config.on_device_generation.top_p_min_tokens = top_p_min_tokens
-        
+
         seq_ids = start_ids if self.neuron_config.continuous_batching is not None else None
         return generation.generate(
             logits,

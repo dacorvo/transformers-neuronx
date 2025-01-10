@@ -55,18 +55,6 @@ setup(
     description='Transformers Neuron for Trn1 and Inf2 is a software package that enables PyTorch users to perform large language model (LLM) inference on second-generation Neuron hardware',
     license='Apache License',
     license_files = ('LICENSE',),
-    entry_points = {
-        'console_scripts': [
-            'generation_demo=transformers_neuronx.generation_demo:main',
-            'gpt2_demo=transformers_neuronx.gpt2.demo:main',
-            'gptj_demo=transformers_neuronx.gptj.demo:main',
-            'gptneox_demo=transformers_neuronx.gptneox.demo:main',
-            'opt_demo=transformers_neuronx.opt.demo:main',
-            'opt_gen_random_pretrained=transformers_neuronx.opt.gen_random_pretrained:main',
-            'gen_randn_hlo_snapshot=transformers_neuronx.tools.gen_hlo_snapshot:main_randn',
-            'ckpt_converter=transformers_neuronx.tools.ckpt_converter:ckpt_converter',
-        ],
-    },
     install_requires=[
         'accelerate',
         'safetensors',
