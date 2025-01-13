@@ -1332,10 +1332,6 @@ class DecoderLayer(torch.nn.Module):
                                         padding="interleaved",
                                         split_size=n_heads, interleaved_factor=self.n_kv_head)
             else:
-                if self.neuron_config.qkv_tiling:
-                    hidden_size_padded_qkv = \
-                        utils.round_up_to_divisor(hidden_size_padded // self.tp_degree,
-                                            constants.TILE_SIZE) * self.tp_degree
                 qkv_maybe_pad = MaybePadder(hidden_size_padded_qkv)
                 attn_out_maybe_pad = MaybePadder(hidden_size_padded)
 
@@ -1477,10 +1473,6 @@ class DecoderLayer(torch.nn.Module):
             if self.mlp_in_weight is not None:
                 _, intermediate_size = self.mlp_in_weight.shape
                 intermediate_size_padded = utils.round_up_to_divisor(intermediate_size, self.tp_degree)
-                if self.neuron_config.weight_tiling:
-                    intermediate_size_padded = \
-                        utils.round_up_to_divisor(intermediate_size // self.tp_degree,
-                                                  constants.TILE_SIZE) * self.tp_degree
                 maybe_pad = MaybePadder(intermediate_size_padded)
 
                 self.mlp_in_weight = maybe_pad(self.mlp_in_weight, dim=1)
@@ -1509,20 +1501,16 @@ class DecoderLayer(torch.nn.Module):
         maybe_shard_along_and_transform = maybe_manipulator.shard_along_and_transform
         self.pre_attn_ln_weight = maybe_duplicate(self.pre_attn_ln_weight)
         self.pre_attn_ln_bias = maybe_duplicate(self.pre_attn_ln_bias)
-        qkv_tiling = self.neuron_config.qkv_tiling
-        if qkv_tiling:
-            qkv_weight_sharder = maybe_shard_along_and_transform
-        else:
-            qkv_weight_sharder = maybe_shard_along
+        qkv_weight_sharder = maybe_shard_along
         if self.neuron_config and self.neuron_config.fuse_qkv:
-            self.attn_q_weight = qkv_weight_sharder(fused_qkv_weight, dim=1, weight_tiling=qkv_tiling)
+            self.attn_q_weight = qkv_weight_sharder(fused_qkv_weight, dim=1)
             self.attn_q_bias = maybe_shard_along(fused_qkv_bias, dim=0)
         else:
-            self.attn_q_weight = qkv_weight_sharder(self.attn_q_weight, dim=1, weight_tiling=qkv_tiling)
+            self.attn_q_weight = qkv_weight_sharder(self.attn_q_weight, dim=1)
             self.attn_q_bias = maybe_shard_along(self.attn_q_bias, dim=0)
-        self.attn_k_weight = qkv_weight_sharder(self.attn_k_weight, dim=1, weight_tiling=qkv_tiling)
+        self.attn_k_weight = qkv_weight_sharder(self.attn_k_weight, dim=1)
         self.attn_k_bias = maybe_shard_along(self.attn_k_bias, dim=0)
-        self.attn_v_weight = qkv_weight_sharder(self.attn_v_weight, dim=1, weight_tiling=qkv_tiling)
+        self.attn_v_weight = qkv_weight_sharder(self.attn_v_weight, dim=1)
         self.attn_v_bias = maybe_shard_along(self.attn_v_bias, dim=0)
         self.attn_out_weight = maybe_shard_along(self.attn_out_weight, dim=self.attn_out_sharding)
         self.attn_out_bias = maybe_primary_only(self.attn_out_bias)
@@ -1531,25 +1519,21 @@ class DecoderLayer(torch.nn.Module):
         self.pre_mlp_ln_weight = maybe_duplicate(self.pre_mlp_ln_weight)
         self.pre_mlp_ln_bias = maybe_duplicate(self.pre_mlp_ln_bias)
         if self.mlp_in_weight is not None:
-            self.mlp_in_weight = maybe_shard_along_and_transform(self.mlp_in_weight, 1, weight_tiling=self.neuron_config.weight_tiling)
+            self.mlp_in_weight = maybe_shard_along_and_transform(self.mlp_in_weight, 1)
             self.mlp_in_bias = maybe_shard_along(self.mlp_in_bias, dim=0)
-            self.mlp_out_weight = maybe_shard_along_and_transform(self.mlp_out_weight, dim=self.mlp_out_sharding, weight_tiling=self.neuron_config.weight_tiling)
+            self.mlp_out_weight = maybe_shard_along_and_transform(self.mlp_out_weight, dim=self.mlp_out_sharding)
             self.mlp_out_bias = maybe_primary_only(self.mlp_out_bias)
         self.post_mlp_ln_weight = maybe_duplicate(self.post_mlp_ln_weight)
         self.post_mlp_ln_bias = maybe_duplicate(self.post_mlp_ln_bias)
 
         extras = []
         for param, dim, allow_pad, allow_transform in self.extra_parameters:
-            weight_tiling = self.neuron_config.weight_tiling
             if allow_pad:
                 size = utils.round_up_to_divisor(param.shape[dim], self.tp_degree)
-                if weight_tiling and allow_transform:
-                    size = utils.round_up_to_divisor(size // self.tp_degree,
-                                                     constants.TILE_SIZE) * self.tp_degree
                 param = utils.pad(param, dim, size)
 
             if allow_transform:
-                param = maybe_shard_along_and_transform(param, dim, weight_tiling=weight_tiling)
+                param = maybe_shard_along_and_transform(param, dim)
             else:
                 param = maybe_manipulator.duplicate_or_shard_along(param, dim)
 
@@ -1791,8 +1775,7 @@ class MaybeParallelTensorManipulator:
             return None
         return self.manipulator.duplicate(tensor)
 
-    def shard_along(self, tensor, dim, weight_tiling=None):
-        # weight_tiling is not used
+    def shard_along(self, tensor, dim):
         if tensor is None:
             return None
         return self.manipulator.shard_along(tensor, dim)
@@ -1807,35 +1790,10 @@ class MaybeParallelTensorManipulator:
             return self.duplicate(tensor)
         return self.shard_along(tensor, dim)
 
-    def transform_and_tile_weight_layout(self, tensors, weight_tiling=False, permute_order=[1, 2, 0, 3]):
-        if tensors is None:
-            return None
-
-        if weight_tiling:
-            new_tensors = []
-            for tensor in tensors:
-                K, N = tensor.shape
-                assert K % constants.TILE_SIZE == 0 and N % constants.TILE_SIZE == 0, (f"Weight dimensions must be "
-                                                                                       f"divisible by {constants.TILE_SIZE} "
-                                                                                       f"but received weight with shape={K, N}."
-                )
-                reshape_sizes = [K // constants.TILE_SIZE,
-                                 constants.TILE_SIZE,
-                                 N // constants.TILE_SIZE,
-                                 constants.TILE_SIZE]
-                tensor = tensor.reshape(reshape_sizes) \
-                               .permute(permute_order)
-                tensor = tensor.contiguous()
-                new_tensors.append(tensor)
-            return new_tensors
-
-        return tensors
-
-    def shard_along_and_transform(self, tensor, dim, weight_tiling=False):
+    def shard_along_and_transform(self, tensor, dim):
         if tensor is None:
             return None
         tensors = self.manipulator.shard_along_on_cpu(tensor, dim)
-        tensors = self.transform_and_tile_weight_layout(tensors, weight_tiling)
         if not self.use_cpu:
             tensors = ops.parallel_to_nc(tensors)
         return tensors

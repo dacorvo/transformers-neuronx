@@ -494,36 +494,16 @@ def mlp(hidden, in_weight, in_bias, out_weight, out_bias,
     hidden_r_sizes = hidden_size, n_active_tokens * batch_size
     hidden = reshape(hidden, hidden_r_sizes)
 
-    if neuron_config is not None and neuron_config.weight_tiling:
-        assert hidden_size % constants.TILE_SIZE == 0, \
-            f"hidden size needs to be divisible by {constants.TILE_SIZE}" \
-            f"in order to use weight tiling."
+    # (h, b * s) @ (h, i) contract=(0, 0) => (b * s, i)
+    hidden = dot00_add1(hidden, in_weight, in_bias)
+    hidden = get_activation(activation_function)(hidden)
 
-        bias_dimension = 1
-
-        hidden_tiled_sizes = hidden_size // constants.TILE_SIZE, constants.TILE_SIZE, batch_size * n_active_tokens,
-        hidden = reshape(hidden, hidden_tiled_sizes)
-        hidden = dot_with_tiled_weight_add(
-            hidden, in_weight, in_bias, [0,1],
-            [neuron_config.mlp_in_weight_tiling_permute_order.index(0), neuron_config.mlp_in_weight_tiling_permute_order.index(1)],
-            bias_dimension)
-        hidden_tiled_sizes = hidden.sizes[0], hidden.sizes[1] // constants.TILE_SIZE, constants.TILE_SIZE
-        hidden = reshape(hidden, hidden_tiled_sizes)
-        hidden = get_activation(activation_function)(hidden)
-        hidden = dot_with_tiled_weight_add(hidden, out_weight, out_bias, [1,2],
-            [neuron_config.mlp_out_weight_tiling_permute_order.index(0), neuron_config.mlp_out_weight_tiling_permute_order.index(1)],
-            bias_dimension)
+    if transposed:
+        # (b * s, i) @ (h, i) contract=(1, 1) => (b * s, h)
+        hidden = dot11_add1(hidden, out_weight, out_bias)
     else:
-        # (h, b * s) @ (h, i) contract=(0, 0) => (b * s, i)
-        hidden = dot00_add1(hidden, in_weight, in_bias)
-        hidden = get_activation(activation_function)(hidden)
-
-        if transposed:
-            # (b * s, i) @ (h, i) contract=(1, 1) => (b * s, h)
-            hidden = dot11_add1(hidden, out_weight, out_bias)
-        else:
-            # (b * s, i) @ (i, h) contract=(1, 0) => (b * s, h)
-            hidden = dot10_add1(hidden, out_weight, out_bias)
+        # (b * s, i) @ (i, h) contract=(1, 0) => (b * s, h)
+        hidden = dot10_add1(hidden, out_weight, out_bias)
 
     is_bsh = neuron_config and neuron_config.collectives_layout == LAYOUT_BSH
     if is_bsh:
@@ -565,31 +545,9 @@ def mlp_bsh(hidden, in_weight, in_bias, out_weight, out_bias,
     hidden_r_sizes = batch_size * n_active_tokens, hidden_size
     hidden = reshape(hidden, hidden_r_sizes)
 
-    if neuron_config is not None and neuron_config.weight_tiling:
-        assert hidden_size % constants.TILE_SIZE == 0, \
-            f"hidden size needs to be divisible by {constants.TILE_SIZE}" \
-            f"in order to use weight tiling."
-
-        lhs_contracting_dimensions = [1,2]
-
-        bias_dimension = 1
-        hidden_tiled_sizes = batch_size * n_active_tokens, hidden_size // constants.TILE_SIZE, constants.TILE_SIZE
-        hidden = reshape(hidden, hidden_tiled_sizes)
-        hidden = dot_with_tiled_weight_add(hidden, in_weight, in_bias,
-            lhs_contracting_dimensions,
-            [neuron_config.mlp_in_weight_tiling_permute_order.index(0), neuron_config.mlp_in_weight_tiling_permute_order.index(1)],
-            bias_dimension)
-        hidden_tiled_sizes = hidden.sizes[0], hidden.sizes[1] // constants.TILE_SIZE, constants.TILE_SIZE
-        hidden = reshape(hidden, hidden_tiled_sizes)
-        hidden = get_activation(activation_function)(hidden)
-        hidden = dot_with_tiled_weight_add(hidden, out_weight, out_bias,
-            lhs_contracting_dimensions,
-            [neuron_config.mlp_out_weight_tiling_permute_order.index(0), neuron_config.mlp_out_weight_tiling_permute_order.index(1)],
-            bias_dimension)
-    else:
-        hidden = dot10_add1(hidden, in_weight, in_bias)
-        hidden = get_activation(activation_function)(hidden)
-        hidden = dot10_add1(hidden, out_weight, out_bias)
+    hidden = dot10_add1(hidden, in_weight, in_bias)
+    hidden = get_activation(activation_function)(hidden)
+    hidden = dot10_add1(hidden, out_weight, out_bias)
     hidden = reshape(hidden, hidden_sizes)
 
     dtype, replica_groups = utils.parse_dtype_replica_groups(neuron_config, tp_degree)
@@ -640,31 +598,6 @@ def gated_mlp_bsh(
         hidden_linear = dot10_add1(hidden, in1_weight, in1_bias)
         hidden_states = multiply(hidden_active, hidden_linear)
         result = dot10_add1(hidden_states, out_weight, out_bias)
-    elif neuron_config is not None and neuron_config.weight_tiling:
-        assert hidden_size % constants.TILE_SIZE == 0, \
-            f"hidden size needs to be divisible by {constants.TILE_SIZE}" \
-            f"in order to use weight tiling."
-        hidden_tiled_sizes = batch_size * n_active_tokens, hidden_size // constants.TILE_SIZE, constants.TILE_SIZE
-        hidden = reshape(hidden, hidden_tiled_sizes)
-        hidden_active = dot_1220_add1(hidden, in0_weight)
-        if neuron_config and neuron_config.fuse_mlp:
-            hidden_tiled_sizes = hidden_active.sizes[0], 2, hidden_active.sizes[1] // (2 * constants.TILE_SIZE), \
-                                 constants.TILE_SIZE
-        else:
-            hidden_tiled_sizes = hidden_active.sizes[0], hidden_active.sizes[1] // constants.TILE_SIZE, constants.TILE_SIZE
-        hidden_active = reshape(hidden_active, hidden_tiled_sizes)
-        if neuron_config and neuron_config.fuse_mlp:
-            hidden_gate = slice_along(hidden_active, 1, limit=1, start=0)
-            hidden_linear = slice_along(hidden_active, 1, limit=2, start=1)
-            hidden_gate = squeeze(hidden_gate, dim=1)
-            hidden_linear = squeeze(hidden_linear, dim=1)
-            hidden_active = get_activation(activation_function)(hidden_gate)
-        else:
-            hidden_active = get_activation(activation_function)(hidden_active)
-            hidden_linear = dot_1220_add1(hidden, in1_weight, in1_bias)
-            hidden_linear = reshape(hidden_linear, hidden_tiled_sizes)
-        hidden_states = multiply(hidden_active, hidden_linear)
-        result = dot_1220_add1(hidden_states, out_weight, out_bias)
     else:
         hidden_active = dot10_add1(hidden, in0_weight, in0_bias)
         if neuron_config and neuron_config.fuse_mlp:
@@ -728,54 +661,26 @@ def gated_mlp(
     hidden_r_sizes = hidden_size, n_active_tokens * batch_size
     hidden = reshape(hidden, hidden_r_sizes)
 
-    if len(in0_weight.sizes) == 4:
-        assert hidden_size % constants.TILE_SIZE == 0, \
-                f"hidden size needs to be divisible by {constants.TILE_SIZE}" \
-                f"in order to use weight tiling."
-        hidden_tiled_sizes = hidden_size // constants.TILE_SIZE, constants.TILE_SIZE, batch_size * n_active_tokens,
-        hidden = reshape(hidden, hidden_tiled_sizes)
-
-        hidden_active = dot_0120_add1(hidden, in0_weight, in0_bias)
-        if neuron_config and neuron_config.fuse_mlp:
-            hidden_tiled_sizes = n_active_tokens * batch_size, 2, hidden_active.sizes[1] // (2 * constants.TILE_SIZE), \
-                                 constants.TILE_SIZE
-            hidden_active = reshape(hidden_active, hidden_tiled_sizes)
-            hidden_gate = slice_along(hidden_active, 1, limit=1, start=0)
-            hidden_linear = slice_along(hidden_active, 1, limit=2, start=1)
-            hidden_gate = squeeze(hidden_gate, dim=1)
-            hidden_linear = squeeze(hidden_linear, dim=1)
-            hidden_active = get_activation(activation_function)(hidden_gate)
-            hidden_states = multiply(hidden_active, hidden_linear)
-        else:
-            hidden_active = get_activation(activation_function)(hidden_active)
-            hidden_linear = dot_0120_add1(hidden, in1_weight, in1_bias)
-
-            hidden_states = multiply(hidden_active, hidden_linear)
-            hidden_states_tiled_sizes = hidden_states.sizes[0], hidden_states.sizes[1] // constants.TILE_SIZE, constants.TILE_SIZE
-            hidden_states = reshape(hidden_states, hidden_states_tiled_sizes)
-
-        result = dot_1220_add1(hidden_states, out_weight, out_bias)
+    # (h, b * s) @ (h, i) contract=(0, 0) => (b * s, i)
+    hidden_active = dot00_add1(hidden, in0_weight, in0_bias)
+    if neuron_config and neuron_config.fuse_mlp:
+        size = hidden_active.sizes[1]//2
+        hidden_gate = slice_along(hidden_active, 1, limit=size, start=0)
+        hidden_linear = slice_along(hidden_active, 1, limit=2*size, start=size)
+        hidden_active = get_activation(activation_function)(hidden_gate)
     else:
+        hidden_active = get_activation(activation_function)(hidden_active)
+
         # (h, b * s) @ (h, i) contract=(0, 0) => (b * s, i)
-        hidden_active = dot00_add1(hidden, in0_weight, in0_bias)
-        if neuron_config and neuron_config.fuse_mlp:
-            size = hidden_active.sizes[1]//2
-            hidden_gate = slice_along(hidden_active, 1, limit=size, start=0)
-            hidden_linear = slice_along(hidden_active, 1, limit=2*size, start=size)
-            hidden_active = get_activation(activation_function)(hidden_gate)
-        else:
-            hidden_active = get_activation(activation_function)(hidden_active)
+        hidden_linear = dot00_add1(hidden, in1_weight, in1_bias)
+    hidden_states = multiply(hidden_active, hidden_linear)
 
-            # (h, b * s) @ (h, i) contract=(0, 0) => (b * s, i)
-            hidden_linear = dot00_add1(hidden, in1_weight, in1_bias)
-        hidden_states = multiply(hidden_active, hidden_linear)
-
-        if neuron_config is not None and neuron_config.mlp_out_weight_transpose:
-            # (b * s, i) @ (i, h) contract=(1, 0) => (b * s, h)
-            result = dot10_add1(hidden_states, out_weight, out_bias)
-        else:
-            # (b * s, i) @ (h, i) contract=(1, 1) => (b * s, h)
-            result = dot11_add1(hidden_states, out_weight, out_bias)
+    if neuron_config is not None and neuron_config.mlp_out_weight_transpose:
+        # (b * s, i) @ (i, h) contract=(1, 0) => (b * s, h)
+        result = dot10_add1(hidden_states, out_weight, out_bias)
+    else:
+        # (b * s, i) @ (h, i) contract=(1, 1) => (b * s, h)
+        result = dot11_add1(hidden_states, out_weight, out_bias)
 
     is_bsh = neuron_config and neuron_config.collectives_layout == LAYOUT_BSH
 

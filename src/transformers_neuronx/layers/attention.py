@@ -51,13 +51,7 @@ def query_key_value(
         hidden = hlo.transpose210(hidden)
 
     hidden_size, n_active_tokens, n_seqs = hidden.sizes
-    weight_tiling = False
-    if len(q_weight.sizes) == 4:
-        weight_tiling = True
-        tile_size, hidden_size_tile, _, _ = q_weight.sizes
-        hidden_size_tp = tile_size * hidden_size_tile
-    else:
-        _, hidden_size_tp = q_weight.sizes
+    _, hidden_size_tp = q_weight.sizes
     fuse_qkv = neuron_config and neuron_config.fuse_qkv
     if fuse_qkv:
         # If KV head count explicit, find Q head count
@@ -102,16 +96,7 @@ def query_key_value(
     # Fused MHA
     elif fuse_qkv:
         # QKV = (hidden @ wQKV) + bQKV
-        if weight_tiling:
-            assert hidden_size % constants.TILE_SIZE == 0, \
-                f"Hidden size needs to be divisible by {constants.TILE_SIZE}" \
-                f"in order to use weight tiling. Received hidden with size {hidden_size}."
-            # (h, s * b) -> (h // TILE_SIZE, TILE_SIZE, b x s)
-            hidden_tiled_sizes = hidden_size // constants.TILE_SIZE, constants.TILE_SIZE, n_seqs * n_active_tokens
-            hidden_r = hlo.reshape(hidden_r, hidden_tiled_sizes)
-            active_qkv = hlo.dot_0120_add1(hidden_r, q_weight, q_bias)
-        else:
-            active_qkv = hlo.dot00_add1(hidden_r, q_weight, q_bias)
+        active_qkv = hlo.dot00_add1(hidden_r, q_weight, q_bias)
 
         # Split
         slice_lim = active_qkv.sizes[-1] // (n_heads_tp + 2 * n_kv_heads_tp)

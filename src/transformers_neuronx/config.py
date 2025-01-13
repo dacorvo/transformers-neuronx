@@ -19,7 +19,7 @@ import math
 import logging
 import warnings
 import contextlib
-from typing import Optional, List
+from typing import Optional
 
 from .constants import GQA, Layout
 from .sparse_attn_utils import SparseAttnConfig
@@ -144,10 +144,6 @@ class NeuronConfig():
         cast_logits_dtype: The data type to cast logits to in the forward
             pass. To be selected from `["float32", "float16", "bfloat16"]`.
         fuse_qkv: Fuses the QKV projection into a single matrix multiplication.
-        qkv_tiling: Splits attention QKV to introduce "free" 128 dimensions.
-        weight_tiling: Splits model MLP to introduce "free" 128 dimensions.
-        mlp_in_weight_tiling_permute_order: permute order to permute the mlp input weight tiling split [K/128, 128, N/128, 128]. default=[1,2,0,3].
-        mlp_out_weight_tiling_permute_order: permute order to permute the mlp output weight tiling split [K/128, 128, N/128, 128]. default=[1,2,0,3].
         mlp_out_weight_transpose: transpose the mlp output weight layout from [H, F] into [F, H]. `default=False`
         log_softmax_scores: Return log-softmax scores along with logits.
         shard_over_sequence: Enables flash decoding / sequence parallel attention for token gen models, `default=False`
@@ -174,10 +170,6 @@ class NeuronConfig():
         all_reduce_dtype: Optional[str] = None,
         cast_logits_dtype: str = 'float32',
         fuse_qkv: bool = False,
-        qkv_tiling: bool = False,
-        weight_tiling: bool = False,
-        mlp_in_weight_tiling_permute_order: List[int] = [1,2,0,3],
-        mlp_out_weight_tiling_permute_order: List[int] = [1,2,0,3],
         log_softmax_scores: bool = False,
         shard_over_sequence: bool = False,
         output_all_logits: bool = False,
@@ -237,28 +229,6 @@ class NeuronConfig():
         self.bf16_rms_norm = bf16_rms_norm
         self.on_device_embedding = on_device_embedding
         self.on_device_generation = on_device_generation
-        self.qkv_tiling = qkv_tiling
-        if self.qkv_tiling is True:
-            assert self.fuse_qkv is True, (
-                "QKV weight tiling is currently only supported when QKV fusion is enabled."
-            )
-
-        self.weight_tiling = weight_tiling
-        self.mlp_in_weight_tiling_permute_order = mlp_in_weight_tiling_permute_order
-        self.mlp_out_weight_tiling_permute_order = mlp_out_weight_tiling_permute_order
-
-        assert self.mlp_in_weight_tiling_permute_order.index(2) < self.mlp_in_weight_tiling_permute_order.index(3), \
-            "original dim 2 has to be front of dim 3 after applying `mlp_in_weight_tiling_permute_order`"
-
-        assert self.mlp_out_weight_tiling_permute_order.index(2) < self.mlp_out_weight_tiling_permute_order.index(3), \
-            "original dim 2 has to be front of dim 3 after applying `mlp_out_weight_tiling_permute_order`"
-
-        if os.environ.get("NEURON_INTERNAL_TRANSFORM_WEIGHT_LAYOUT", False):
-            warnings.warn(
-                "NEURON_INTERNAL_TRANSFORM_WEIGHT_LAYOUT is deprecated. "
-                "To enable weight tiling, please use `NeuronConfig(weight_tiling=True)` instead.",
-            )
-            self.weight_tiling = True
         self.output_all_logits = output_all_logits
 
         assert len(kwargs) == 0, (
