@@ -345,7 +345,6 @@ def contexted_kv(cached_keys, active_keys, cached_mask, cached_to_ctx, active_to
     assert bs == 1, "batch size is 1 for chunked prefill"
     max_num_keys = cached_to_ctx.sizes[0]
     sizes = max_num_keys, 1, n_kv_head, d_head
-    dtype = cached_keys.dtype
 
     # active_keys is in BSH layout, need to reshape
     active_keys = hlo.reshape(active_keys, (active_seq_len, 1, n_kv_head, d_head))

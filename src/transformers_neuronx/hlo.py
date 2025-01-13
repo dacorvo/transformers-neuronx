@@ -464,7 +464,8 @@ def gen_add_func(dtype):
 def gen_assign_func(dtype):
 
     def assign_func(scribe):
-        p0 = dtype.Parameter(parameter_number=0)
+        # Note: we need to unpack the first parameter even if we don't use it
+        p0 = dtype.Parameter(parameter_number=0) # noqa F841
         p1 = dtype.Parameter(parameter_number=1)
         return p1
 
@@ -1842,10 +1843,7 @@ def _cumsum_fast(tensor, dim):
     except ImportError:
         from neuronxcc.nki.kernels.cumsum import cumsum as nki_cumsum
 
-    scribe = tensor.scribe
     last = len(tensor.sizes) - 1
-    dtype = tensor.dtype
-    f32 = scribe.f32
 
     if dim < 0:
         dim %= len(tensor.sizes)
@@ -2399,8 +2397,9 @@ def sort_with_indices(tensor, dim=-1, descending=False):
     def comparator(scribe):
         p0 = dtype.Parameter(parameter_number=0)
         p1 = dtype.Parameter(parameter_number=1)
-        p2 = s32.Parameter(parameter_number=2)
-        p3 = s32.Parameter(parameter_number=3)
+        # TODO: check if we need to unpack these parameters even if we don't use them
+        p2 = s32.Parameter(parameter_number=2) # noqa F841
+        p3 = s32.Parameter(parameter_number=3) # noqa F841
         if descending:
             return greater(p0, p1)
         else:
