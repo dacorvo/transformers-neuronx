@@ -144,7 +144,6 @@ class NeuronConfig():
         cast_logits_dtype: The data type to cast logits to in the forward
             pass. To be selected from `["float32", "float16", "bfloat16"]`.
         fuse_qkv: Fuses the QKV projection into a single matrix multiplication.
-        mlp_out_weight_transpose: transpose the mlp output weight layout from [H, F] into [F, H]. `default=False`
         log_softmax_scores: Return log-softmax scores along with logits.
         shard_over_sequence: Enables flash decoding / sequence parallel attention for token gen models, `default=False`
         duplicate_q_weight_sos: Duplicate q weights to skip allgather in shard_over_sequence
@@ -176,7 +175,6 @@ class NeuronConfig():
         attn_output_transposed: bool = False,
         fused_rmsnorm_qkv: bool = False,
         fused_rmsnorm_mlp: bool = False,
-        mlp_out_weight_transpose: bool = False,
         fuse_mlp: bool = False,
         has_pre_attention_norm: bool = True,
         compilation_worker_count: Optional[int] = None,
@@ -266,8 +264,6 @@ class NeuronConfig():
         if any([self.attention_layout != Layout.BSH,
                 self.group_query_attention != GQA.REPLICATED_HEADS]):
             self.fused_rmsnorm_mlp = False
-
-        self.mlp_out_weight_transpose = mlp_out_weight_transpose
 
         if self.shard_over_sequence:
             assert self.sparse_attn is None, "sparse attn is not supported with flash decoding"

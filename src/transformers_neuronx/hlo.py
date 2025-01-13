@@ -609,10 +609,7 @@ def gated_mlp_bsh(
             hidden_active = get_activation(activation_function)(hidden_active)
             hidden_linear = dot10_add1(hidden, in1_weight, in1_bias)
         hidden_states = multiply(hidden_active, hidden_linear)
-        if neuron_config is not None and neuron_config.mlp_out_weight_transpose:
-            result = dot10_add1(hidden_states, out_weight, out_bias)
-        else:
-            result = dot11_add1(hidden_states, out_weight, out_bias)
+        result = dot11_add1(hidden_states, out_weight, out_bias)
     result = reshape(result, hidden_sizes)
 
     if not return_partial:
@@ -675,12 +672,8 @@ def gated_mlp(
         hidden_linear = dot00_add1(hidden, in1_weight, in1_bias)
     hidden_states = multiply(hidden_active, hidden_linear)
 
-    if neuron_config is not None and neuron_config.mlp_out_weight_transpose:
-        # (b * s, i) @ (i, h) contract=(1, 0) => (b * s, h)
-        result = dot10_add1(hidden_states, out_weight, out_bias)
-    else:
-        # (b * s, i) @ (h, i) contract=(1, 1) => (b * s, h)
-        result = dot11_add1(hidden_states, out_weight, out_bias)
+    # (b * s, i) @ (h, i) contract=(1, 1) => (b * s, h)
+    result = dot11_add1(hidden_states, out_weight, out_bias)
 
     is_bsh = neuron_config and neuron_config.collectives_layout == LAYOUT_BSH
 
