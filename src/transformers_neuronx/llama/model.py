@@ -119,10 +119,7 @@ class LlamaForSampling(base.NeuronModelBase):
             layer.materialize()
             attn = layer.self_attn
             mlp = layer.mlp
-            if self.neuron_config and self.neuron_config.quant:
-                is_unit_scale = self.neuron_config.quant.is_unit_scale(layer_id)
-            else:
-                is_unit_scale = False
+            is_unit_scale = False
             new_layer = self.decoder_lm_head.new_layer(is_unit_scale=is_unit_scale)
             if self.neuron_config.has_pre_attention_norm:
                 new_layer.add_pre_attention_layer_norm(layer.input_layernorm.weight.detach(), None)
@@ -144,14 +141,11 @@ class LlamaForSampling(base.NeuronModelBase):
             if self.neuron_config.fused_rmsnorm_mlp:
                 fused_pre_mlp_ln_gate_weight = mlp.gate_proj.weight * layer.post_attention_layernorm.weight.detach().to(
                     dtype=mlp.gate_proj.weight.dtype)
-                new_layer.add_parameter(fused_pre_mlp_ln_gate_weight.T, sharding=1, allow_pad=True,
-                                        allow_quantize=True)
+                new_layer.add_parameter(fused_pre_mlp_ln_gate_weight.T, sharding=1, allow_pad=True)
                 fused_pre_mlp_ln_up_weight = mlp.up_proj.weight * layer.post_attention_layernorm.weight.detach().to(
                     dtype=mlp.up_proj.weight.dtype)
-                new_layer.add_parameter(fused_pre_mlp_ln_up_weight.T, sharding=1, allow_pad=True,
-                                        allow_quantize=True)
-                new_layer.add_parameter(mlp.down_proj.weight.T, sharding=0, allow_pad=True,
-                                        allow_quantize=True, out_feature_dim=0)
+                new_layer.add_parameter(fused_pre_mlp_ln_up_weight.T, sharding=1, allow_pad=True)
+                new_layer.add_parameter(mlp.down_proj.weight.T, sharding=0, allow_pad=True)
             elif self.neuron_config.fuse_mlp:
                 assert all(getattr(mlp, attr, None) for attr in ['gate_proj', 'up_proj']), \
                     "fuse_mlp need to have gate and up proj weights"
@@ -173,20 +167,15 @@ class LlamaForSampling(base.NeuronModelBase):
                         transposed=False,
                     )
             else:
-                new_layer.add_parameter(mlp.gate_proj.weight.T, sharding=1, allow_pad=True,
-                                        allow_quantize=True, allow_transform=True)
-                new_layer.add_parameter(mlp.up_proj.weight.T, sharding=1, allow_pad=True,
-                                        allow_quantize=True, allow_transform=True)
+                new_layer.add_parameter(mlp.gate_proj.weight.T, sharding=1, allow_pad=True, allow_transform=True)
+                new_layer.add_parameter(mlp.up_proj.weight.T, sharding=1, allow_pad=True, allow_transform=True)
                 if self.neuron_config.weight_tiling:
-                    new_layer.add_parameter(mlp.down_proj.weight.T, sharding=0, allow_pad=True,
-                                            allow_quantize=True, allow_transform=True)
+                    new_layer.add_parameter(mlp.down_proj.weight.T, sharding=0, allow_pad=True)
                 else:
                     if self.neuron_config.mlp_out_weight_transpose:
-                        new_layer.add_parameter(mlp.down_proj.weight.T, sharding=0, allow_pad=True,
-                                                allow_quantize=True)
+                        new_layer.add_parameter(mlp.down_proj.weight.T, sharding=0, allow_pad=True)
                     else:
-                        new_layer.add_parameter(mlp.down_proj.weight, sharding=1, allow_pad=True,
-                                                allow_quantize=True, out_feature_dim=0)
+                        new_layer.add_parameter(mlp.down_proj.weight, sharding=1, allow_pad=True)
             new_layer.to_neuron()
             layer.nullify()
 

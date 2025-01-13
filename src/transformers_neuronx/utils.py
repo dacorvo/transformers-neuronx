@@ -34,18 +34,6 @@ def parse_dtype_replica_groups(neuron_config, tp_degree):
     return dtype, replica_groups
 
 
-def get_closest_pow2_bucket_size(size):
-    # Lets assume bucket-size = n where 2^k < n < 2^(k+1), should we use 2^k or 2^(k+1)?
-    # Elapsed time for these 2 cases:
-    #   2^k bucket:       parallel_time + (n - 2^k) * serial_time
-    #   2^(k+1) bucket:   2 * parallel_time
-    # Approximate: parallel_time ~ 40 x serial_time for 2048
-    # switching criteria: n - 2^k = 40
-    criteria = 1 - 40 / 2048
-    size = 2 ** math.ceil(math.log(criteria * size, 2))
-    return size
-
-
 def maybe_override_attributes(self, kwargs):
     for key, value in kwargs.items():
         if not hasattr(self, key):
@@ -144,12 +132,6 @@ def amp_is_u8(amp):
     return '-u8-' in amp
 
 
-def parse_amp(amp):
-    if amp_is_u8(amp):
-        return amp.split('-')
-    return amp, None, None
-
-
 def u8_encode(tensor):
     tensor = tensor.to(torch.float32)
     tensor_min = tensor.min().item()
@@ -158,30 +140,6 @@ def u8_encode(tensor):
     tensor *= 255.0 / (tensor_max - tensor_min)
     tensor = tensor.round().to(torch.uint8)
     return tensor, tensor_min, tensor_max
-
-
-def batch_tokenize(tokenizer_left_padded, input_texts, pad_token=None):
-    """
-    Tokenize a list of texts with different lengths.
-
-    Args:
-        tokenizer_left_padded (tokenizer): Tokenzier with padding_side='left'. For example: AutoTokenizer.from_pretrained('gpt2', padding_side='left')
-        input_texts (list of strings): List of input texts. Texts can have different lengths
-        pad_token (int, optional): pad token
-
-    Returns:
-        tuple: input_ids, start_ids used as arguments for model.sample function
-    """
-    if pad_token is not None:
-        tokenizer_left_padded.pad_token = pad_token
-    if not hasattr(tokenizer_left_padded, "pad_token") or tokenizer_left_padded.pad_token is None:
-        tokenizer_left_padded.pad_token = tokenizer_left_padded.eos_token
-    tok = tokenizer_left_padded(input_texts, return_tensors='pt', padding=True)
-    _, start_ids = tok.attention_mask.max(axis=1)
-    if (start_ids == 0).all():
-        start_ids = None
-    input_ids = tok.input_ids
-    return input_ids, start_ids
 
 
 def interleave_qkv(q, k, v, tp_degree, dim=1):

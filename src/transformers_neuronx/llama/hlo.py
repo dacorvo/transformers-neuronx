@@ -20,7 +20,6 @@ from transformers_neuronx.layers import transformer, rotary, attention, attentio
 from transformers_neuronx.llama.config import LlamaConfig
 from transformers_neuronx.config import NeuronConfig
 from transformers_neuronx.constants import LAYOUT_BSH, LAYOUT_HSB
-from transformers_neuronx.hlo import quantize_kv_cache_direct_cast, dequantize_kv_cache_direct_cast
 
 from transformers_neuronx.nki.compile import nki_call
 
@@ -174,18 +173,18 @@ class LlamaForSamplingNoEmbeddingHlo:
             block_tables, cached_mask, cached_to_contexted, active_to_contexted,
             attn_k_cache, attn_v_cache,
             pre_attn_ln_weight, pre_attn_ln_bias,
-            attn_q_weight, attn_q_scales, attn_q_bias,
-            attn_k_weight, attn_k_scales, attn_k_bias,
-            attn_v_weight, attn_v_scales, attn_v_bias,
-            attn_out_weight, attn_out_scales, attn_out_bias,
+            attn_q_weight, attn_q_bias,
+            attn_k_weight, attn_k_bias,
+            attn_v_weight, attn_v_bias,
+            attn_out_weight, attn_out_bias,
             post_attn_ln_weight, post_attn_ln_bias,
             pre_mlp_ln_weight, pre_mlp_ln_bias,
-            mlp_in_weight, mlp_in_scales, mlp_in_bias,
-            mlp_out_weight, mlp_out_scales, mlp_out_bias,
+            mlp_in_weight, mlp_in_bias,
+            mlp_out_weight, mlp_out_bias,
             post_mlp_ln_weight, post_mlp_ln_bias,
-            in0_weight=None, in0_scales=None,
-            in1_weight=None, in1_scales=None,
-            out_weight=None, out_scales=None,
+            in0_weight=None,
+            in1_weight=None,
+            out_weight=None,
             is_first_last_layer=False,
         ):
         local_args = {**locals()}
@@ -218,18 +217,18 @@ class LlamaForSamplingNoEmbeddingHlo:
             block_tables, cached_mask, cached_to_contexted, active_to_contexted,
             attn_k_cache, attn_v_cache,
             pre_attn_ln_weight, pre_attn_ln_bias,
-            attn_q_weight, attn_q_scales, attn_q_bias,
-            attn_k_weight, attn_k_scales, attn_k_bias,
-            attn_v_weight, attn_v_scales, attn_v_bias,
-            attn_out_weight, attn_out_scales, attn_out_bias,
+            attn_q_weight, attn_q_bias,
+            attn_k_weight, attn_k_bias,
+            attn_v_weight, attn_v_bias,
+            attn_out_weight, attn_out_bias,
             post_attn_ln_weight, post_attn_ln_bias,
             pre_mlp_ln_weight, pre_mlp_ln_bias,
-            mlp_in_weight, mlp_in_scales, mlp_in_bias,
-            mlp_out_weight, mlp_out_scales, mlp_out_bias,
+            mlp_in_weight, mlp_in_bias,
+            mlp_out_weight, mlp_out_bias,
             post_mlp_ln_weight, post_mlp_ln_bias,
-            in0_weight=None, in0_scales=None,
-            in1_weight=None, in1_scales=None,
-            out_weight=None, out_scales=None,
+            in0_weight=None,
+            in1_weight=None,
+            out_weight=None,
             is_first_last_layer=False,
         ):
         eps = self.config.rms_norm_eps
@@ -242,27 +241,24 @@ class LlamaForSamplingNoEmbeddingHlo:
             ln_hidden, cache_ids, start_ids, last_token_id, block_to_seq, pos_embed, mask, active_mask, core_id,
             block_tables, cached_mask, cached_to_contexted, active_to_contexted,
             attn_k_cache, attn_v_cache,
-            attn_q_weight, attn_q_scales, attn_q_bias,
-            attn_k_weight, attn_k_scales, attn_k_bias,
-            attn_v_weight, attn_v_scales, attn_v_bias,
-            attn_out_weight, attn_out_scales, attn_out_bias
+            attn_q_weight, attn_q_bias,
+            attn_k_weight, attn_k_bias,
+            attn_v_weight, attn_v_bias,
+            attn_out_weight, attn_out_bias
         )
         hidden = hlo.add(attn_output, hidden)
         gated_mlp = hlo.gated_mlp_bsh if is_bsh else hlo.gated_mlp
         rms_norm_dim = 2 if is_bsh else 0
         norm_hidden = hlo.rms_norm(hidden, pre_mlp_ln_weight, eps, dim=rms_norm_dim, neuron_config=self.neuron_config, tp_degree=self.config.tp_degree)
         if self.neuron_config.fuse_mlp:
-            assert all(map(lambda x: not(x), [in0_weight, in1_weight, out_weight, in0_scales, in1_scales, out_scales])) ,\
+            assert all(map(lambda x: not(x), [in0_weight, in1_weight, out_weight])) ,\
                 "in0, in1 and out weights have to be None"
-            in0_weight, in0_scales = mlp_in_weight, mlp_in_scales
-            out_weight, out_scales = mlp_out_weight, mlp_out_scales
+            in0_weight = mlp_in_weight
+            out_weight = mlp_out_weight
 
         mlp_hidden = gated_mlp(
             norm_hidden,
             in0_weight, in1_weight, out_weight,
-            in0_scales=in0_scales,
-            in1_scales=in1_scales,
-            out_scales=out_scales,
             activation_function='silu',
             tp_degree=self.config.tp_degree,
             neuron_config=self.neuron_config
@@ -275,18 +271,18 @@ class LlamaForSamplingNoEmbeddingHlo:
             block_tables, cached_mask, cached_to_contexted, active_to_contexted,
             attn_k_cache, attn_v_cache,
             pre_attn_ln_weight, pre_attn_ln_bias,
-            attn_q_weight, attn_q_scales, attn_q_bias,
-            attn_k_weight, attn_k_scales, attn_k_bias,
-            attn_v_weight, attn_v_scales, attn_v_bias,
-            attn_out_weight, attn_out_scales, attn_out_bias,
+            attn_q_weight, attn_q_bias,
+            attn_k_weight, attn_k_bias,
+            attn_v_weight, attn_v_bias,
+            attn_out_weight, attn_out_bias,
             post_attn_ln_weight, post_attn_ln_bias,
             pre_mlp_ln_weight, pre_mlp_ln_bias,
-            mlp_in_weight, mlp_in_scales, mlp_in_bias,
-            mlp_out_weight, mlp_out_scales, mlp_out_bias,
+            mlp_in_weight, mlp_in_bias,
+            mlp_out_weight, mlp_out_bias,
             post_mlp_ln_weight, post_mlp_ln_bias,
-            in0_weight=None, in0_scales=None,
-            in1_weight=None, in1_scales=None,
-            out_weight=None, out_scales=None,
+            in0_weight=None,
+            in1_weight=None,
+            out_weight=None,
             is_first_last_layer=False,
             enable_qkv_kernel=False,
             enable_mlp_kernel=False
@@ -310,10 +306,10 @@ class LlamaForSamplingNoEmbeddingHlo:
                 cache_ids, start_ids, last_token_id, block_to_seq, pos_embed, mask, active_mask, core_id,
                 block_tables, cached_mask, cached_to_contexted, active_to_contexted,
                 attn_k_cache, attn_v_cache,
-                attn_q_weight, attn_q_scales, attn_q_bias,
-                attn_k_weight, attn_k_scales, attn_k_bias, # should be none
-                attn_v_weight, attn_v_scales, attn_v_bias, # should be none
-                attn_out_weight, attn_out_scales, attn_out_bias
+                attn_q_weight, attn_q_bias,
+                attn_k_weight, attn_k_bias, # should be none
+                attn_v_weight, attn_v_bias, # should be none
+                attn_out_weight, attn_out_bias
             )
             if len(fused_out) == 3:
                 attn_output, out_attn_k_cache, out_attn_v_cache = fused_out
@@ -325,10 +321,10 @@ class LlamaForSamplingNoEmbeddingHlo:
                 ln_hidden, cache_ids, start_ids, last_token_id, block_to_seq, pos_embed, mask, active_mask, core_id,
                 block_tables, cached_mask, cached_to_contexted, active_to_contexted,
                 attn_k_cache, attn_v_cache,
-                attn_q_weight, attn_q_scales, attn_q_bias,
-                attn_k_weight, attn_k_scales, attn_k_bias,
-                attn_v_weight, attn_v_scales, attn_v_bias,
-                attn_out_weight, attn_out_scales, attn_out_bias
+                attn_q_weight, attn_q_bias,
+                attn_k_weight, attn_k_bias,
+                attn_v_weight, attn_v_bias,
+                attn_out_weight, attn_out_bias
             )
 
         if isinstance(hidden, tuple):
@@ -363,9 +359,6 @@ class LlamaForSamplingNoEmbeddingHlo:
             mlp_hidden = gated_mlp(
                 norm_hidden,
                 in0_weight, in1_weight, out_weight,
-                in0_scales=in0_scales,
-                in1_scales=in1_scales,
-                out_scales=out_scales,
                 activation_function='silu',
                 tp_degree=self.config.tp_degree,
                 neuron_config=self.neuron_config
@@ -383,10 +376,10 @@ class LlamaForSamplingNoEmbeddingHlo:
         cache_ids, start_ids, last_token_id, block_to_seq, pos_embed, mask, active_mask, core_id,
         block_tables, cached_mask, cached_to_contexted, active_to_contexted,
         attn_k_cache, attn_v_cache,
-        attn_q_weight, attn_q_scales, attn_q_bias,
-        attn_k_weight, attn_k_scales, attn_k_bias, # should be none
-        attn_v_weight, attn_v_scales, attn_v_bias, # should be none
-        attn_out_weight, attn_out_scales, attn_out_bias
+        attn_q_weight, attn_q_bias,
+        attn_k_weight, attn_k_bias, # should be none
+        attn_v_weight, attn_v_bias, # should be none
+        attn_out_weight, attn_out_bias
     ):
         from neuronxcc.nki._private_kernels.qkv import rmsnorm_qkv_isa_kernel, rmsnorm_qkv_isa_fused_add_kernel
         def _kernel(h, w, ln_w, output):
@@ -438,13 +431,10 @@ class LlamaForSamplingNoEmbeddingHlo:
         query = hlo.reshape(query, active_q_sizes)
         key = hlo.reshape(key, active_kv_sizes)
         value = hlo.reshape(value, active_kv_sizes)
-        assert all([attn_q_scales is None,
-                    attn_q_bias is None,
+        assert all([attn_q_bias is None,
                     attn_k_weight is None,
-                    attn_k_scales is None,
                     attn_k_bias is None,
                     attn_v_weight is None,
-                    attn_v_scales is None,
                     attn_v_bias is None])
 
         # Pass QKV tuple since it will not be computed in the attention block
@@ -455,7 +445,7 @@ class LlamaForSamplingNoEmbeddingHlo:
             attn_q_weight, None, None,
             None, None, None,
             None, None, None,
-            attn_out_weight, attn_out_scales, attn_out_bias,
+            attn_out_weight, attn_out_bias,
             qkv_tuple=(query, key, value),
         )
         if fused_add:
@@ -468,10 +458,10 @@ class LlamaForSamplingNoEmbeddingHlo:
         hidden, cache_ids, start_ids, last_token_id, block_to_seq, pos_embed, mask, active_mask, core_id,
         block_tables, cached_mask, cached_to_contexted, active_to_contexted,
         cached_keys, cached_values,
-        q_weight, q_scales, q_bias,
-        k_weight, k_scales, k_bias,
-        v_weight, v_scales, v_bias,
-        out_weight, out_scales, out_bias,
+        q_weight, q_bias,
+        k_weight, k_bias,
+        v_weight, v_bias,
+        out_weight, out_bias,
         qkv_tuple: tuple = None,
     ):
         d_head = self.config.attention_head_size
@@ -495,9 +485,9 @@ class LlamaForSamplingNoEmbeddingHlo:
         else:
             query, key, value = attention.query_key_value(
                 hidden,
-                q_weight, q_scales, q_bias,
-                k_weight, k_scales, k_bias,
-                v_weight, v_scales, v_bias,
+                q_weight, q_bias,
+                k_weight, k_bias,
+                v_weight, v_bias,
                 d_head,
                 neuron_config=self.neuron_config,
                 tp_degree=tp_degree,  # TODO: include tp_degree into neuron_config
@@ -559,19 +549,10 @@ class LlamaForSamplingNoEmbeddingHlo:
                     # need to use start_ids size to determine if we want to select kv cache.
                     cached_keys_s = hlo.index_select(cached_keys, batch_dim, start_ids)
                     cached_values_s = hlo.index_select(cached_values, batch_dim, start_ids)
-                if self.neuron_config and self.neuron_config.kv_cache_quant:
-                    cached_keys_s = dequantize_kv_cache_direct_cast(cached_keys_s, self.neuron_config)
-                    cached_values_s = dequantize_kv_cache_direct_cast(cached_values_s, self.neuron_config)
             elif self.neuron_config and self.neuron_config.paged_attention:
                 # For decoding with multiple KV cache blocks, start_ids are used as block_tables
                 cached_keys_s = attention_utils.gather_blocks(cached_keys, block_tables=last_token_id, neuron_config=self.neuron_config)
                 cached_values_s = attention_utils.gather_blocks(cached_values, block_tables=last_token_id, neuron_config=self.neuron_config)
-                if self.neuron_config and self.neuron_config.kv_cache_quant:
-                    cached_keys_s = dequantize_kv_cache_direct_cast(cached_keys_s, self.neuron_config)
-                    cached_values_s = dequantize_kv_cache_direct_cast(cached_values_s, self.neuron_config)
-            elif self.neuron_config and self.neuron_config.kv_cache_quant:
-                cached_keys_s = dequantize_kv_cache_direct_cast(cached_keys, self.neuron_config)
-                cached_values_s = dequantize_kv_cache_direct_cast(cached_values, self.neuron_config)
             else:
                 cached_keys_s = cached_keys
                 cached_values_s = cached_values
@@ -693,17 +674,13 @@ class LlamaForSamplingNoEmbeddingHlo:
                                                                                   n_positions=self.n_positions)
             # KCache, VCache = K, V
             if cached_keys.sizes == key.sizes:
-                if self.neuron_config and self.neuron_config.kv_cache_quant:
-                    updated_keys = quantize_kv_cache_direct_cast(key, self.neuron_config)
-                    updated_values = quantize_kv_cache_direct_cast(value, self.neuron_config)
-                else:
-                    updated_keys, updated_values = key, value
+                updated_keys, updated_values = key, value
             else:
                 updated_keys, updated_values = attention.fused_kv_update_cache(cached_keys, cached_values, cache_ids,
                                                                                key, value, start_ids, neuron_config=self.neuron_config)
 
         # O = (C @ wO) + bO
-        output = attention.output(context, out_weight, out_scales, out_bias, tp_degree, self.neuron_config)
+        output = attention.output(context, out_weight, out_bias, tp_degree, self.neuron_config)
        # we do zero padding so disable now
        #  if cores_per_attn_head and not self.neuron_config.shard_over_sequence:
        #      output = hlo.divide(output, cores_per_attn_head)

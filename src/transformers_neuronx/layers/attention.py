@@ -22,14 +22,13 @@ from transformers_neuronx import constants
 from transformers_neuronx.config import NeuronConfig
 from transformers_neuronx.layers import attention, attention_utils
 from transformers_neuronx.nki.compile import nki_call
-from transformers_neuronx.hlo import quantize_kv_cache_direct_cast
 
 
 def query_key_value(
     hidden,
-    q_weight, q_scales, q_bias,
-    k_weight, k_scales, k_bias,
-    v_weight, v_scales, v_bias,
+    q_weight, q_bias,
+    k_weight, k_bias,
+    v_weight, v_bias,
     d_head,
     tp_degree=None,
     neuron_config=None,
@@ -92,13 +91,13 @@ def query_key_value(
     # Sharded KV GQA
     if sharded_gqa_kv:
         # Q = (hidden @ wQ) + bQ
-        active_q = hlo.dot00_add1(hidden_r, q_weight, q_bias, q_scales, neuron_config)
+        active_q = hlo.dot00_add1(hidden_r, q_weight, q_bias)
 
         # K = (hidden @ wK) + bK
-        active_k = _sharded_kv_projection(hidden, k_weight, k_bias, k_scales, neuron_config, d_head, tp_degree)
+        active_k = _sharded_kv_projection(hidden, k_weight, k_bias, d_head, tp_degree)
 
         # V = (hidden @ wV) + bV
-        active_v = _sharded_kv_projection(hidden, v_weight, v_bias, v_scales, neuron_config, d_head, tp_degree)
+        active_v = _sharded_kv_projection(hidden, v_weight, v_bias, d_head, tp_degree)
 
     # Fused MHA
     elif fuse_qkv:
@@ -110,9 +109,9 @@ def query_key_value(
             # (h, s * b) -> (h // TILE_SIZE, TILE_SIZE, b x s)
             hidden_tiled_sizes = hidden_size // constants.TILE_SIZE, constants.TILE_SIZE, n_seqs * n_active_tokens
             hidden_r = hlo.reshape(hidden_r, hidden_tiled_sizes)
-            active_qkv = hlo.dot_0120_add1(hidden_r, q_weight, q_bias, q_scales, neuron_config=neuron_config)
+            active_qkv = hlo.dot_0120_add1(hidden_r, q_weight, q_bias)
         else:
-            active_qkv = hlo.dot00_add1(hidden_r, q_weight, q_bias, q_scales, neuron_config=neuron_config)
+            active_qkv = hlo.dot00_add1(hidden_r, q_weight, q_bias)
 
         # Split
         slice_lim = active_qkv.sizes[-1] // (n_heads_tp + 2 * n_kv_heads_tp)
@@ -123,13 +122,13 @@ def query_key_value(
     # MHA & Non-sharded KV GQA
     else:
         # Q = (hidden @ wQ) + bQ
-        active_q = hlo.dot00_add1(hidden_r, q_weight, q_bias, q_scales, neuron_config)
+        active_q = hlo.dot00_add1(hidden_r, q_weight, q_bias)
 
         # K = (hidden @ wK) + bK
-        active_k = hlo.dot00_add1(hidden_r, k_weight, k_bias, k_scales, neuron_config)
+        active_k = hlo.dot00_add1(hidden_r, k_weight, k_bias)
 
         # V = (hidden @ wV) + bV
-        active_v = hlo.dot00_add1(hidden_r, v_weight, v_bias, v_scales, neuron_config)
+        active_v = hlo.dot00_add1(hidden_r, v_weight, v_bias)
 
     if shard_over_batch:
         # shard over batch
@@ -160,7 +159,7 @@ def query_key_value(
     return active_q, active_k, active_v
 
 
-def _sharded_kv_projection(hidden, weight, bias, scales, neuron_config, d_head, tp_degree):
+def _sharded_kv_projection(hidden, weight, bias, d_head, tp_degree):
 
     _, hidden_size_tp = weight.sizes
     group_size = d_head // hidden_size_tp
@@ -174,7 +173,7 @@ def _sharded_kv_projection(hidden, weight, bias, scales, neuron_config, d_head, 
 
     # O = (hidden @ W) + B
     # (h, s * b) @ (h, n_head * d_head) contract(0, 0) => (s * b, n_head * d_head)
-    active = hlo.dot00_add1(hidden, weight, bias, scales, neuron_config)
+    active = hlo.dot00_add1(hidden, weight, bias)
 
     # Gather portions of the groups together
     replica_groups = utils.build_replica_groups(num_groups, group_size)
@@ -227,9 +226,6 @@ def fused_kv_update_cache(cached_keys, cached_vals, cache_ids, keys, vals, start
 
     KeyCache[I], ValueCache[I] = Keys, Values
     """
-    if neuron_config and neuron_config.kv_cache_quant:
-        keys = quantize_kv_cache_direct_cast(keys, neuron_config)
-        vals = quantize_kv_cache_direct_cast(vals, neuron_config)
 
     # Check K/V cache layout
     bsh_cache_layout = False
@@ -778,7 +774,6 @@ def context_combined(score, values, sparse_mask=None, n_kv_heads=0, dtype=None, 
 def output(
     context: 'HloShape', # noqa F821
     out_weight: 'HloShape', # noqa F821
-    out_scales: 'HloShape', # noqa F821
     out_bias: 'HloShape', # noqa F821
     tp_degree: int,
     neuron_config: Optional[NeuronConfig] = None,
@@ -792,8 +787,6 @@ def output(
     Arguments:
         context: Attention context.
         out_weight: Model attention outout projection weight.
-        out_scales: Scales to "rescale" the quantized weight after it's
-            multiplied where W_f = W_q * scales.
         out_bias: Model attention outout projection bias.
         tp_degree: Tensor parallelism degree.
         neuron_config: NeuronConfig object that specifies the quantization and
@@ -834,10 +827,6 @@ def output(
         hidden_size, *_ = out_weight.sizes
     hidden_sizes = hidden_size, n_active_tokens, n_seqs
 
-    enable_quantize = neuron_config and neuron_config.quant
-    if enable_quantize:
-        out_weight = hlo.cast(out_weight, dtype)
-
     three_dims = len(out_weight.sizes) == 3
 
     if three_dims:
@@ -873,8 +862,6 @@ def output(
         lhs_contracting_dimension=lhs_contract_dims,
         rhs_contracting_dimension=rhs_contract_dims,
         bias_dimension=1,
-        scales=out_scales,
-        neuron_config=neuron_config,
     )
 
     bsh_collective = neuron_config and neuron_config.collectives_layout == LAYOUT_BSH

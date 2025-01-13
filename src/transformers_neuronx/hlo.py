@@ -14,13 +14,12 @@
 # ==============================================================================
 import functools
 import operator
-from typing import Optional, List, Callable, Union
+from typing import List, Callable, Union
 
 import torch
 import numpy as np
 
 from transformers_neuronx import activations
-from transformers_neuronx.config import NeuronConfig
 from transformers_neuronx.constants import LAYOUT_BSH
 from transformers_neuronx import utils
 from transformers_neuronx import compiler
@@ -320,14 +319,6 @@ def dot01(lhs, rhs):
 
 
 def canonicalize_lhs_rhs_dtype(lhs, rhs, neuron_config):
-    enable_quantize = neuron_config is not None \
-                        and neuron_config.quant is not None
-    scribe = lhs.scribe
-    if enable_quantize:
-        if lhs.dtype == getattr(scribe, neuron_config.quant.quant_dtype):
-            lhs = rhs.dtype[lhs.sizes].Convert(lhs)
-        if rhs.dtype == getattr(scribe, neuron_config.quant.quant_dtype):
-            rhs = lhs.dtype[rhs.sizes].Convert(rhs)
     dtype = lhs.dtype
     return lhs, rhs, dtype
 
@@ -339,8 +330,6 @@ def dot_add(
     lhs_contracting_dimension: List[int] = 0,
     rhs_contracting_dimension: List[int] = 0,
     bias_dimension: int = 0,
-    scales: Optional['HloShape'] = None, # noqa F821
-    neuron_config: Optional[NeuronConfig] = None,
 ):
     """
     Perform tensor product and optional addition of bias.
@@ -352,8 +341,6 @@ def dot_add(
     If provided, the bias tensor is broadcast to the shape of
     the dot product and added to the result.
 
-    The result is optionally dequantized before returning.
-
     Arguments:
         lhs: Left-hand side tensor (HloShape).
         rhs: Right-hand side tensor (HloShape).
@@ -361,17 +348,10 @@ def dot_add(
         lhs_contracting_dimension: Contracting dimension(s) for the left-hand side tensor.
         rhs_contracting_dimension: Contracting dimension(s) for the right-hand side tensor.
         bias_dimension: Dimension to broadcast the bias tensor.
-        scales: Scales to "rescale" the quantized tensor after it's multiplied,
-            where W_f = W_q * scales.
-        neuron_config: NeuronConfig object that specifies the quantization dtype
-            and method.
 
     Returns:
         tensor: Result of tensor product and optional addition.
     """
-
-    lhs, rhs, _ = canonicalize_lhs_rhs_dtype(lhs, rhs, neuron_config)
-    enable_quantize = neuron_config is not None and neuron_config.quant is not None and scales is not None
 
     if not isinstance(lhs_contracting_dimension, list):
         lhs_contracting_dimension = [lhs_contracting_dimension]
@@ -382,37 +362,33 @@ def dot_add(
         rhs_contracting_dimensions=rhs_contracting_dimension,
     )
     dot = dot_general(lhs, rhs, dimension_numbers)
-    if enable_quantize:
-        dot = dequantize(dot, scales, neuron_config, bias_dimension)
     if bias is None:
         return dot
     bias = broadcast(bias, dot.sizes, broadcast_dimensions=[bias_dimension])
     return add(dot, bias)
 
 
-def dot00_add0(lhs, rhs, bias, scales=None, neuron_config=None):
-    return dot_add(lhs, rhs, bias, 0, 0, 0, scales, neuron_config)
+def dot00_add0(lhs, rhs, bias):
+    return dot_add(lhs, rhs, bias, 0, 0, 0)
 
 
-def dot00_add1(lhs, rhs, bias, scales=None, neuron_config=None):
-    return dot_add(lhs, rhs, bias, 0, 0, 1, scales, neuron_config)
+def dot00_add1(lhs, rhs, bias):
+    return dot_add(lhs, rhs, bias, 0, 0, 1)
 
 
-def dot10_add1(lhs, rhs, bias, scales=None, neuron_config=None):
-    return dot_add(lhs, rhs, bias, 1, 0, 1, scales, neuron_config)
+def dot10_add1(lhs, rhs, bias):
+    return dot_add(lhs, rhs, bias, 1, 0, 1)
 
 
-def dot11_add1(lhs, rhs, bias, scales=None, neuron_config=None):
-    return dot_add(lhs, rhs, bias, 1, 1, 1, scales, neuron_config)
+def dot11_add1(lhs, rhs, bias):
+    return dot_add(lhs, rhs, bias, 1, 1, 1)
 
 
 def dot_with_tiled_weight_add(lhs, rhs, bias,
                               lhs_contracting_dimensions,
                               rhs_contracting_dimensions,
-                              bias_dimension=0,
-                              scales=None, neuron_config=None):
-    lhs, rhs, dtype = canonicalize_lhs_rhs_dtype(lhs, rhs, neuron_config)
-    enable_quantize = neuron_config and neuron_config.quant
+                              bias_dimension=0):
+    dtype = lhs.dtype
     dot_result_lhs_dims = list(filter(lambda x: x not in lhs_contracting_dimensions,
                                        list(range(len(lhs.sizes)))))
     dot_result_lhs_sizes = [lhs.sizes[i] for i in dot_result_lhs_dims]
@@ -427,8 +403,6 @@ def dot_with_tiled_weight_add(lhs, rhs, bias,
     rhs_size = np.product(dot_result_rhs_sizes)
     dot = reshape(dot, (lhs_size, rhs_size))
 
-    if enable_quantize:
-        dot = dequantize(dot, scales, neuron_config, bias_dimension)
     if bias is None:
         return dot
     bias = broadcast(bias, (lhs_size, rhs_size), broadcast_dimensions=[bias_dimension])
@@ -436,19 +410,17 @@ def dot_with_tiled_weight_add(lhs, rhs, bias,
     return result
 
 
-def dot_1220_add1(lhs, rhs, bias, scales=None, neuron_config=None):
+def dot_1220_add1(lhs, rhs, bias):
     return dot_with_tiled_weight_add(lhs, rhs, bias,
                                      lhs_contracting_dimensions=[1, 2],
                                      rhs_contracting_dimensions=[2, 0],
-                                     bias_dimension=1,
-                                     scales=scales, neuron_config=neuron_config)
+                                     bias_dimension=1)
 
-def dot_0120_add1(lhs, rhs, bias, scales=None, neuron_config=None):
+def dot_0120_add1(lhs, rhs, bias):
     return dot_with_tiled_weight_add(lhs, rhs, bias,
                                      lhs_contracting_dimensions=[0, 1],
                                      rhs_contracting_dimensions=[2, 0],
-                                     bias_dimension=1,
-                                     scales=scales, neuron_config=neuron_config)
+                                     bias_dimension=1)
 
 
 def gen_add_func(dtype):
@@ -503,7 +475,6 @@ def get_activation(activation_function: Union[str, Callable]) -> Callable:
 
 def mlp(hidden, in_weight, in_bias, out_weight, out_bias,
         activation_function, tp_degree,
-        dequant_dtype=None, u8_bounds=None, in_scales=None, out_scales=None,
         neuron_config=None, transposed=False,
 ):
     # single:
@@ -519,10 +490,6 @@ def mlp(hidden, in_weight, in_bias, out_weight, out_bias,
     #   out_weight: [4h/t, h] or [h, 4h/t] when transposed
     #   out_bias: [h]
     dtype = hidden.dtype
-    if u8_bounds is not None:
-        *_, in_min, in_max, out_min, out_max = u8_bounds
-        in_weight = u8_decode(dtype, dequant_dtype, in_weight, in_min, in_max)
-        out_weight = u8_decode(dtype, dequant_dtype, out_weight, out_min, out_max)
     hidden_size, n_active_tokens, batch_size = hidden_sizes = hidden.sizes
     hidden_r_sizes = hidden_size, n_active_tokens * batch_size
     hidden = reshape(hidden, hidden_r_sizes)
@@ -539,24 +506,24 @@ def mlp(hidden, in_weight, in_bias, out_weight, out_bias,
         hidden = dot_with_tiled_weight_add(
             hidden, in_weight, in_bias, [0,1],
             [neuron_config.mlp_in_weight_tiling_permute_order.index(0), neuron_config.mlp_in_weight_tiling_permute_order.index(1)],
-            bias_dimension, in_scales, neuron_config)
+            bias_dimension)
         hidden_tiled_sizes = hidden.sizes[0], hidden.sizes[1] // constants.TILE_SIZE, constants.TILE_SIZE
         hidden = reshape(hidden, hidden_tiled_sizes)
         hidden = get_activation(activation_function)(hidden)
         hidden = dot_with_tiled_weight_add(hidden, out_weight, out_bias, [1,2],
             [neuron_config.mlp_out_weight_tiling_permute_order.index(0), neuron_config.mlp_out_weight_tiling_permute_order.index(1)],
-            bias_dimension, out_scales, neuron_config)
+            bias_dimension)
     else:
         # (h, b * s) @ (h, i) contract=(0, 0) => (b * s, i)
-        hidden = dot00_add1(hidden, in_weight, in_bias, in_scales, neuron_config)
+        hidden = dot00_add1(hidden, in_weight, in_bias)
         hidden = get_activation(activation_function)(hidden)
 
         if transposed:
             # (b * s, i) @ (h, i) contract=(1, 1) => (b * s, h)
-            hidden = dot11_add1(hidden, out_weight, out_bias, out_scales, neuron_config)
+            hidden = dot11_add1(hidden, out_weight, out_bias)
         else:
             # (b * s, i) @ (i, h) contract=(1, 0) => (b * s, h)
-            hidden = dot10_add1(hidden, out_weight, out_bias, out_scales, neuron_config)
+            hidden = dot10_add1(hidden, out_weight, out_bias)
 
     is_bsh = neuron_config and neuron_config.collectives_layout == LAYOUT_BSH
     if is_bsh:
@@ -579,7 +546,6 @@ def mlp(hidden, in_weight, in_bias, out_weight, out_bias,
 
 def mlp_bsh(hidden, in_weight, in_bias, out_weight, out_bias,
             activation_function, tp_degree,
-            dequant_dtype=None, u8_bounds=None, in_scales=None, out_scales=None,
             neuron_config=None, transposed=False,
 ):
     # single:
@@ -595,10 +561,6 @@ def mlp_bsh(hidden, in_weight, in_bias, out_weight, out_bias,
     #   out_weight: [4h/t, h]
     #   out_bias: [h]
     dtype = hidden.dtype
-    if u8_bounds is not None:
-        *_, in_min, in_max, out_min, out_max = u8_bounds
-        in_weight = u8_decode(dtype, dequant_dtype, in_weight, in_min, in_max)
-        out_weight = u8_decode(dtype, dequant_dtype, out_weight, out_min, out_max)
     batch_size, n_active_tokens, hidden_size = hidden_sizes = hidden.sizes
     hidden_r_sizes = batch_size * n_active_tokens, hidden_size
     hidden = reshape(hidden, hidden_r_sizes)
@@ -616,18 +578,18 @@ def mlp_bsh(hidden, in_weight, in_bias, out_weight, out_bias,
         hidden = dot_with_tiled_weight_add(hidden, in_weight, in_bias,
             lhs_contracting_dimensions,
             [neuron_config.mlp_in_weight_tiling_permute_order.index(0), neuron_config.mlp_in_weight_tiling_permute_order.index(1)],
-            bias_dimension, in_scales, neuron_config)
+            bias_dimension)
         hidden_tiled_sizes = hidden.sizes[0], hidden.sizes[1] // constants.TILE_SIZE, constants.TILE_SIZE
         hidden = reshape(hidden, hidden_tiled_sizes)
         hidden = get_activation(activation_function)(hidden)
         hidden = dot_with_tiled_weight_add(hidden, out_weight, out_bias,
             lhs_contracting_dimensions,
             [neuron_config.mlp_out_weight_tiling_permute_order.index(0), neuron_config.mlp_out_weight_tiling_permute_order.index(1)],
-            bias_dimension, out_scales, neuron_config)
+            bias_dimension)
     else:
-        hidden = dot10_add1(hidden, in_weight, in_bias, in_scales, neuron_config)
+        hidden = dot10_add1(hidden, in_weight, in_bias)
         hidden = get_activation(activation_function)(hidden)
-        hidden = dot10_add1(hidden, out_weight, out_bias, out_scales, neuron_config)
+        hidden = dot10_add1(hidden, out_weight, out_bias)
     hidden = reshape(hidden, hidden_sizes)
 
     dtype, replica_groups = utils.parse_dtype_replica_groups(neuron_config, tp_degree)
@@ -644,9 +606,6 @@ def gated_mlp_bsh(
     in0_weight,
     in1_weight,
     out_weight,
-    in0_scales=None,
-    in1_scales=None,
-    out_scales=None,
     in0_bias=None,
     in1_bias=None,
     out_bias=None,
@@ -659,8 +618,6 @@ def gated_mlp_bsh(
     An attention MLP using 2 input projections as found in LLama.
 
     Reference: https://github.com/huggingface/transformers/blob/v4.29.2/src/transformers/models/llama/modeling_llama.py#L144
-
-    TODO: Support quantization
 
     Sizes:
         hidden:     [b, a, h]
@@ -678,21 +635,18 @@ def gated_mlp_bsh(
 
     hidden = reshape(hidden, hidden_r_sizes)
     if neuron_config is not None and neuron_config.fused_rmsnorm_mlp:
-        hidden_active = dot10_add1(hidden, in0_weight, in0_bias,
-                               scales=in0_scales, neuron_config=neuron_config)
+        hidden_active = dot10_add1(hidden, in0_weight, in0_bias)
         hidden_active = get_activation(activation_function)(hidden_active)
-        hidden_linear = dot10_add1(hidden, in1_weight, in1_bias,
-                               scales=in1_scales, neuron_config=neuron_config)
+        hidden_linear = dot10_add1(hidden, in1_weight, in1_bias)
         hidden_states = multiply(hidden_active, hidden_linear)
-        result = dot10_add1(hidden_states, out_weight, out_bias,
-                        scales=out_scales, neuron_config=neuron_config)
+        result = dot10_add1(hidden_states, out_weight, out_bias)
     elif neuron_config is not None and neuron_config.weight_tiling:
         assert hidden_size % constants.TILE_SIZE == 0, \
             f"hidden size needs to be divisible by {constants.TILE_SIZE}" \
             f"in order to use weight tiling."
         hidden_tiled_sizes = batch_size * n_active_tokens, hidden_size // constants.TILE_SIZE, constants.TILE_SIZE
         hidden = reshape(hidden, hidden_tiled_sizes)
-        hidden_active = dot_1220_add1(hidden, in0_weight, in0_bias, in0_scales, neuron_config)
+        hidden_active = dot_1220_add1(hidden, in0_weight)
         if neuron_config and neuron_config.fuse_mlp:
             hidden_tiled_sizes = hidden_active.sizes[0], 2, hidden_active.sizes[1] // (2 * constants.TILE_SIZE), \
                                  constants.TILE_SIZE
@@ -707,14 +661,12 @@ def gated_mlp_bsh(
             hidden_active = get_activation(activation_function)(hidden_gate)
         else:
             hidden_active = get_activation(activation_function)(hidden_active)
-            hidden_linear = dot_1220_add1(hidden, in1_weight, in1_bias, in1_scales, neuron_config)
+            hidden_linear = dot_1220_add1(hidden, in1_weight, in1_bias)
             hidden_linear = reshape(hidden_linear, hidden_tiled_sizes)
         hidden_states = multiply(hidden_active, hidden_linear)
-        result = dot_1220_add1(hidden_states, out_weight, out_bias,
-                        scales=out_scales, neuron_config=neuron_config)
+        result = dot_1220_add1(hidden_states, out_weight, out_bias)
     else:
-        hidden_active = dot10_add1(hidden, in0_weight, in0_bias,
-                               scales=in0_scales, neuron_config=neuron_config)
+        hidden_active = dot10_add1(hidden, in0_weight, in0_bias)
         if neuron_config and neuron_config.fuse_mlp:
             size = hidden_active.sizes[1]//2
             hidden_gate = slice_along(hidden_active, 1, limit=size, start=0)
@@ -722,15 +674,12 @@ def gated_mlp_bsh(
             hidden_active = get_activation(activation_function)(hidden_gate)
         else:
             hidden_active = get_activation(activation_function)(hidden_active)
-            hidden_linear = dot10_add1(hidden, in1_weight, in1_bias,
-                               scales=in1_scales, neuron_config=neuron_config)
+            hidden_linear = dot10_add1(hidden, in1_weight, in1_bias)
         hidden_states = multiply(hidden_active, hidden_linear)
         if neuron_config is not None and neuron_config.mlp_out_weight_transpose:
-            result = dot10_add1(hidden_states, out_weight, out_bias,
-                            scales=out_scales, neuron_config=neuron_config)
+            result = dot10_add1(hidden_states, out_weight, out_bias)
         else:
-            result = dot11_add1(hidden_states, out_weight, out_bias,
-                            scales=out_scales, neuron_config=neuron_config)
+            result = dot11_add1(hidden_states, out_weight, out_bias)
     result = reshape(result, hidden_sizes)
 
     if not return_partial:
@@ -747,9 +696,6 @@ def gated_mlp(
     in0_weight,
     in1_weight,
     out_weight,
-    in0_scales=None,
-    in1_scales=None,
-    out_scales=None,
     in0_bias=None,
     in1_bias=None,
     out_bias=None,
@@ -789,8 +735,7 @@ def gated_mlp(
         hidden_tiled_sizes = hidden_size // constants.TILE_SIZE, constants.TILE_SIZE, batch_size * n_active_tokens,
         hidden = reshape(hidden, hidden_tiled_sizes)
 
-        hidden_active = dot_0120_add1(hidden, in0_weight, in0_bias,
-                                      scales=in0_scales, neuron_config=neuron_config)
+        hidden_active = dot_0120_add1(hidden, in0_weight, in0_bias)
         if neuron_config and neuron_config.fuse_mlp:
             hidden_tiled_sizes = n_active_tokens * batch_size, 2, hidden_active.sizes[1] // (2 * constants.TILE_SIZE), \
                                  constants.TILE_SIZE
@@ -803,18 +748,16 @@ def gated_mlp(
             hidden_states = multiply(hidden_active, hidden_linear)
         else:
             hidden_active = get_activation(activation_function)(hidden_active)
-            hidden_linear = dot_0120_add1(hidden, in1_weight, in1_bias,
-                                          scales=in1_scales, neuron_config=neuron_config)
+            hidden_linear = dot_0120_add1(hidden, in1_weight, in1_bias)
 
             hidden_states = multiply(hidden_active, hidden_linear)
             hidden_states_tiled_sizes = hidden_states.sizes[0], hidden_states.sizes[1] // constants.TILE_SIZE, constants.TILE_SIZE
             hidden_states = reshape(hidden_states, hidden_states_tiled_sizes)
 
-        result = dot_1220_add1(hidden_states, out_weight, out_bias,
-                               scales=out_scales, neuron_config=neuron_config)
+        result = dot_1220_add1(hidden_states, out_weight, out_bias)
     else:
         # (h, b * s) @ (h, i) contract=(0, 0) => (b * s, i)
-        hidden_active = dot00_add1(hidden, in0_weight, in0_bias, scales=in0_scales, neuron_config=neuron_config)
+        hidden_active = dot00_add1(hidden, in0_weight, in0_bias)
         if neuron_config and neuron_config.fuse_mlp:
             size = hidden_active.sizes[1]//2
             hidden_gate = slice_along(hidden_active, 1, limit=size, start=0)
@@ -824,15 +767,15 @@ def gated_mlp(
             hidden_active = get_activation(activation_function)(hidden_active)
 
             # (h, b * s) @ (h, i) contract=(0, 0) => (b * s, i)
-            hidden_linear = dot00_add1(hidden, in1_weight, in1_bias, scales=in1_scales, neuron_config=neuron_config)
+            hidden_linear = dot00_add1(hidden, in1_weight, in1_bias)
         hidden_states = multiply(hidden_active, hidden_linear)
 
         if neuron_config is not None and neuron_config.mlp_out_weight_transpose:
             # (b * s, i) @ (i, h) contract=(1, 0) => (b * s, h)
-            result = dot10_add1(hidden_states, out_weight, out_bias, scales=out_scales, neuron_config=neuron_config)
+            result = dot10_add1(hidden_states, out_weight, out_bias)
         else:
             # (b * s, i) @ (h, i) contract=(1, 1) => (b * s, h)
-            result = dot11_add1(hidden_states, out_weight, out_bias, scales=out_scales, neuron_config=neuron_config)
+            result = dot11_add1(hidden_states, out_weight, out_bias)
 
     is_bsh = neuron_config and neuron_config.collectives_layout == LAYOUT_BSH
 
@@ -854,18 +797,6 @@ def gated_mlp(
     # Transpose back to HSB if applicable
     return permute(result, (2, 1, 0)) if is_bsh else result
 
-
-def u8_decode(dtype, dequant_dtype, weight, min_value, max_value):
-    sizes = weight.sizes
-    weight = dequant_dtype[sizes].Convert(weight)
-    factor = (max_value - min_value) / 255.0
-    factor = dequant_dtype.Constant(constant_value=factor)
-    factor = dequant_dtype[sizes].Broadcast(factor, dimensions=[])
-    min_value = dequant_dtype.Constant(constant_value=min_value)
-    min_value = dequant_dtype[sizes].Broadcast(min_value, dimensions=[])
-    weight = dequant_dtype[sizes].Multiply(weight, factor)
-    weight = dequant_dtype[sizes].Add(weight, min_value)
-    return dtype[sizes].Convert(weight)
 
 def softmax_new(logits, dim=None):
     rank = len(logits.sizes)
@@ -1657,48 +1588,6 @@ def concatenate(operands, dimension):
     output = dtype[sizes].Concatenate(*operands, dimensions=[dimension])
     return output
 
-
-def quantize(tensor, neuron_config: NeuronConfig, scales_dim):
-    scribe = tensor.scribe
-    quant_dtype = getattr(scribe, neuron_config.quant.quant_dtype)
-    dtype = tensor.dtype
-    abs_tensor = dtype[tensor.sizes].Abs(tensor)
-    max_vals = reduce_max(abs_tensor, dim=scales_dim)
-    constant = dtype.Constant(constant_value=127.0)
-    broadcast0 = dtype[max_vals.sizes].Broadcast(constant, dimensions=[])
-    scales = dtype[max_vals.sizes].Divide(max_vals, broadcast0)
-    bdim = list(range(0, len(tensor.sizes)))
-    bdim.remove(scales_dim)
-    broadcast1 = dtype[tensor.sizes].Broadcast(scales, dimensions=bdim)
-    quantized_tensor = dtype[tensor.sizes].Divide(tensor, broadcast1)
-    clamp_upper_bound = dtype[tensor.sizes].Broadcast(dtype.Constant(constant_value=127.0), dimensions=[])
-    clamp_lower_bound = dtype[tensor.sizes].Broadcast(dtype.Constant(constant_value=-128.0), dimensions=[])
-    quantized_tensor = dtype[tensor.sizes].Clamp(clamp_lower_bound, quantized_tensor, clamp_upper_bound)
-    quantized_tensor = quant_dtype[tensor.sizes].Convert(quantized_tensor)
-    return quantized_tensor, scales
-
-
-def dequantize(tensor, scales, neuron_config: NeuronConfig, scales_dim):
-    scribe = tensor.scribe
-    f32 = scribe.f32
-    dtype = getattr(scribe, neuron_config.quant.dequant_dtype)
-    tensor = f32[tensor.sizes].Convert(tensor)
-    scales = f32[tensor.sizes].Broadcast(scales, dimensions=[scales_dim])
-    tensor = f32[tensor.sizes].Multiply(tensor, scales)
-    tensor = dtype[tensor.sizes].Convert(tensor)
-    return tensor
-
-def quantize_kv_cache_direct_cast(tensor, neuron_config: NeuronConfig):
-    scribe = tensor.scribe
-    quant_dtype = getattr(scribe, neuron_config.kv_cache_quant.quant_dtype)
-    quantized_tensor = quant_dtype[tensor.sizes].Convert(tensor)
-    return quantized_tensor
-
-def dequantize_kv_cache_direct_cast(tensor, neuron_config: NeuronConfig):
-    scribe = tensor.scribe
-    dequant_dtype = getattr(scribe, neuron_config.kv_cache_quant.dequant_dtype)
-    dequantized_tensor = dequant_dtype[tensor.sizes].Convert(tensor)
-    return dequantized_tensor
 
 def reduce_mean(tensor, dims, keepdim=False):
 

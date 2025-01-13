@@ -14,15 +14,13 @@
 # ==============================================================================
 from transformers_neuronx import dtypes
 from transformers_neuronx import module
-from transformers_neuronx import utils
 
 
 class LlamaForCausalLM(module.PretrainedModel):
 
     def __init__(self, config):
         super().__init__()
-        dtype, _, _ = utils.parse_amp(config.amp)
-        dtype = dtypes.to_torch_dtype(dtype)
+        dtype = dtypes.to_torch_dtype(config.amp)
         self.model = LlamaModel(config)
         self.lm_head = module.LowMemoryLazyLinear(config.vocab_size, dtype=dtype, bias=False)
 
@@ -66,8 +64,7 @@ class LlamaAttention(module.LowMemoryModule):
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
         self.head_dim = self.hidden_size // self.num_heads
-        dtype, _, _ = utils.parse_amp(config.amp)
-        dtype = dtypes.to_torch_dtype(dtype)
+        dtype = dtypes.to_torch_dtype(config.amp)
         self.q_proj = module.LowMemoryLazyLinear(self.num_heads * self.head_dim, bias=False, dtype=dtype)
         self.k_proj = module.LowMemoryLazyLinear(self.num_heads * self.head_dim, bias=False, dtype=dtype)
         self.v_proj = module.LowMemoryLazyLinear(self.num_heads * self.head_dim, bias=False, dtype=dtype)
@@ -78,8 +75,7 @@ class LlamaMLP(module.LowMemoryModule):
 
     def __init__(self, config):
         super().__init__()
-        dtype, _, _ = utils.parse_amp(config.amp)
-        dtype = dtypes.to_torch_dtype(dtype)
+        dtype = dtypes.to_torch_dtype(config.amp)
         self.gate_proj = module.LowMemoryLazyLinear(config.intermediate_size, bias=False, dtype=dtype)
         self.up_proj = module.LowMemoryLazyLinear(config.intermediate_size, bias=False, dtype=dtype)
         self.down_proj = module.LowMemoryLazyLinear(config.hidden_size, bias=False, dtype=dtype)

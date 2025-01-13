@@ -36,7 +36,7 @@ def tap(name: str, tensor: HloShape, unshard_dim: Optional[int] = None):
     Example Usage:
         In a model's hlo.py file, tag a tensor such as the attention output:
         ```
-        output = attention.output(context, out_weight, out_scales, out_bias, tp_degree, self.neuron_config)
+        output = attention.output(context, out_weight, out_bias, tp_degree, self.neuron_config)
         from transformers_neuronx import global_debugger
         global_debugger.tap("output", output)
         ```
