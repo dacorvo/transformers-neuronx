@@ -19,7 +19,7 @@ from typing import Optional
 import torch
 import torch.nn.functional as F
 
-from .constants import FUSED_QKV_TP_FACTOR, GQA, TRN1_WORLD_SIZE
+from .constants import FUSED_QKV_TP_FACTOR, GQA
 from .config import NeuronConfig
 
 
@@ -239,14 +239,6 @@ def interleave_mlp(mlp_gate, mlp_up, tp_degree, dim=0):
 
     return tensor
 
-
-def is_attn_node_interleaved(n_heads, n_kv_heads, tp_degree):
-    # return False if we are not in multi-node setup
-    if tp_degree <= TRN1_WORLD_SIZE:
-        return False
-    group_size = n_heads // n_kv_heads
-    n_nodes = tp_degree // TRN1_WORLD_SIZE
-    return bool(TRN1_WORLD_SIZE % group_size) and bool(n_nodes == group_size)
 
 def build_replica_groups(num_groups, group_size, interleave=False):
     """

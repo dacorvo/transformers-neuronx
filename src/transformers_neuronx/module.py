@@ -14,7 +14,6 @@
 # ==============================================================================
 import json
 import os
-import re
 import warnings
 from typing import Optional, List, Tuple
 
@@ -28,34 +27,12 @@ from transformers_neuronx import constants
 # Disable lazy module warning since torch-neuronx version is pinned
 warnings.filterwarnings("ignore", category=UserWarning, module='torch.nn.modules.lazy')
 
-def save_pretrained_split(model, save_directory):
-    model.save_pretrained(save_directory, save_function=save_split, max_shard_size='10000GB', safe_serialization=False)
-
 
 _SAFETENSORS_MODEL_INDEX_FILENAME_JSON = 'model.safetensors.index.json'
 _SAFETENSORS_MODEL_FILENAME = 'model.safetensors'
 _PYTORCH_MODEL_BIN_INDEX_FILENAME_JSON = 'pytorch_model.bin.index.json'
 _PYTORCH_MODEL_BIN_FILENAME = 'pytorch_model.bin'
 _KEY_TO_FILENAME_JSON = 'key_to_filename.json'
-
-
-def save_split(state_dict, save_dir):
-    os.makedirs(save_dir, exist_ok=True)
-    key_to_filename = {}
-    for idx, key in enumerate(state_dict.keys()):
-        key_to_filename[key] = f'p{idx}.{sanitize_file_name(key)}'
-    with open(os.path.join(save_dir, _KEY_TO_FILENAME_JSON), 'w') as f:
-        json.dump(key_to_filename, f, indent=2)
-    for key, tensor in state_dict.items():
-        torch.save(tensor, os.path.join(save_dir, key_to_filename[key]))
-
-
-def sanitize_file_name(name):
-    sanitized = name.strip().replace(' ', '_')
-    sanitized = re.sub(r'(?u)[^-\w.]', '', sanitized)
-    if sanitized in {'', '.', '..'}:
-        raise ValueError(f'Could not sanitize "{name}" to file name.')
-    return sanitized
 
 
 class LowMemoryModule(torch.nn.Module):

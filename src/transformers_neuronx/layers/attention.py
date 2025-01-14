@@ -170,39 +170,6 @@ def _sharded_kv_projection(hidden, weight, bias, d_head, tp_degree):
     return active
 
 
-# TODO: This should be removed and rotate_half should be used instead after GPTNeoX changes.
-def query_key_projection(query, key, qk_weight):
-    """
-    A secondary projection to apply to input query/key projections (used in
-    specific models: GPT-J/GPT-NeoX).
-
-    Q = Q @ W
-    K = K @ W
-    """
-    dtype = key.dtype
-    n_active_tokens, n_seqs, n_heads_tp, d_head = active_sizes = key.sizes
-    active_r_sizes = n_active_tokens, n_seqs * n_heads_tp, d_head
-
-    dot_dims = dict(
-        lhs_batch_dimensions=[0],
-        lhs_contracting_dimensions=[2],
-        rhs_batch_dimensions=[0],
-        rhs_contracting_dimensions=[1]
-    )
-
-    # Q = Q @ W
-    query = dtype[active_r_sizes].Reshape(query)
-    query = dtype[active_r_sizes].Dot(query, qk_weight, dot_dimension_numbers=dot_dims)
-    query = dtype[active_sizes].Reshape(query)
-
-    # K = K @ W
-    key = dtype[active_r_sizes].Reshape(key)
-    key = dtype[active_r_sizes].Dot(key, qk_weight, dot_dimension_numbers=dot_dims)
-    key = dtype[active_sizes].Reshape(key)
-
-    return query, key
-
-
 def fused_kv_update_cache(cached_keys, cached_vals, cache_ids, keys, vals, start_ids=None,
                           neuron_config=None):
     """
