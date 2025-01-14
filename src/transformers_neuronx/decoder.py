@@ -65,10 +65,6 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
         self.lm_head_weight = None
         self.lm_head_bias = None
         self.logits_indices = None
-        self.top_k = None
-        self.top_p = None
-        self.temperature = None
-        self.top_p_min_tokens = None
         self.inputs_sdim = None
         self.inputs_builder = None
         self.embedding_builder = None
@@ -484,18 +480,6 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
 
         return outputs
 
-    def embed_positions_ids(self, position_ids, start_ids=None, batch_size=None):
-        if batch_size is None:
-            assert len(self.batch_size) == 1,"batch_size should be specified if model compiled with multiple batch sizes"
-            batch_size = self.batch_size[0]
-        if start_ids is None:
-            return position_ids, torch.zeros([batch_size], dtype=torch.int32)
-        if not self.neuron_config.use_2d_cache_ids:
-            position_ids = position_ids.unsqueeze(0).repeat(batch_size, 1)
-            position_ids -= start_ids.unsqueeze(1)
-        position_ids.masked_fill_(position_ids < 0, 0)
-        return position_ids, start_ids
-
     def _prepare_pre_layer_params(self, manipulator, pre_layer_parameters):
         extras = []
         for param, dim, allow_pad in pre_layer_parameters:
@@ -887,108 +871,15 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
     def get_all_kernels(self):
         return self.program.get_kernels()
 
-def read_n_position(hlo_module, num_inputs):
-    return hlo_module.host_program_shape.parameters[num_inputs].dimensions[0]
-
 
 def read_n_active_tokens(hlo_module):
     return hlo_module.host_program_shape.parameters[0].dimensions[1]
-
-
-def read_batch_size(hlo_module):
-    return hlo_module.host_program_shape.parameters[0].dimensions[0]
 
 
 def maybe_transfer_with_static_ring(shape):
     if shape is None:
         return None
     return hlo.transfer_with_static_ring(shape)
-
-### This is a place-holder to indicate what we want this to look like
-### This is not currently utilized anywhere
-### TO-DO: Modify/integrate these to have decoder-specific forward functionality
-class ContextDecoder(torch.nn.Module):
-
-    def context(self, hidden, cache_ids, start_ids, last_token_id):
-        """A helper to process context (prompt)
-        1) if there is available context encoding model (infered from self.context_buckets)
-            - when context_length >= estimate, slice the context up to estimate,
-                and call context encoding model
-            - when context_length < estimate, skip and fall back to serial token generation model
-
-            and mark `current` accordingly
-
-        2) process the left over tokens accroding to `current`
-            - if there is no context encoding model, simply do serial token generation for context
-        """
-        context_length = hidden.shape[1]
-        # batch_size is in dim 2 because of the transpose taken in _forward function
-        batch_size = hidden.shape[2]
-
-        if self.is_fid:
-            # Fusion-In-Decoder context encoding
-            fused_context_length = hidden.shape[1]
-            context_length = fused_context_length // self.batch_size
-
-        current = 0
-
-        estimate = bucket.find(self.context_buckets, context_length)
-
-
-        if estimate is not None:
-            hidden_context = hidden
-            cache_context = cache_ids
-
-            # Slice context that when it is too large
-            if context_length > estimate:
-                current = estimate
-                hidden_context = hidden[:, :estimate]
-                cache_context = cache_ids[:estimate]
-
-            # Cannot use context encoding for a context that is too small. This
-            # is because the caller must be aware of the cache-ids/start-ids
-            # used.
-            elif context_length < estimate:
-                raise ValueError(f"context_length ({context_length}) shouldn't be smaller than estimate ({estimate})")
-
-            # Directly pass input to the context network when exactly sized
-            else:
-                current = estimate
-
-            if current == estimate:
-                model = self.decoder_lm_head_for_context[estimate, batch_size]
-                logits = model(hidden_context, cache_context, start_ids, last_token_id)
-
-        for i in range(current, context_length):
-            cache_ids = torch.as_tensor([i], dtype=torch.int32)
-            hidden_slice = hidden[:, i:i+1].contiguous()
-            logits = self.decoder_lm_head(hidden_slice, cache_ids, start_ids, last_token_id)
-
-        if self.is_fid:
-            logits[:] = float('-inf')
-            logits[self.bos_token_id] = 1.0
-
-        return logits
-
-    def forward(self, hidden, cache_ids=None, start_ids=None, last_token_id=None):
-        hidden = hidden.transpose(0, -1).contiguous()
-        logits = self.context(hidden, cache_ids, start_ids, last_token_id)
-        logits = logits.to(torch.float32)
-        logits = logits[:self.config.vocab_size, -1, :]
-        logits = logits.transpose(0, 1)
-        return logits
-
-### This is a place-holder to indicate what we want this to look like
-### This is not currently utilized anywhere
-### TO-DO: Modify/integrate these to have decoder-specific forward functionality
-class TokenDecoder(torch.nn.Module):
-    def forward(self, hidden, *args):
-        hidden = hidden.transpose(0, -1).contiguous()
-        logits = TokenDecoder.forward(hidden, *args)
-        logits = logits.to(torch.float32)
-        logits = logits[:self.config.vocab_size, -1, :]
-        logits = logits.transpose(0, 1)
-        return logits
 
 
 class MaybePadder:
@@ -1528,16 +1419,6 @@ class DecoderLayer(torch.nn.Module):
     def valid_parameters(self):
         return [par for par in self.all_parameters() if par is not None]
 
-    def u8_bounds(self):
-        bounds = (
-            self.attn_q_min, self.attn_q_max, self.attn_k_min, self.attn_k_max,
-            self.attn_v_min, self.attn_v_max, self.attn_out_min, self.attn_out_max,
-            self.mlp_in_min, self.mlp_in_max, self.mlp_out_min, self.mlp_out_max,
-        )
-        if any(bd is None for bd in bounds):
-            return None
-        return bounds
-
     def reset(self):
         for batch_size in self.batch_sizes:
             # CPU compilation sometimes returns tensors in a list, eg. [tensor(...), tensor(...)]
@@ -1851,15 +1732,6 @@ class DecoderProgram:
                 input_tensors.append(cache)
                 output_tensors.append(cache) # aliasing
         reorder_cache_hlo_kernel.setup(input_tensors, output_tensors)
-
-    def reorder_cache_by_batch_size(self, reorder_ids, batch_size):
-        assert self.need_reorder_cache, "DecoderProgram is not built with reorder_cache"
-        reorder_ids_tensor = torch.tensor(reorder_ids, dtype=torch.int64)
-        # TODO: if reorder_ids == range(batch_size), don't do anything
-        idx = self.batch_sizes.index(batch_size)
-        reorder_ids_tensors_cpu = self.reorder_cache_hlo_kernels[idx].manipulator.duplicate_on_cpu(reorder_ids_tensor)
-        ops.parallel_write(self.reorder_ids_buffers, reorder_ids_tensors_cpu)
-        self.reorder_cache_hlo_kernels[idx].run()
 
     def reorder_cache(self, reorder_ids):
         assert self.need_reorder_cache, "DecoderProgram is not built with reorder_cache"
