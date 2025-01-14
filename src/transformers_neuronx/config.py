@@ -59,42 +59,6 @@ class ContinuousBatchingConfig:
         self.num_blocks = num_blocks
 
 
-
-class GenerationConfig:
-
-    def __init__(self, *,
-        max_length = None,      # Default: Infer max sequence length from model
-        do_sample = False,      # Default: Greedy
-        top_k = 50,             # Default: Top 50 (when sampling)
-        top_p = 1.0,            # Default: Use all tokens
-        top_p_min_tokens = 1,   # Default: A minimum of 1 for Top-P sampling
-        global_top_k = None,    # Default: Do not use a global top-k value
-        eos_token_id = None,    # Default: Ignore EOS token, otherwise enable early stop.
-        temperature = 1.0,      # Default: No temperature application
-        dynamic = False,        # Default: Do not support changing generation config at runtime
-        deterministic = False,  # Default: Do not use a constant 0.5 as token acceptance threshold during sampling
-        per_batch_line = False, # Default: Do not use different sampling paramerters for each batch line
-    ):
-        self.max_length = max_length
-        self.do_sample = do_sample
-        self.per_batch_line = per_batch_line
-        self.top_k = top_k
-        self.top_p = float(top_p) if not isinstance(top_p, list) else self._convert_list_to_float(top_p)
-        self.temperature = float(temperature) if not isinstance(temperature, list) else self._convert_list_to_float(temperature)
-        self.top_p_min_tokens = top_p_min_tokens
-        self.global_top_k = global_top_k
-        self.eos_token_id = eos_token_id
-        self.dynamic = dynamic
-        self.deterministic = deterministic
-
-    def __eq__(self, value: object) -> bool:
-        if not isinstance(value, GenerationConfig):
-            return False
-        return self.__dict__ == value.__dict__
-
-    def _convert_list_to_float(self, params):
-        return [float(p) for p in params]
-
 valid_dtypes = [
     "float32",
     "float16",
@@ -134,11 +98,6 @@ class NeuronConfig():
             By default, the RMS norm operates on FP32 dtype of inputs.
         on_device_embedding: Enables the input embedding to be performed on
             Neuron. By default, the embedding is computed on CPU.
-        on_device_generation: Enables token generation to be performed on Neuron
-            hardware with the given configuration. By default token generation
-            is computed on CPU. By configuring this at compilation time,
-            generation configurations cannot be dynamically configured during
-            inference.
         all_reduce_dtype: The data type that is used for AllReduce collectives.
             To be selected from `["float32", "float16", "bfloat16"]`.
         cast_logits_dtype: The data type to cast logits to in the forward
@@ -165,7 +124,6 @@ class NeuronConfig():
         sequence_parallel_norm_threshold: int = 2048,
         bf16_rms_norm: bool = False,
         on_device_embedding: bool = False,
-        on_device_generation: Optional[GenerationConfig] = None,
         all_reduce_dtype: Optional[str] = None,
         cast_logits_dtype: str = 'float32',
         fuse_qkv: bool = False,
@@ -226,7 +184,6 @@ class NeuronConfig():
         )
         self.bf16_rms_norm = bf16_rms_norm
         self.on_device_embedding = on_device_embedding
-        self.on_device_generation = on_device_generation
         self.output_all_logits = output_all_logits
 
         assert len(kwargs) == 0, (

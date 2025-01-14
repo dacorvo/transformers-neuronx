@@ -24,7 +24,7 @@ from transformers_neuronx import module
 from transformers_neuronx import ops
 from transformers_neuronx.compiler import ParallelKernel
 from transformers_neuronx.constants import LAYOUT_BSH
-from transformers_neuronx.config import GenerationConfig, maybe_dump_config
+from transformers_neuronx.config import maybe_dump_config
 from concurrent.futures import ProcessPoolExecutor
 import json
 
@@ -617,10 +617,7 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
                 logits_per_batch = self.context(hidden_per_batch, cache_ids_per_batch,
                                             start_ids_per_batch, last_token_id_per_batch)
                 all_logits.append(logits_per_batch)
-            if self.neuron_config.on_device_generation:
-                logits = torch.cat(all_logits, dim=0)
-            else:
-                logits = torch.cat(all_logits, dim=-1)
+            logits = torch.cat(all_logits, dim=-1)
         else:
             assert input_batch_size == running_batch_size, \
                 "input batch size ({input_batch_size}) not equal to running batch size ({running_batch_size})"
@@ -638,9 +635,6 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
                 logits = self.context(hidden, *args)
         else:
             logits = self.decode(hidden, *args)
-
-        if self.neuron_config.on_device_generation:
-            return logits
 
         logits = self._cast_logits(logits)
         if self.neuron_config.output_all_logits and context_length > 1:
@@ -687,9 +681,6 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
         for kernel in kernels:
             if isinstance(kernel, ParallelKernel):
                 kernel.profile(profile_dir, ntff_count_limit)
-
-    def update_generation_config(self, generation_config: GenerationConfig):
-        self.decoder_lm_head.update_generation_config(generation_config)
 
 
 # Base class for all "Serializable Objects"
