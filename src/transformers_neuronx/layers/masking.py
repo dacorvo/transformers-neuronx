@@ -2,19 +2,19 @@ from transformers_neuronx import hlo
 
 def sliding_window_decoder_attention_mask_lhs_aligned(cache_ids, n_positions, window_size):
     """
-    Create sliding window attention masks for LHS-aligned sequences. 
-    Note that in sliding window each token attends to last window_size tokens including itself. 
-    So during tokengen, we need to access at most window_size - 1 elements from the cache. 
-    
+    Create sliding window attention masks for LHS-aligned sequences.
+    Note that in sliding window each token attends to last window_size tokens including itself.
+    So during tokengen, we need to access at most window_size - 1 elements from the cache.
+
     Ref:
     https://github.com/huggingface/transformers/blob/940fde8dafaecb8f17b588c5078291f1c1a420c8/src/transformers/models/mistral/modeling_mistral.py#L369-L373
 
-    This function is focused on the case where n_positions > window_size where the KV cache is of size window_size. 
+    This function is focused on the case where n_positions > window_size where the KV cache is of size window_size.
     In other cases we should simply use the normal masks.
 
     Args:
-        cache_ids: The 2d positions to update in the cache (batch_size x active_mask) 
-        n_positions: This is equal to the current bucket size. It determines the mask size when context encoding. 
+        cache_ids: The 2d positions to update in the cache (batch_size x active_mask)
+        n_positions: This is equal to the current bucket size. It determines the mask size when context encoding.
             We assume n_positions > window_size, otherwise one should use normal masking functions.
         window_size: sliding window size. Each token attends to the last window_size tokens including itself.
 
@@ -28,7 +28,7 @@ def sliding_window_decoder_attention_mask_lhs_aligned(cache_ids, n_positions, wi
         # Context Encoding
         return sliding_window_decoder_attention_mask_lhs_aligned_context(cache_ids, n_positions, window_size)
     else:
-        # Token generation (includes speculative decoding and windowed context encoding)
+        # Token generation (includes windowed context encoding)
         return sliding_window_decoder_attention_mask_lhs_aligned_token(cache_ids, window_size)
 
 def sliding_window_decoder_attention_mask_lhs_aligned_context(cache_ids, n_positions, window_size):
@@ -37,7 +37,7 @@ def sliding_window_decoder_attention_mask_lhs_aligned_context(cache_ids, n_posit
 
     This mask is static and does not depend on the inputs. During LHS-aligned
     context encoding, there is a guarantee that each token in a sequence must
-    attend to all prior positions up to sliding window limit. This is unlike RHS-aligned 
+    attend to all prior positions up to sliding window limit. This is unlike RHS-aligned
     sequences where batch padding may require that an earlier position must not be attended to.
 
     Example:
@@ -66,7 +66,7 @@ def sliding_window_decoder_attention_mask_lhs_aligned_context(cache_ids, n_posit
     s32 = dtype.scribe.s32
     x = hlo.iota(s32, sizes, [0])
     y = hlo.iota(s32, sizes, [1])
-    # we want (i) x >= y and (ii) x < y + window_size 
+    # we want (i) x >= y and (ii) x < y + window_size
     condition_1 = hlo.greater_equal(x, y)
     window_size_br = hlo.full(window_size, s32, sizes)
     y_plus_window_size = hlo.add(y, window_size_br)
@@ -91,7 +91,7 @@ def sliding_window_decoder_attention_mask_lhs_aligned_token(cache_ids, window_si
     of prior tokens depending on the current token(s) being computed.
 
     This function assumes that `cache_ids` are linearly increasing per batch
-    line when `n_active_tokens > 1` (speculative & windowed attention).
+    line when `n_active_tokens > 1` (windowed attention).
 
     Example: Single Token Generation
 
@@ -123,7 +123,7 @@ def sliding_window_decoder_attention_mask_lhs_aligned_token(cache_ids, window_si
         active_mask = [
             [1]
         ]
-        
+
     Example: Batched Execution
 
         window_size = 4
@@ -142,19 +142,19 @@ def sliding_window_decoder_attention_mask_lhs_aligned_token(cache_ids, window_si
             [1], # Batch 1
         ]
 
-    Example: Speculative Sampling/Windowed CE
+    Example: Windowed CE
 
         window_size = 4
         n_active_tokens = 3
         cache_ids = [
-            [1, 2, 3], # Batch 0 
+            [1, 2, 3], # Batch 0
             [2, 3, 4], # Batch 1 (modulo 4 = [2, 3, 0])
             [5, 6, 7], # Batch 2 (modulo 4 = [1, 2, 3])
             [10, 11, 12], # Batch 3 (modulo 4 = [2, 3, 0])
         ]
 
         # prior mask is batch_size x n_active_tokens x window_size
-        prior_mask = 
+        prior_mask =
         [
             [
                 [1, 0, 0, 0], # positions: 0, 1, 2, 3
@@ -194,7 +194,7 @@ def sliding_window_decoder_attention_mask_lhs_aligned_token(cache_ids, window_si
         active_mask: The attention mask to apply to the active tokens.
     """
     batch_size, n_active_tokens = cache_ids.sizes
-    assert n_active_tokens <= window_size, "Window size for windowed CE or Speculation length must be less than sliding window size"
+    assert n_active_tokens <= window_size, "Window size for windowed CE must be less than sliding window size"
 
     dtype = cache_ids.scribe.pred
     s32 = dtype.scribe.s32
@@ -205,14 +205,14 @@ def sliding_window_decoder_attention_mask_lhs_aligned_token(cache_ids, window_si
         # Single token (Always pay attention to self)
         active_mask = hlo.full(1, dtype, (batch_size, n_active_tokens))
     else:
-        # Multi-token speculative sampling & windowed attention
+        # Multi-token windowed attention
         causal_mask = hlo.tril_mask(dtype, (n_active_tokens, n_active_tokens))
         size = (batch_size, n_active_tokens, n_active_tokens)
         active_mask = hlo.broadcast(causal_mask, size, [1, 2])
 
     # Prior mask
     if n_active_tokens > 1:
-        # Multi-token speculative sampling & windowed attention
+        # Multi-token windowed attention
         min_cache_ids = hlo.reduce_min(cache_ids, dim=1, keepdim=True) # find the min cache id for each batch line
     else:
         min_cache_ids = cache_ids
@@ -222,7 +222,7 @@ def sliding_window_decoder_attention_mask_lhs_aligned_token(cache_ids, window_si
 
     # now we perform the operation y -> (min_cache_ids-window_size) + [(y-min_cache_ids) % window_size + window_size]%window_size
     # Second term ensures positive remainder.
-    # This converts y to the actual position in the cache for the window, e.g., 
+    # This converts y to the actual position in the cache for the window, e.g.,
     # if window size = 4:
     # min_cache_ids = 2 -> y -> [0, 1, -2, -1] (denoting that last two values are garbage)
     # min_cache_ids = 5 -> y -> [4, 1, 2, 3] (rolling KV cache)

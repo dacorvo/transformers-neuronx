@@ -85,8 +85,7 @@ class NeuronConfig():
             https://huggingface.co/docs/transformers/v4.39.0/en/main_classes/tokenizer#transformers.PreTrainedTokenizer.padding_side
             The default padding side is "left", however using "right"
             padding enables variable length sequences to be used. This is
-            enabled when using features such as continuous batching or batched
-            speculation.
+            enabled when using features such as continuous batching.
         group_query_attention: The sharding configuration to use when the number
             of query attention heads is not equal to the number of key/value
             heads. Neuron attempts to select the best configuration by default.

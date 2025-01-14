@@ -320,25 +320,6 @@ def fused_kv_update_cache(cached_keys, cached_vals, cache_ids, keys, vals, start
                 updated_keys = hlo.reshape(updated_keys, [n_positions, n_seqs, n_kv_heads, d_head])
                 updated_vals = hlo.reshape(updated_vals, [n_positions, n_seqs, n_kv_heads, d_head])
 
-    elif n_active_tokens > 1 and n_active_tokens < n_positions:
-        # Speculative forward: n_active_tokens > 1 and < n_positions
-        # similar to case above, but modifies a K-token chunk (K > 1) to one of the sequences in the batch
-        # cache (2D): [n_positions * n_seqs, n_kv_heads * d_head]
-        #        +-0-1-2-3-4-5-----------------------------------
-        # seq 0  |[x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x]
-        # seq 1  |[y,y,y,y,y,y,y,y,y,A,B,C,D,E,F] <- Modify 5 tokens to this sequence
-        # seq 2  |[z,z,z,z,z,z,z,z,z,z,z,z,z,z,z,z,z,z,z]
-        #        +-----------------------------------------------
-        # seq_ids:      cache_ids: (n_active_tokens, n_seqs)     values: (n_active_tokens, n_seqs, n_heads, d_head)
-        # seq 1         [[45,46,47,48,49,50]]                    [[A,B,C,D,E,F]]
-        n_active_tokens, batch_size, n_head, d_head = keys.sizes
-        keys_r = hlo.reshape(keys, [1, n_active_tokens * batch_size, n_head, d_head])
-        vals_r = hlo.reshape(vals, [1, n_active_tokens * batch_size, n_head, d_head])
-
-        indices = attention_utils.update_indices_speculative(cached_keys, cache_ids, start_ids, neuron_config)
-
-        updated_keys, updated_vals = hlo.reshape_and_cache(keys_r, vals_r, cached_keys, cached_vals, indices)
-
     else:
         raise NotImplementedError(f"Updating 2D cache_ids is not implemented for "
                                   f"n_active_tokens={n_active_tokens}, n_positions={n_positions}, "
@@ -346,44 +327,6 @@ def fused_kv_update_cache(cached_keys, cached_vals, cache_ids, keys, vals, start
 
     return updated_keys, updated_vals
 
-
-def reorder_kv_cache(cached_keys, cached_values, priv_cache_ids, reorder_mapping, neuron_config=None):
-    """
-    Reordering of the KV cache is required for tree based attention. While speculating using a tree based
-    attention, the model decodes multiple tokens (flattened token tree) and updates the kv cache linearly
-    based on the cache_ids. Post accceptance, the KV cache needs to be reordered as the cache might not have
-    accepted tokens in the very beginning of the previous cache_ids window. So this step brings those
-    accepted token index to the very beginning of the previous kv cache_ids window.
-    """
-
-    bsh_cache_layout = False
-    seq_dim = 0
-    if neuron_config is not None:
-        bsh_cache_layout = neuron_config.cache_layout == constants.LAYOUT_BSH
-    if bsh_cache_layout:
-        seq_dim = 1
-
-    use_2d_cache_ids = len(priv_cache_ids.sizes) > 1
-    # For 1D caches
-    if not use_2d_cache_ids:
-        cache_start_id = hlo.reduce_min(priv_cache_ids, 0)
-        cache_size = priv_cache_ids.sizes[0]
-        # Dynamic Slice to get the previous KV cache window that needs to be updated.
-        keys_slice_to_update = hlo.dynamic_slice_along(cached_keys, seq_dim, cache_start_id, cache_size)
-        value_slice_to_update = hlo.dynamic_slice_along(cached_values, seq_dim, cache_start_id, cache_size)
-        # Broadcast the reorder mapping to the same size as the KV cache window.
-        gather_index = hlo.broadcast(reorder_mapping, keys_slice_to_update.sizes, [seq_dim])
-        # Gather is used to reorder the KV cache window based on the reorder mapping
-        #updated_key_slice = hlo.gather(keys_slice_to_update, seq_dim, gather_index)
-        #updated_value_slice = hlo.gather(value_slice_to_update, seq_dim, gather_index)
-        updated_key_slice = hlo.gather_select_reduce(keys_slice_to_update, seq_dim, gather_index)
-        updated_value_slice = hlo.gather_select_reduce(value_slice_to_update, seq_dim, gather_index)
-        # Scatter is used to update the KV cache with the updated window.
-        reordered_keys = update_cache(cached_keys, priv_cache_ids, updated_key_slice)
-        reordered_values = update_cache(cached_values, priv_cache_ids, updated_value_slice)
-        return reordered_keys, reordered_values
-
-    raise NotImplementedError("Token Tree based decoding is not available for 2D cache ids.")
 
 def update_cache(cache, cache_ids, values):
     """

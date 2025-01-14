@@ -316,8 +316,7 @@ class Selector:
     A class which selects a program index based on input values.
 
     This is a base class that can be used to implement many different network
-    selection behaviors. For example context network selection, autoregressive
-    token network selection, speculative decoder network selection, etc.
+    selection behaviors.
     """
     def __call__(self, *inputs) -> int:
         raise NotImplementedError()

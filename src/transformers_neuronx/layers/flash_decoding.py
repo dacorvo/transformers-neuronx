@@ -217,19 +217,19 @@ def convert_attn_mask_and_cache_id(cache_ids, start_ids,  core_id, n_positions, 
     mask = hlo.equal(target_core_ids, curr_core_id_in_head_br)
     converted_cache_ids = hlo.masked_select(mask, real_cache_ids, default_cache_ids)
 
-    # Generate masks for context encoding / windowed /speculation
+    # Generate masks for context encoding / windowed
     if is_context_encoding:
         # We don't need active mask for context encoding
         converted_mask, converted_active_mask = hlo.attention_mask(cache_ids, start_ids, n_positions)
 
         return converted_cache_ids, converted_mask, converted_active_mask
     else:
-        # token generation / windowed / speculative
+        # token generation / windowed
         converted_mask_size = batch_size, n_active_tokens, cache_size
 
         # For prior mask, we compute how many tokens are there in this core's KV cache
         if n_active_tokens > 1:
-            # Multi-token speculative sampling & windowed attention
+            # Windowed attention
             num_processed_tokens = hlo.reduce_min(cache_ids, dim=seq_dim, keepdim=True)
         else:
             num_processed_tokens = cache_ids

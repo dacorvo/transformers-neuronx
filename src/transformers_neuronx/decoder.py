@@ -240,29 +240,6 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
             decoder_lm_head.add_embedding_builder(self.builder.embedding)
         return decoder_lm_head
 
-    def init_speculative_decoder(self, unroll, buckets, model_obj, n_active_tokens, batch_size=None, token_tree=None):
-        cls = type(self)
-        decoder_lm_head = cls(
-            tp_degree=self.tp_degree,
-            n_positions_list=buckets,
-            n_active_tokens=n_active_tokens,
-            batch_size=self.batch_size if batch_size is None else batch_size,
-            attention_head_size=self.attention_head_size,
-            amp=self.amp,
-            num_layers=self.num_layers,
-            n_head=self.n_head,
-            n_kv_head=self.n_kv_head,
-            unroll=unroll,
-            neuron_config=self.neuron_config,
-            allow_pad=True,
-            return_all_outputs=True,
-            builder=self.builder,
-            token_tree=token_tree,
-            tag=f"speculation-k{n_active_tokens}",
-        )
-        base.NeuronModelBase.register_for_serialization(model_obj,decoder_lm_head)
-        return decoder_lm_head
-
     def init_window_context_decoder(self, unroll, buckets, model_obj, n_active_tokens):
         cls = type(self)
         return_all_outputs = False
@@ -926,19 +903,6 @@ def maybe_transfer_with_static_ring(shape):
     if shape is None:
         return None
     return hlo.transfer_with_static_ring(shape)
-
-### This is a place-holder to indicate what we want this to look like
-### This is not currently utilized anywhere
-### TO-DO: Modify/integrate these to have decoder-specific forward functionality
-class SpeculativeDecoder(torch.nn.Module):
-    def forward(self, hidden, *args):
-        hidden = hidden.transpose(0, -1).contiguous()
-        logits = self.decoder_lm_head(hidden, *args)
-        logits = logits.to(torch.float32)
-        logits = logits[:self.config.vocab_size, -self.n_active_tokens:, :]
-        logits = logits.transpose(0, 1)
-        logits=logits.transpose(1, 2)
-        return logits
 
 ### This is a place-holder to indicate what we want this to look like
 ### This is not currently utilized anywhere

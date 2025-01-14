@@ -435,11 +435,6 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
                 cache_ids_pad = torch.concat([cache_ids, pad_elements], dim=1)
                 cache_ids = torch.minimum(cache_ids_pad, torch.tensor(estimate-1, dtype=torch.long))
             else:
-                # TODO: fix cache_ids padding for batch speculative decoding
-                # for now, use cache_ids without change for speculative_forward
-                is_speculative_forward = cache_ids.flatten()[0].item() > 0
-                if is_speculative_forward:
-                    return cache_ids
                 cache_ids = torch.arange(estimate, dtype=torch.int32)
                 cache_ids = cache_ids.unsqueeze(0).expand(batch_size, estimate)
         else:

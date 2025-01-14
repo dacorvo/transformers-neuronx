@@ -526,13 +526,12 @@ class LlamaForSamplingNoEmbeddingHlo:
             batch_dim = 0
 
 
-        # Single Token Generation ("Prefetch"-style) ans speculative forward
+        # Single Token Generation ("Prefetch"-style)
         if active_mask is not None:
 
             n_active_tokens = key.sizes[1] if bsh_cache_layout else key.sizes[0]
             if n_active_tokens > 1 and self.neuron_config and self.neuron_config.continuous_batching:
-                # For speculative forward + continuous batching, slice out samples in the batch size
-                # corresponding to the batch size of the speculative head
+                # For continuous batching, slice out samples in the batch size
                 slice_sizes = [1] * len(cached_keys.sizes)
                 if cached_keys.sizes[batch_dim] == 1:
                     # Use hlo.select for batch size 1 as index select is prohibitively slow

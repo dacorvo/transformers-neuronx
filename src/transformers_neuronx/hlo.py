@@ -737,35 +737,6 @@ def transfer_with_static_ring(shape):
     custom_call_target = 'AwsNeuronTransferWithStaticRing'
     return shape.dtype[shape.sizes].CustomCall(shape, custom_call_target=custom_call_target)
 
-def token_tree_attention_mask(full_token_tree_attention_mask, active_mask):
-    """
-    The full_token_tree_attention_mask is loaded as a weight of the speculation model and contains
-    the attention mask for the whole tree structure.
-    This method is used to extract the active attention mask corresponding to a tree structure
-    that is a sub tree of the full token tree but only till a given level.
-    So this is extracting a top left prefix of the full_token_tree_attention_mask based on the
-    number of nodes in the sub tree which is determined by the size of active_mask.
-
-    Eg:
-
-       Full token tree : {0:[1], 1:[2], 2:[3]}
-       Corresponding full_token_tree_attention_mask : [[1, 0, 0, 0],[1, 1, 0, 0],[1, 1, 1, 0], [1, 1, 1, 1]]
-       sub tree as part of draft speculation loop : {0:[1], 1:[2]}
-       So the shape of the active_mask will be (B = 1, SL = 3, SL = 3)
-       Final mask returned will then be [[[True, False, False],[True, True, False],[True, True, True]]]
-       of shape (B=1, SL=3, SL=3) which is the upper left 3x3 matrix of the full_token_tree_attention_mask matrix
-    """
-    batch, seq_len, *_ = active_mask.sizes
-    # Keep required rows
-    row_sliced_token_tree_active_mask = slice_along(full_token_tree_attention_mask, 0, seq_len)
-    # Keep required columns
-    col_sliced_token_tree_active_mask = slice_along(row_sliced_token_tree_active_mask, 1, seq_len)
-    # Broadcast to accomodate correct shape of the mask
-    token_tree_active_mask = broadcast(col_sliced_token_tree_active_mask, active_mask.sizes, [1,2])
-    # Convert to pred
-    pred_token_tree_active_mask = equal(token_tree_active_mask, 1)
-    return pred_token_tree_active_mask
-
 
 def attention_mask(cache_ids, start_ids, n_positions, last_token_id=None, num_active_blocks=None, neuron_config=None, context_lens=None):
     """
@@ -775,7 +746,6 @@ def attention_mask(cache_ids, start_ids, n_positions, last_token_id=None, num_ac
     and which mode the model is being used for:
     - Single token generation
     - Parallel context encoding (prefill)
-    - Speculative decoding
     - Windowed context encoding (prefill)
     The required mask(s) will be derived from the input parameters.
 
@@ -844,7 +814,7 @@ def decoder_attention_mask(start_ids, position_ids, n_positions, triu_comparison
     triu_sizes = n_active_tokens, n_positions
     pred = position_ids.scribe.pred
 
-    # Windowed & speculative attention
+    # Windowed attention
     if n_active_tokens > 1 and allow_kv_dot_prefetch:
         return decoder_attention_mask_window(position_ids, start_ids, n_positions)
 
@@ -2759,7 +2729,7 @@ def tril_mask(dtype, sizes):
 
 def decoder_attention_mask_window(cache_ids, start_ids, n_positions):
     """
-    Creates decomposed prior/active masks for windowed & speculative attention.
+    Creates decomposed prior/active masks for windowed attention.
 
     This mask should only be used when computing a number of context tokens
     in parallel (>1) which may also require looking at the previously computed
@@ -3298,7 +3268,7 @@ def decoder_attention_mask_lhs_aligned_token_padded(cache_ids, n_positions):
     of prior tokens depending on the current token(s) being computed.
 
     This function assumes that `cache_ids` are linearly increasing per batch
-    line when `n_active_tokens > 1` (speculative & windowed attention).
+    line when `n_active_tokens > 1` (windowed attention).
 
     Example: Single Token Generation
 
@@ -3335,25 +3305,6 @@ def decoder_attention_mask_lhs_aligned_token_padded(cache_ids, n_positions):
             [1], # Batch 1
         ]
 
-    Example: Speculative Sampling
-
-        n_positions = 4
-        cache_ids = [
-            [2, 3] # Batch 0
-            [1, 2] # Batch 1
-        ]
-
-        # Attend to all prior positions on each batch line
-        prior_mask = [
-            [1, 1, 0, 0] # Batch 0
-            [1, 0, 0, 0] # Batch 1
-        ]
-        # Use lower triangular mask for each active set of tokens
-        active_mask = [
-            [1, 0],
-            [1, 1]
-        ]
-
     Args:
         cache_ids: The 2d positions to update in the cache.
         n_positions: The total size of the KV cache to consider. This is
@@ -3369,7 +3320,7 @@ def decoder_attention_mask_lhs_aligned_token_padded(cache_ids, n_positions):
 
     # Prior mask
     if n_active_tokens > 1:
-        # Multi-token speculative sampling & windowed attention
+        # Multi-token windowed attention
         cache_ids = reduce_min(cache_ids, dim=1, keepdim=True)
     size = (batch_size, n_active_tokens, n_positions)
     positions = dtype[size].Iota(dimensions=[2])
@@ -3381,7 +3332,7 @@ def decoder_attention_mask_lhs_aligned_token_padded(cache_ids, n_positions):
         # Single token (Always pay attention to self)
         active_mask = full(1, pred, (batch_size, n_active_tokens))
     else:
-        # Multi-token speculative sampling & windowed attention
+        # Multi-token windowed attention
         causal_mask = tril_mask(pred, (n_active_tokens, n_active_tokens))
         size = (batch_size, n_active_tokens, n_active_tokens)
         active_mask = broadcast(causal_mask, size, [1, 2])
@@ -3559,181 +3510,6 @@ def select_from(
         to_values = multiply(from_values, eq)
 
     return to_values
-
-
-def speculative_adjust_distribution(
-    draft_probs,    # (batch, k, vocab_size)
-    draft_indices,  # (batch, k, vocab_size)
-    target_probs,   # (batch, k+1, vocab_size)
-    target_indices, # (batch, k+1, vocab_size)
-    k,
-):
-    """
-    With the provided draft and target probabilities, calculate the adjusted target probs
-    """
-    sliced_target_indices = slice_along(target_indices, 1, limit=k)
-    sliced_target_probs = slice_along(target_probs, 1, limit=k)
-    last_target_probs = slice_along(target_probs, 1, limit=k+1, start=k)
-
-    adjusted_draft_probs = select_from(sliced_target_indices, draft_indices, draft_probs)
-    adjusted_target_probs = subtract(sliced_target_probs, adjusted_draft_probs)
-    adjusted_target_probs = clamp(adjusted_target_probs, minimum=0.0)
-    probs_sizes = adjusted_target_probs.sizes
-
-    adjusted_sum = reduce_sum(adjusted_target_probs, dim=2)
-    adjusted_sum = broadcast(adjusted_sum, probs_sizes, [0, 1])
-    adjusted_target_probs = divide(adjusted_target_probs, adjusted_sum)
-    adjusted_target_probs = concatenate([adjusted_target_probs, last_target_probs], 1)
-
-    return adjusted_target_probs
-
-def speculative_mask(
-    draft_ids,             # shape: (batch_size, k)
-    draft_probs_indices,   # shape: (batch_size, k, vocab_size_tp)
-    draft_probs,           # shape: (batch_size, k, vocab_size_tp)
-    target_probs_indices,  # shape: (batch_size, k, vocab_size_tp)
-    target_probs,          # shape: (btach_size, k, vocab_size_tp)
-    tp_degree=1,
-    deterministic_threshold=None,
-):
-    s32 = draft_ids.scribe.s32
-
-    batch_size, k, vocab_size = draft_probs.sizes
-
-    # Gather the target/draft probabilities corresponding to draft sampling predictions
-    target_probs_indices = cast(target_probs_indices, s32)
-    draft_probs_indices = cast(draft_probs_indices, s32)
-    target_probs = select_from(draft_ids, target_probs_indices, target_probs)
-    draft_probs = select_from(draft_ids, draft_probs_indices, draft_probs)
-
-    # Compare ratio of probabilities at locations to a random sample
-    ratio = divide(target_probs, draft_probs) # shape: (k, batch_size)
-    ratio = clamp(ratio, maximum=1.0)
-    ratio = cast(ratio, ratio.scribe.f32)
-    if deterministic_threshold:
-        random = full_like(ratio, deterministic_threshold)
-    else:
-        random = random_uniform(ratio.dtype, ratio.sizes)
-    accepted_mask = less(random, ratio) # shape: (k, batch_size)
-
-    # Mask out all tokens past the accepted token
-    accepted_mask = cast(accepted_mask, s32)
-    accepted_cumsum = cumsum(accepted_mask, dim=1)
-    positions = iota(s32, (batch_size, k), 1)
-    positions = add(positions, 1)
-    accepted_mask = equal(accepted_cumsum, positions) # shape: (k, batch_size)
-
-    # Compute index of *final* accepted token per batch line
-    accepted_mask = pad(accepted_mask, dim=1, size=1, value=False)
-
-    return accepted_mask # (batch_size, k + 1)
-
-
-def speculative_token_selection(
-        draft_ids,           # shape: (batch_size, k)
-        target_ids,          # shape: (batch_size, k+1)
-        draft_probs_indices,
-        draft_probs,         # shape: (batch_size, k+1, vocab_size_tp)
-        target_probs_indices,
-        target_probs,        # shape: (batch_size, k+1, vocab_size_tp)
-        tp_degree=1,
-        pad_token_id=0,
-        deterministic_threshold=None,
-        output_mask=False,
-    ):
-    """
-    A speculative token acceptor based on original DeepMind paper.
-
-    Reference: https://arxiv.org/pdf/2302.01318.pdf
-
-    Note that this function does not perform initial sampling and assumes that
-    both target/draft token generation has been performed prior to executing
-    this function.
-
-    Args:
-        draft_ids: The sampled draft model tokens.
-        target_ids: The sampled target model tokens.
-        draft_scores: The raw draft model logit output.
-        target_scores: The raw target model logits output.
-        tp_degree: The number of ranks to collect across.
-        deterministic_threshold: Flag that allows this value to be used as the token
-            acceptance threshold instead of a random uniform. This is used for
-            debug/testing.
-        output_mask: Flag that enables returning the token selection mask. This
-            is useful for downstream tasks such as retrieving the accepted
-            scores in a speculative loop.
-
-    Returns:
-        token: The accepted tokens (with 0-padding)
-        index: The last index accepted for each batch line.
-        mask: (optional) The token selection mask.
-    """
-    s32 = draft_ids.scribe.s32
-
-    accepted_mask = speculative_mask(
-        draft_ids,           # shape: (batch_size, k)
-        draft_probs_indices,
-        draft_probs,        # shape: (batch_size, k+1, vocab_size_tp)
-        target_probs_indices,
-        target_probs,       # shape: (batch_size, k+1, vocab_size_tp)
-        tp_degree=tp_degree,
-        deterministic_threshold=deterministic_threshold,
-    )
-
-    # Select the final tokens
-    # Note:
-    # - When all rejected: Mask will select target in all positions (position 0 required)
-    # - When all accepted: Mask will select draft in all positons but the last
-    draft_ids = pad(draft_ids, dim=1, size=1, value=0)
-    tokens = masked_select(accepted_mask, draft_ids, target_ids)
-
-    # Zero-out tokens beyond the used tokens
-    positions = iota(s32, tokens.sizes, 1)
-    index = reduce_sum(cast(accepted_mask, s32), dim=1)
-    mask = greater_equal(broadcast(index, tokens.sizes, [0]), positions)
-    tokens = masked_select(mask, tokens, pad_token_id)
-
-    if output_mask:
-        # Transpose back to SB -> BS layout
-        mask = transpose(mask, 0, 1)
-        return (
-            tokens, # shape: (batch_size, k + 1)
-            index,  # shape: (batch_size,)
-            mask,   # shape: (batch_size, k + 1)
-        )
-    return (
-        tokens,  # shape: (batch_size, k + 1)
-        index,   # shape: (batch_size,)
-    )
-
-
-def speculative_combine(
-    draft_ids,           # shape: (k, batch_size)
-    target_ids,          # shape: (1, batch_size)
-    accepted_mask,       # shape: (k + 1, batch_size)
-    pad_token_id=0,
-):
-    scribe = draft_ids.scribe
-    s32 = scribe.s32
-
-    # Pad the draft ids
-    draft_ids = pad(draft_ids, dim=0, size=1, value=0)
-
-    # Pad the target ids
-    target_ids = broadcast(target_ids, draft_ids.sizes, [0, 1])
-
-    # Select the correct ids according to the mask
-    tokens = masked_select(accepted_mask, draft_ids, target_ids)
-
-    # Zero-out tokens beyond the used tokens
-    index = reduce_sum(cast(accepted_mask, s32), dim=0)
-    positions = iota(s32, tokens.sizes, 0)
-    mask = greater_equal(broadcast(index, tokens.sizes, [1]), positions)
-    tokens = masked_select(mask, tokens, pad_token_id)
-
-    # Transpose back to SB -> BS layout
-    tokens = transpose(tokens, 0, 1)
-    return tokens, index
 
 
 def flip(tensor, dims):
