@@ -77,7 +77,6 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
         self.allow_pad = allow_pad
         self.use_executor = False
         self.return_ranks = -1
-        self.need_reorder_cache = False
         self.builder = builder
         self.check_gqa_fallback()
         self.token_tree = token_tree
@@ -261,9 +260,6 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
         base.NeuronModelBase.register_for_serialization(model_obj,decoder_lm_head)
         return decoder_lm_head
 
-    def setup_reorder_cache(self):
-        self.need_reorder_cache = True
-
     def enable_executor(self, return_ranks=-1):
         self.return_ranks = return_ranks
         self.program.enable_executor()
@@ -331,15 +327,6 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
 
     def finish_program_setup(self):
         self.program = self._build_program()
-        # setup_reorder_cache needs to be able to be called before compilation
-        # and after compilation for backwards compatability.
-        # If called before compilation this logic will be reached and it will
-        # create the HLO for reorder_cache now which can be deserialized or compiled normally.
-        # If called after, setup_reorder_cache will be called from the NeuronModelBase without
-        # serialization logic and will be compiled normally.
-        if self.need_reorder_cache:
-            self.program.setup_reorder_cache(also_compile_now=False)
-
         if self.neuron_config.shard_over_sequence:
             assert self.tp_degree%self.n_kv_head == 0, f"tp_degree {self.tp_degree} not divisble by n_kv_heads {self.n_kv_head} shard_over_sequence is not supported"
             self.kv_replication = self.tp_degree//self.n_kv_head
@@ -386,8 +373,6 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
 
     def setup(self):
         self.program.setup(self.layers, self.pre_layer_parameters, self.ln_lm_head_params)
-        if self.need_reorder_cache:
-            self.program.setup_reorder_cache_kernels()
         if self.use_executor:
             self.enable_executor()
 
@@ -1567,7 +1552,6 @@ class DecoderProgram:
         # self.n_positions_list = [read_n_position(hm, num_inputs) for hm in hlo_modules]
         self.n_active_tokens = read_n_active_tokens(first_hlo)
         self.tp_degree = tp_degree
-        self.need_reorder_cache = False
         self.tag = tag
         self._cpu_compile = on_cpu
         # Select manipulator based on device
@@ -1592,12 +1576,6 @@ class DecoderProgram:
         for (npos, bs), bufs in self.debug_output_buffers.items():
             filled_debug_buffers[npos,bs] = {name: self.manipulator.duplicate(buf) for name, buf in bufs.items()}
         self.debug_output_buffers = filled_debug_buffers
-
-    def setup_reorder_cache(self, also_compile_now=True):
-        self.need_reorder_cache = True
-        self.reorder_cache_hlo_kernels = [self._create_reoder_cache_kernel(batch_size) for batch_size in self.batch_sizes]
-        if also_compile_now:
-            self.setup_reorder_cache_kernels()
 
     def find_bucket_id(self, length):
         return next(idx for idx, npos in enumerate(self.n_positions_list) if npos >= length+1)
@@ -1692,56 +1670,6 @@ class DecoderProgram:
         for debug_tensor_name, buf in self.debug_output_buffers[npos,batch_size].items():
             output_tensors[self.debug_tensors[npos,batch_size][debug_tensor_name].metadata['output_index']] = buf
 
-    def _create_reoder_cache_kernel(self, batch_size):
-        # assume each layer have same size of cache
-        def _reorder_cache(scribe):
-            reorder_ids = scribe.s64[batch_size].Parameter(parameter_number=0)
-            caches = []
-            param_builder = DecoderParameterBuilder(scribe, 1)
-            for layer in self.layers:
-                for cache in layer.attn_k_cache[batch_size], layer.attn_v_cache[batch_size]:
-                    cache = param_builder.from_tensor(cache)
-                    caches.append(cache)
-            outputs = []
-            # TODO: concat -> reorder -> indexing?
-            # cache of shape [self.n_positions, self.batch_size, n_heads_kv_cache//self.tp_degree, self.attention_head_size]
-            # we want to reorder on batch dimension
-            for cache in caches:
-                new_cache = hlo.index_select(cache, 1, reorder_ids)
-                outputs.append(new_cache)
-            root_shapes = [tensor.dtype[tensor.sizes] for tensor in outputs]
-            return scribe.tuple(*root_shapes).Tuple(*outputs)
-
-        return compiler.HLOKernel(_reorder_cache, self.tp_degree)
-
-    def setup_reorder_cache_kernels(self):
-        for bs_idx, batch_size in  enumerate(self.batch_sizes):
-            reorder_cache_hlo_kernel = self.reorder_cache_hlo_kernels[bs_idx]
-            self._setup_reorder_cache_kernel(reorder_cache_hlo_kernel, batch_size)
-
-    def _setup_reorder_cache_kernel(self, reorder_cache_hlo_kernel, batch_size):
-        reorder_cache_hlo_kernel.build()
-        reorder_cache_hlo_kernel.load()
-        # setup memory buffer
-        reorder_ids = torch.zeros(self.layers[0].cache_shape[batch_size], dtype=torch.int64)
-        self.reorder_ids_buffers = reorder_cache_hlo_kernel.manipulator.duplicate(reorder_ids)
-        input_tensors = [self.reorder_ids_buffers]
-        output_tensors = []
-        for layer in self.layers:
-            for cache in layer.attn_k_cache[batch_size], layer.attn_v_cache[batch_size]:
-                input_tensors.append(cache)
-                output_tensors.append(cache) # aliasing
-        reorder_cache_hlo_kernel.setup(input_tensors, output_tensors)
-
-    def reorder_cache(self, reorder_ids):
-        assert self.need_reorder_cache, "DecoderProgram is not built with reorder_cache"
-        reorder_ids_tensor = torch.tensor(reorder_ids, dtype=torch.int64)
-        # TODO: if reorder_ids == range(batch_size), don't do anything
-        for bs_idx, batch_size in enumerate(self.batch_sizes):
-            reorder_ids_tensors_cpu = self.reorder_cache_hlo_kernels[bs_idx].manipulator.duplicate_on_cpu(reorder_ids_tensor)
-            ops.parallel_write(self.reorder_ids_buffers, reorder_ids_tensors_cpu)
-            self.reorder_cache_hlo_kernels[bs_idx].run()
-
     def get_kernels(self):
         all_kernels = list()
         for npos, batch_size in itertools.product(self.n_positions_list, self.batch_sizes):
@@ -1815,13 +1743,6 @@ class DecoderProgramFullyUnrolled(DecoderProgram):
         npos = self.n_positions_list[bucket_id]
         return self.executors[npos,batch_size](inputs, return_ranks)
 
-    def get_kernels(self):
-        all_kernels = super().get_kernels()
-        # only true when reorder_cache called before to_neuron
-        if self.need_reorder_cache:
-            for hlo_kernel in self.reorder_cache_hlo_kernels:
-                all_kernels.append(hlo_kernel.kernel)
-        return all_kernels
 
 class DecoderProgramMultiLayer(DecoderProgram):
 
@@ -1956,10 +1877,6 @@ class DecoderProgramMultiLayer(DecoderProgram):
         if self.neuron_config.is_valid_lm_head():
             for kernel in self.ln_lm_head_kernels:
                 all_kernels.append(kernel)
-        # only true when reorder_cache called before to_neuron
-        if self.need_reorder_cache:
-            for hlo_kernel in self.reorder_cache_hlo_kernels:
-                all_kernels.append(hlo_kernel.kernel)
         if self.neuron_config.on_device_embedding:
             for kernel in self.ode_kernels:
                 all_kernels.append(kernel)

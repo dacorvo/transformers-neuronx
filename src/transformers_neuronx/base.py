@@ -131,15 +131,6 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
             pass
         return False
 
-    def reorder_cache(self, reorder_ids):
-        self.decoder_lm_head.program.reorder_cache(reorder_ids)
-
-    def setup_reorder_cache(self):
-        if self.decoder_lm_head.program is not None: # called after to_neuron
-            self.decoder_lm_head.program.setup_reorder_cache()
-        else:
-            self.decoder_lm_head.need_reorder_cache = True
-
     def _save_compiled_artifacts(self, directory):
         if os.path.isfile(directory):
             raise FileExistsError(
