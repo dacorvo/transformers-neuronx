@@ -14,9 +14,6 @@
 # ==============================================================================
 import enum
 
-# Tile size used for the weight transformation
-TILE_SIZE = 128
-
 # Size used to determine fused QKV operation.
 FUSED_QKV_TP_FACTOR = 3
 
@@ -30,12 +27,6 @@ TRN1_WORLD_SIZE = 32
 LAYOUT_BSH = 'BSH'
 LAYOUT_HSB = 'HSB'
 LAYOUT_SBH = 'SBH'
-
-
-# fp8 bounds
-class FpBounds:
-    min = -240.0
-    max = 240.0
 
 
 class Layout(enum.Enum):

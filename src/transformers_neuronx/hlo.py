@@ -23,7 +23,6 @@ from transformers_neuronx import activations
 from transformers_neuronx.constants import LAYOUT_BSH
 from transformers_neuronx import utils
 from transformers_neuronx import compiler
-from transformers_neuronx import constants
 from transformers_neuronx import dtypes
 from transformers_neuronx.nki.compile import nki_call
 
@@ -125,70 +124,6 @@ def layer_norm_bsh(hidden, weight, bias, neuron_config=None, tp_degree=None):
         return all_gather(output, 0, tp_degree, replica_groups=None)
 
     return output
-
-
-def group_norm(hidden, weight, bias, num_groups=1, neuron_config=None, tp_degree=None):
-    """
-    Perform GroupNorm on input with shape (H, S, B).
-    """
-    dtype = hidden.dtype
-    scribe = hidden.scribe
-    f32 = scribe.f32
-
-    hidden_size, n_active_tokens, batch_size = input_sizes = hidden.sizes
-
-    if hidden_size % num_groups!= 0:
-        raise ValueError(f'Hidden dim {hidden_size} must be divisible by num_groups {num_groups}')
-
-    # Permute HSB->BSH
-    hidden = permute(hidden, [2, 1, 0])
-    # Reshape hidden to (B, S, g, H // g)
-    group_size = hidden_size // num_groups
-    bsh_unpack_sizes = batch_size, n_active_tokens, num_groups, group_size
-    hidden = reshape(hidden, bsh_unpack_sizes)
-    # Reshape to (B*S*g, H//g)
-    norm_size = batch_size * n_active_tokens * num_groups
-    sizes = norm_size, group_size
-    hidden = reshape(hidden, sizes)
-    hidden = cast(hidden, f32)
-
-    # Batchnorm
-    bn_tuple = batch_norm(hidden, feature_index=0)
-    bn_output = get_tuple_element(bn_tuple, tuple_index=0)
-
-    # Reshape back to (B, S, g, H // g)
-    bn_output = reshape(bn_output, bsh_unpack_sizes)
-    # Reshape to BSH
-    bsh_shape = batch_size, n_active_tokens, hidden_size
-    bn_output = reshape(bn_output, bsh_shape)
-    # Permute back to HSB
-    bn_output = permute(bn_output, [2, 1, 0])
-
-    # Apply weight and bias
-    weight_br = broadcast(weight, input_sizes, broadcast_dimensions=[0])
-    output = multiply(bn_output, weight_br)
-    bias_br = broadcast(bias, input_sizes, broadcast_dimensions=[0])
-    output = add(output, bias_br)
-    output = cast(output, dtype)
-
-    if neuron_config and neuron_config.is_sequence_parallel:
-        return all_gather(output, 1, tp_degree, replica_groups=None)
-
-    return output
-
-
-def group_norm_shb(hidden, weight, bias, num_groups):
-    """
-    Perform GroupNorm on input with shape (S, H, B).
-    """
-    raise NotImplementedError("SHB GroupNorm is not currently implemented, use HSB")
-
-
-def group_norm_bsh(hidden, weight, bias, num_groups):
-    """
-    Perform GroupNorm on input with shape (B, S, H).
-    """
-    raise NotImplementedError("BSH GroupNorm is not currently implemented, use HSB")
 
 
 def rms_norm_legacy(hidden, weight, eps=1e-6, dim=2, neuron_config=None, tp_degree=None):
@@ -318,11 +253,6 @@ def dot01(lhs, rhs):
     return dtype[lhs_size, rhs_size].Dot(lhs, rhs, dot_dimension_numbers=dot_dims)
 
 
-def canonicalize_lhs_rhs_dtype(lhs, rhs, neuron_config):
-    dtype = lhs.dtype
-    return lhs, rhs, dtype
-
-
 def dot_add(
     lhs: 'HloShape', # noqa F821
     rhs: 'HloShape', # noqa F821
@@ -444,16 +374,6 @@ def gen_assign_func(dtype):
     return assign_func
 
 
-def gen_max_func(dtype):
-
-    def max_func(scribe):
-        p0 = dtype.Parameter(parameter_number=0)
-        p1 = dtype.Parameter(parameter_number=1)
-        return dtype.Maximum(p0, p1)
-
-    return max_func
-
-
 def get_activation(activation_function: Union[str, Callable]) -> Callable:
     """
     Returns an activation function if it's a callable. Otherwise returns
@@ -522,41 +442,6 @@ def mlp(hidden, in_weight, in_bias, out_weight, out_bias,
 
     # Transpose back to HSB if applicable
     return permute(hidden, (2, 1, 0)) if is_bsh else hidden
-
-
-def mlp_bsh(hidden, in_weight, in_bias, out_weight, out_bias,
-            activation_function, tp_degree,
-            neuron_config=None, transposed=False,
-):
-    # single:
-    #   hidden: [b, a, h]
-    #   in_weight: [h, 4h]
-    #   in_bias: [4h]
-    #   out_weight: [4h, h]
-    #   out_bias: [h]
-    # t-way tp:
-    #   hidden: [b, a, h]
-    #   in_weight: [h, 4h/t]
-    #   in_bias: [4h/t]
-    #   out_weight: [4h/t, h]
-    #   out_bias: [h]
-    dtype = hidden.dtype
-    batch_size, n_active_tokens, hidden_size = hidden_sizes = hidden.sizes
-    hidden_r_sizes = batch_size * n_active_tokens, hidden_size
-    hidden = reshape(hidden, hidden_r_sizes)
-
-    hidden = dot10_add1(hidden, in_weight, in_bias)
-    hidden = get_activation(activation_function)(hidden)
-    hidden = dot10_add1(hidden, out_weight, out_bias)
-    hidden = reshape(hidden, hidden_sizes)
-
-    dtype, replica_groups = utils.parse_dtype_replica_groups(neuron_config, tp_degree)
-    if neuron_config is not None and neuron_config.is_sequence_parallel:
-        hidden = reduce_scatter_sum(hidden, tp_degree=tp_degree, dim=1, replica_groups=replica_groups, dtype=dtype)
-    else:
-        hidden = all_reduce_sum(hidden, tp_degree, dtype=dtype, replica_groups=replica_groups)
-
-    return hidden
 
 
 def gated_mlp_bsh(
@@ -694,16 +579,6 @@ def gated_mlp(
 
     # Transpose back to HSB if applicable
     return permute(result, (2, 1, 0)) if is_bsh else result
-
-
-def softmax_new(logits, dim=None):
-    rank = len(logits.sizes)
-    if dim is None:
-        dim = rank - 1
-    shape = logits.sizes
-    dtype = logits.dtype
-    backend_config = str(dim).encode()
-    return dtype[shape].CustomCall(logits, custom_call_target="AwsNeuronSoftmax", backend_config=backend_config,)
 
 
 def softmax(logits, dim=None, tp_degree=1):
@@ -844,83 +719,6 @@ def decoder_attention_mask(start_ids, position_ids, n_positions, triu_comparison
     position_ids_br = int_dtype[sizes].Broadcast(position_ids, dimensions=[1])
     active_mask = pred[sizes].Compare(position_ids_br, start_ids_br, comparison_direction='GE')
     return mask, active_mask
-
-class ParameterBuilder:
-
-    def __init__(self, dtype):
-        self.dtype = dtype
-        self.parameter_number = 0
-
-    def __call__(self, shape, dtype=None):
-        if dtype is None:
-            dtype = self.dtype
-        param = dtype[tuple(shape)].Parameter(parameter_number=self.parameter_number)
-        self.parameter_number += 1
-        return param
-
-
-def decoder_attention_mask_legacy(position_ids, dtype, n_positions):
-    n_active_tokens, = position_ids.sizes
-    sizes = n_active_tokens, n_positions
-    int_dtype = position_ids.dtype
-    pred = position_ids.scribe.pred
-    iota0 = int_dtype[sizes].Iota(dimensions=[0])
-    iota1 = int_dtype[sizes].Iota(dimensions=[1])
-    triu = pred[sizes].Compare(iota0, iota1, comparison_direction='GE')
-    triu = dtype[sizes].Convert(triu)
-    position_ids = int_dtype[sizes].Broadcast(position_ids, dimensions=[0])
-    mask = pred[sizes].Compare(iota1, position_ids, comparison_direction='LE')
-    mask = dtype[sizes].Convert(mask)
-    return dtype[sizes].Multiply(mask, triu)
-
-
-def legalize_cache_ids(cache_ids):
-    """
-    Updates cache ids with valid indices and returns the final non-padding
-    position.
-
-    This function allows the `cache_id` tensor to be 0 padded without
-    updating incorrect cache lines. This does so by inserting linear ids
-    into the pad values. This also computes the last non-padding cache
-    id position so that the index can be used during hidden state selection.
-
-    This function assumes that the non-padded portion of the `cache_ids` input
-    begins at tensor position 0 and is linearly increasing.
-
-    Examples:
-
-    | Scenario                 | input          | cache_ids        | index |
-    |--------------------------|----------------|------------------|-------|
-    | Padded Prompt Encoding   | [14, 15, 0, 0] | [14, 15, 16, 17] | 1     |
-    | Unpadded Prompt Encoding | [5, 6, 7]      | [5, 6, 7]        | 2     |
-    | Token Generation         | [29]           | [29]             | 0     |
-
-    Arguments:
-        cache_ids: The cache ids to update the cache for (may be padded)
-
-    Returns:
-        cache_ids: The original cache_ids with padding removed
-        index: The index of the maximum valid cache id
-    """
-    dtype = cache_ids.dtype
-    sizes = cache_ids.sizes
-
-    # During token generation, do not compute the end index
-    if sizes[0] == 1:
-        return cache_ids, dtype.Constant(constant_value=0)
-
-    value = reduce_max(cache_ids, 0)
-    index = argmax(cache_ids, 0)
-    index = cast(index, dtype)
-
-    positions = dtype[sizes].Iota(dimensions=[0])
-    value_br = dtype[sizes].Broadcast(value, dimensions=[])
-    index_br = dtype[sizes].Broadcast(index, dimensions=[])
-
-    offset = dtype[sizes].Subtract(positions, index_br)
-    cache_ids = dtype[sizes].Add(value_br, offset)
-
-    return cache_ids, index
 
 
 def dtype_minimum(dtype):
@@ -1121,184 +919,6 @@ def unsqueeze(tensor, dim):
     return dtype[size].Reshape(tensor)
 
 
-def gather_select_reduce(tensor, dim, index):
-    """
-    Gather elements from a `tensor` along `dim` at the given `index`
-    using select and reduce op.
-    """
-    assert dim <= len(tensor.sizes)
-
-    # Must have the same rank
-    tensor_sizes = list(tensor.sizes)
-    index_sizes = list(index.sizes)
-    assert len(tensor_sizes) == len(index_sizes)
-
-    index_broadcast_dims = list()
-    input_broadcast_dims = list()
-    sizes = list()
-
-    for i in range(0, len(index_sizes)):
-        if i < dim:
-            input_broadcast_dims.append(i)
-            index_broadcast_dims.append(i)
-        elif i == dim:
-            sizes.append(tensor_sizes[i])
-            input_broadcast_dims.append(i)
-            index_broadcast_dims.append(i + 1)
-        else:
-            input_broadcast_dims.append(i + 1)
-            index_broadcast_dims.append(i + 1)
-        sizes.append(index_sizes[i])
-
-    cast_index = broadcast(index, sizes, index_broadcast_dims)
-    ref_iota = iota(index.dtype, sizes, dim)
-    mask = equal(cast_index, ref_iota)
-
-    cast_input = broadcast(tensor, sizes, input_broadcast_dims)
-    zero_full = full(0, cast_input.dtype, cast_input.sizes)
-    masked_input = cast_input.dtype[cast_input.sizes].Select(mask, cast_input, zero_full)
-
-    def reducer(scribe):
-        p0 = dtype.Parameter(parameter_number=0)
-        p1 = dtype.Parameter(parameter_number=1)
-        return dtype.Add(p0, p1)
-
-    dtype = masked_input.dtype
-    zero = dtype.Constant(constant_value=0)
-    result = dtype[tensor_sizes].Reduce(masked_input, zero, dimensions=[dim], to_apply=reducer)
-    return result
-
-
-def gather(tensor, dim, index):
-    """
-    Gather elements from a `tensor` along `dim` at the given `index`
-
-    Provides similar functionality to `torch.gather`. The `tensor` and `index`
-    tensors must have the same rank.
-    """
-    assert dim <= len(tensor.sizes)
-
-    # Must have the same rank
-    tensor_sizes = list(tensor.sizes)
-    index_sizes = list(index.sizes)
-    assert len(tensor_sizes) == len(index_sizes)
-
-    # Must have same dimensions in non-`dim` dimension
-    tensor_sizes.pop(dim)
-    index_sizes.pop(dim)
-    assert tensor_sizes == index_sizes
-
-    dims = len(tensor.sizes)
-    final_size = index.sizes
-
-    # Usqueeze the index to concatenate with linear indices
-    index = unsqueeze(index, -1)
-
-    index_size = index.sizes
-    dtype = tensor.dtype
-
-    # Build linear indexers for non-`dim` dimensions
-    indices = list()
-    for i in range(dims):
-        if i == dim:
-            indices.append(index)
-        else:
-            indices.append(index.dtype[index_size].Iota(dimensions=[i]))
-
-    # Concatenate indices into a single dense indexing tensor
-    concat_size = list(index_size)
-    concat_size[-1] = dims
-    index = index.dtype[concat_size].Concatenate(*indices, dimensions=[dims])
-
-    # Gather using dense index
-    result = dtype[final_size].Gather(
-        tensor,
-        index,
-        gather_dimension_numbers=dict(
-            collapsed_slice_dims=list(range(dims)),
-            start_index_map=list(range(dims)),
-            index_vector_dim=dims,
-        ),
-        gather_slice_sizes=[1] * dims,
-    )
-
-    return result
-
-
-def _argmax(tensor, dim, keepdim=False, return_values=False):
-    """
-    Performs argmax on a single partition
-    """
-    backend_config = str(dim).encode()
-
-    scribe = tensor.scribe
-    u32 = scribe.u32
-    reduce_shape = list(tensor.sizes)
-    reduce_shape.pop(dim)
-
-    index = u32[reduce_shape].CustomCall(
-        tensor, custom_call_target='AwsNeuronArgMax', backend_config=backend_config,
-    )
-
-    if keepdim:
-        keepdim_shape = list(tensor.sizes)
-        keepdim_shape[dim] = 1
-        index = reshape(index, keepdim_shape)
-        index = cast(index, u32)
-
-    if return_values:
-        return reduce_max(tensor, dim, keepdim), index
-    return index
-
-
-def argmax(tensor, dim, keepdim=False, return_values=False, tp_degree=1):
-
-    if tp_degree == 1:
-        return _argmax(tensor, dim, keepdim, return_values=return_values)
-
-    # Initially reduce on each replica for replica-local result
-    index = _argmax(tensor, dim, keepdim=True)
-    value = reduce_max(tensor, dim, keepdim=True)
-
-    # Synchronize replica-local results across all replicas (Much smaller after argmax)
-    index = all_gather(index, dim, tp_degree)
-    value = all_gather(value, dim, tp_degree)
-
-    dtype = index.dtype
-    sizes = index.sizes
-
-    # Fix concatenated replica-local indices. Offset by (replica_id * replica_size)
-    replica_size = dtype.Constant(constant_value=tensor.sizes[dim])
-    replica_size = broadcast(replica_size, sizes, [])
-    replica_ids = iota(dtype, sizes, dim)
-    offset = multiply(replica_ids, replica_size)
-    index = add(index, offset)
-
-    # Find replica with globally maximum value
-    replica_index = _argmax(value, dim, keepdim=True)
-
-    # Final masked reduction
-    dimensions = list(range(len(replica_index.sizes) + 1))
-    dimensions.pop(dim)
-
-    rs_size = list(replica_index.sizes)
-    rs_size[dim] *= tp_degree
-    br_size = list(replica_index.sizes)
-    br_size.insert(dim, tp_degree)
-    replica_index = broadcast(replica_index, br_size, dimensions)
-    replica_index = reshape(replica_index, rs_size)
-
-    mask = compare(replica_index, replica_ids, direction='EQ')
-    mask_index = cast(mask, index.dtype)
-    masked = multiply(index, mask_index)
-    index = reduce_sum(masked, dim=dim, keepdim=keepdim)
-
-    if return_values:
-        value = reduce_max(value, dim=dim, keepdim=keepdim)
-        return value, index
-    return index
-
-
 def _embedding(weight, index, dtype=None):
     """
     Performs embedding on a single partition
@@ -1354,7 +974,7 @@ def embedding(weight, index, tp_degree=1, dim=1, dtype=None, core_id=None, seque
       vocabulary tokens but only a portion of the embedding. This uses
       AllGather to combine results with concatenation.
     """
-    partition_size, embed_size = weight.sizes
+    partition_size, _ = weight.sizes
 
     # Use (index % partition_size) with partitioned vocabulary
     offset = index
@@ -1423,26 +1043,6 @@ def embedding(weight, index, tp_degree=1, dim=1, dtype=None, core_id=None, seque
     )
 
 
-def cache_broadcast(n_positions, from_batch_size, to_batch_size, n_heads_tp, d_head, amp, n_layer):
-    if to_batch_size % from_batch_size:
-        raise ValueError(f'to_batch_size={to_batch_size} is not multiples of from_batch_size={from_batch_size}')
-
-    def cache_broadcast_impl(scribe):
-        dtype = getattr(scribe, amp)
-        sizes = n_positions, from_batch_size, n_heads_tp, d_head
-        sources = [dtype[sizes].Parameter(parameter_number=pn) for pn in range(n_layer * 2)]
-        num_repeat = to_batch_size // from_batch_size
-        outputs = []
-        for source in sources:
-            operands = [source for _ in range(num_repeat)]
-            sizes = n_positions, to_batch_size, n_heads_tp, d_head
-            outputs.append(dtype[sizes].Concatenate(*operands, dimensions=[1]))
-        root_shapes = [shape.dtype[shape.sizes] for shape in outputs]
-        return scribe.tuple(*root_shapes).Tuple(*outputs)
-
-    return cache_broadcast_impl
-
-
 def concatenate(operands, dimension):
     # Concatenates a sequence of arrays along dimension.
     dtype = operands[0].dtype
@@ -1491,68 +1091,6 @@ def reduce_mean(tensor, dims, keepdim=False):
         value = dtype[keepdim_shape].Reshape(value)
 
     return value
-
-
-def all_reduce_mean(tensor, tp_degree, dtype=None, replica_groups=None):
-    """
-    Calculate the "global" mean for elements in a group where each group's
-    global_mean = (intermediate_mean0 + intermediate_mean1 + ...) / group_size for intermediate_meani in each group
-
-    Example 1:
-
-        tp_degree = 2
-        replica_groups = [[0, 1]]
-        sharding=(0,)
-        inputs = torch.tensor([
-            [1, 2, 3],  # Rank 0
-            [5, 6, 7],  # Rank 1
-        ])
-        all_reduce_mean on NC 0 = torch.tensor([
-            [3, 4, 5]
-        ])
-
-    Example 2:
-
-        tp_degree = 2
-        replica_groups = [[0], [1]]
-        sharding=(0,)
-        inputs = torch.tensor([
-            [1, 2, 3],  # Rank 0
-            [5, 6, 7],  # Rank 1
-        ])
-        all_reduce_mean on NC 0 = torch.tensor([
-            [1, 2, 3]
-        ])
-    """
-
-    if tp_degree == 1:
-        return tensor
-
-    scribe = tensor.scribe
-    size = tensor.sizes
-
-    if dtype is None:
-        all_reduce_dtype = tensor.dtype
-    elif isinstance(dtype, str):
-        all_reduce_dtype = dtypes.to_pyhlo_type(scribe, dtype)
-    else:
-        all_reduce_dtype = dtype
-
-    if replica_groups is None:
-        replica_groups = [list(range(tp_degree))]
-
-    group_size = len(replica_groups[0])
-    assert all(
-        len(group) == group_size for group in replica_groups
-    ), "All groups must have the same size"
-
-    mean_sum = all_reduce_sum(
-        tensor, tp_degree, dtype=all_reduce_dtype, replica_groups=replica_groups
-    )
-    divisor = full(group_size, all_reduce_dtype, size)
-    global_mean = divide(mean_sum, divisor)
-
-    return global_mean
 
 
 def cumsum(tensor, dim):
@@ -1632,42 +1170,6 @@ def _cumsum_fast(tensor, dim):
     return result
 
 
-def _cumsum_reduce_window(tensor, dim):
-    # PERF: Scales poorly with large tensors
-
-    dtype = tensor.dtype
-
-    init = dtype.Constant(constant_value=0)
-
-    def reducer(scribe):
-        p0 = dtype.Parameter(parameter_number=0)
-        p1 = dtype.Parameter(parameter_number=1)
-        return dtype.Add(p0, p1)
-
-    sizes = [1] * len(tensor.sizes)
-    pads = [0] * len(tensor.sizes)
-    sizes[dim] = tensor.sizes[dim]
-    pads[dim] = tensor.sizes[dim] - 1
-
-    return dtype[tensor.sizes].ReduceWindow(
-        tensor,
-        init,
-        to_apply=reducer,
-        window=dict(
-            dimensions=[
-                dict(
-                    size=size,
-                    stride=1,
-                    padding_low=pad,
-                    window_dilation=1,
-                    base_dilation=1,
-                )
-                for (size, pad) in zip(sizes, pads)
-            ],
-        ),
-    )
-
-
 def cast(value, dtype):
     if value.dtype != dtype:
         return dtype[value.sizes].Convert(value)
@@ -1732,26 +1234,6 @@ def dynamic_slice_along(tensor, dim, start, size):
     )
 
 
-def dynamic_update_slice(tensor, update, start_indices):
-
-    assert len(tensor.sizes) == len(update.sizes), (
-        f"Parameter tensor and update must have same dim, get {len(tensor.sizes)} and {len(update.sizes)}"
-    )
-
-    assert len(start_indices) == len(tensor.sizes), (
-        f"Parameter tensor and start_indices must have same dims, get {len(start_indices)} and {tensor.sizes}"
-    )
-
-    assert isinstance(start_indices, list), (
-        f"Parameter 'start_indices' must be an list. Found type={type(start_indices)}"
-    )
-
-    if isinstance(start_indices[0], int):
-        start_indices = [tensor.scribe.u32.Constant(constant_value=i) for i in start_indices]
-
-    return tensor.dtype[tensor.sizes].DynamicUpdateSlice(tensor, update, *start_indices)
-
-
 def pad(tensor, dim, size, value=0):
     rank = len(tensor.sizes)
     dtype = tensor.dtype
@@ -1782,44 +1264,6 @@ def permute(tensor, dimensions):
     return tensor.dtype[permuted_size].Transpose(tensor, dimensions=dimensions)
 
 
-def _topk(tensor, k):
-    """
-    Performs top-k on a single partition on the last dimension
-    """
-    scribe = tensor.scribe
-    u32 = scribe.u32
-    dtype = tensor.dtype
-
-    sizes = list(tensor.sizes)
-    sizes[-1] = k
-
-    assert k <= tensor.sizes[-1], f'Cannot perform topk when k ({k}) is larger than the tensor size ({tensor.sizes[-1]})'
-
-    # Compiler requirement: Ensure input top-k dim is a factor of 8
-    size = tensor.sizes[-1]
-    padded_size = utils.round_up_to_divisor(size, 8)
-    if padded_size != size:
-        padding = padded_size - size
-        tensor = pad(tensor, -1, padding, value=dtype_minimum(tensor.dtype))
-
-    results = scribe.tuple(dtype[sizes], u32.dtype[sizes]).CustomCall(
-        tensor,
-        custom_call_target='AwsNeuronTopK',
-        backend_config=str(k).encode(),
-    )
-
-    value = get_tuple_element(results, tuple_index=0)
-    index = get_tuple_element(results, tuple_index=1)
-
-    return value, index
-
-
-def full_like(tensor, value):
-    dtype = tensor.dtype
-    size = tensor.sizes
-    return full(value, dtype, size)
-
-
 def all_reduce_max(tensor, tp_degree=1, dtype=None, replica_groups=None):
     if tp_degree == 1:
         return tensor
@@ -1848,378 +1292,6 @@ def all_reduce_max(tensor, tp_degree=1, dtype=None, replica_groups=None):
         to_apply=reducer,
         dtype=all_reduce_dtype
     )
-
-
-def all_reduce_max_with_indices(tensor, index, tp_degree=1, dtype=None, replica_groups=None):
-    """
-    Select the maximum value and its associated index across ranks.
-
-    NOTE: This does NOT automatically correct the index tensor to be globally
-          valid. This must be done in the calling code since we do not know
-          which dimension the index refers to here.
-    """
-    size = tensor.sizes
-    scribe = tensor.scribe
-    pred = scribe.pred
-
-    assert tensor.sizes == index.sizes
-
-    # Find maximum value across ranks
-    maximum = all_reduce_max(tensor, tp_degree, dtype=dtype, replica_groups=replica_groups)
-
-    # Zero out all rank-local indices which do not correspond global maximum
-    mask = pred[size].Compare(tensor, maximum, comparison_direction='EQ')
-    zero = full_like(tensor, 0)
-    index = index.dtype[index.sizes].Select(mask, index, zero)
-
-    # Reduce masked indices from across ranks (Note: Max instead of sum due to potential duplicate values)
-    index = all_reduce_max(index, tp_degree, dtype=dtype, replica_groups=replica_groups)
-
-    return maximum, index
-
-
-def topk(tensor, dim, k=50, tp_degree=1):
-    """
-    Get the top-k values and indices along a dimension.
-
-    When using a `tp_degree > 1`, this function assumes that the sharding
-    dimension is the same as the reduction dimension. In this mode, the
-    returned index is transformed into a global index by adding an offset
-    of `tensor.sizes[dim] * rank_id`.
-
-    Implementation Notes:
-    - The `k` value may not be larger than tensor.shape[dim]. The dimension
-      size may be smaller than anticipated with large tensor parallel degrees.
-    - The Top-k custom call may only be invoked on the final dimension.
-    - The input `tensor` size along dimension `dim` must be a multiple of 8.
-
-    Arguments:
-        tensor: The values to select the top-k from.
-        dim: The dimension along which to select the values from.
-        k: The number of values to select.
-        tp_degree: The number of ranks to collect across.
-
-    Returns:
-        value: The top-k values in the tensor.
-        index: The indices of the top-k values in the tensor.
-    """
-
-    if not isinstance(k, int) or (k < 1):
-        raise ValueError(f"`k` has to be a positive integer, but is {k}")
-
-    if k == 1:
-        return argmax(tensor, dim, return_values=True, keepdim=True, tp_degree=tp_degree)
-
-    rank = len(tensor.sizes)
-    if dim < 0:
-        dim %= rank
-
-    original = None
-    if dim != rank - 1:
-        original = dim
-        dim = rank - 1
-
-    # Helper function to reformat outputs
-    def output(value, index):
-        if original is not None:
-            value = transpose(value, dim, original)
-            index = transpose(index, dim, original)
-        return value, index
-
-    # Compiler may only perform top-k on the last dimension
-    if original is not None:
-        tensor = transpose(tensor, dim, original)
-
-    # Heuristic: When tensor sizes are small, gather first
-    if k > tensor.sizes[dim] and tp_degree > 1:
-        tensor = all_gather(tensor, dim=dim, tp_degree=tp_degree)
-        tp_degree = 1
-
-    # Initial reduction to find rank-local top-k
-    value, index = _topk(tensor, k)
-
-    # Early exit if not doing a tensor parallel computation
-    if tp_degree == 1:
-        return output(value, index)
-
-    # Combine initial reduction from all ranks
-    value = all_gather(value, dim=dim, tp_degree=tp_degree)
-    index = all_gather(index, dim=dim, tp_degree=tp_degree)
-
-    # Add shard size offset to rank-local index to make it global
-    dtype = index.dtype
-    sizes = list(index.sizes)
-    assert sizes[dim] == tp_degree * k, (
-        f"Expected input dimension {dim} to be size {tp_degree * k} but found {sizes[dim]} (shape={sizes})"
-    )
-    sizes.insert(dim + 1, k)
-    sizes[dim] = tp_degree
-    rank_id = iota(dtype, sizes, dim)
-    rank_id = reshape(rank_id, index.sizes)
-    shard_size = full(tensor.sizes[dim], dtype, index.sizes)
-    offset = multiply(rank_id, shard_size)
-    offset = cast(offset, dtype)
-    index = add(index, offset)
-
-    # Final global reduction to find true top-k values
-    value, replica_index = _topk(value, k)
-
-    # Gather global index from the initial offset rank-local index
-    index = gather(index, dim, replica_index)
-    return output(value, index)
-
-
-def topk_masked(tensor, dim, k=50, tp_degree=1, indices=None):
-    """
-    Get the top-k values and indices along a dimension. All other values
-    in the tensor are "masked out" and set to -30000.
-
-    When using a `tp_degree > 1`, this function assumes that the sharding
-    dimension is the same as the reduction dimension. In this mode, the
-    returned index is transformed into a global index by adding an offset
-    of `tensor.sizes[dim] * rank_id`.
-
-    Arguments:
-        tensor: The values to select the top-k from.
-        dim: The dimension along which to select the values from.
-        k: The number of values to select.
-        tp_degree: The number of ranks to collect across.
-        indices: Optional indices of the pre-sorted tensor in descending order.
-            If `indices` is provided it is assumed `tensor` is also sorted
-            in descending order.
-
-    Returns:
-        value: The top-k values in the tensor.
-        index: The indices of the top-k values in the tensor.
-        indices: Indices of the pre-sorted tensor in descending order.
-    """
-    scribe = tensor.scribe
-    s32 = scribe.s32
-
-    k_is_hlo_scalar = _is_hlo_scalar(k)
-
-    if not k_is_hlo_scalar:
-        if not isinstance(k, int) or (k < 1):
-            raise ValueError(f"`k` has to be a positive integer, but is {k}")
-    else:
-        converter = compiler.DataTypeConverter()
-        k_torch_dtype = converter.hlo2torch(k.dtype.shape_proto.element_type)
-        assert k_torch_dtype in [
-            torch.int32,
-            torch.int64,
-        ], f"Expected `k` to be an integer, but `k` is {k_torch_dtype}"
-        k = cast(k, tensor.dtype)
-
-    if indices is None:
-        if tp_degree > 1:
-            tensor = all_gather(tensor, dim=dim, tp_degree=tp_degree)
-        tensor, indices = sort_with_indices(tensor, dim=dim, descending=True)
-
-    indices_dtype = indices.dtype
-    indices = cast(indices, s32) # Cast to signed int32 to avoid creating a uint -30000 value
-
-    positions = iota(tensor.dtype, tensor.sizes, dims=dim)
-    keep_mask = less(positions, k)
-    value = masked_select(keep_mask, tensor, -30000)
-    index = masked_select(keep_mask, indices, -30000)
-
-    indices = cast(indices, indices_dtype)
-
-    return value, index, indices
-
-
-def topp(tensor, top_p=1.0, top_p_min_tokens=1, tp_degree=1, indices=None, dim=0):
-    """
-    Get the smallest set of tensor values that add up to top_p or higher
-    along a specified dimension.
-
-    Arguments:
-        tensor: The values to select the top-p from.
-        top_p: The cumulative sum of values.
-        top_p_min_tokens: The minimum number of tokens that cannot be filtered.
-        tp_degree: The number of ranks to collect across.
-        indices: Optional indices of the pre-sorted tensor in descending order.
-            If `indices` is provided it is assumed `tensor` is also sorted
-            in descending order.
-        dim: The dimension along which to select the values from.
-
-    Returns:
-        probs: The top-p values in the tensor.
-        indices: Indices of the pre-sorted tensor in descending order.
-    """
-
-    p_is_hlo_scalar = _is_hlo_scalar(top_p)
-    top_p_min_tokens_is_hlo_scalar = _is_hlo_scalar(top_p_min_tokens)
-    converter = compiler.DataTypeConverter()
-
-    if not p_is_hlo_scalar:
-        if top_p < 0 or top_p > 1.0:
-            raise ValueError(f"`top_p` has to be a float > 0 and <= 1, but is {top_p}")
-        top_p = tensor.dtype.Constant(constant_value=top_p)
-    else:
-        top_p_torch_dtype = converter.hlo2torch(top_p.dtype.shape_proto.element_type)
-        assert top_p_torch_dtype == torch.float32, (
-            f"Expected `top_p` to be a float, but `top_p` is {top_p_torch_dtype}."
-        )
-        top_p = cast(top_p, tensor.dtype)
-
-    if not top_p_min_tokens_is_hlo_scalar:
-        if not isinstance(top_p_min_tokens, int) or (top_p_min_tokens < 1):
-            raise ValueError(
-                f"`top_p_min_tokens` has to be a positive integer, but is {top_p_min_tokens}"
-            )
-        top_p_min_tokens = tensor.dtype.Constant(constant_value=top_p_min_tokens)
-    else:
-        top_p_min_tokens_torch_dtype = converter.hlo2torch(
-            top_p_min_tokens.dtype.shape_proto.element_type
-        )
-        assert top_p_min_tokens_torch_dtype in [torch.int32, torch.int64], (
-            "Expected `top_p_min_tokens` to be an integer,"
-            f"but `top_p_min_tokens` is {top_p_min_tokens_torch_dtype}"
-        )
-        top_p_min_tokens = cast(top_p_min_tokens, tensor.dtype)
-
-    scribe = tensor.scribe
-    s32 = scribe.s32
-
-    if indices is None:
-        if tp_degree > 1:
-            tensor = all_gather(tensor, dim=dim, tp_degree=tp_degree)
-        tensor, indices = sort_with_indices(tensor, dim=dim, descending=True)
-
-    # Probability mask - Keep only the positions whose cumulative
-    #   probability is less than the user-provided threshold. This removes
-    #   the long tail of small probababilitiess.
-    probs = softmax(tensor, dim=dim)
-    cumulative_prob = cumsum(probs, dim=dim)
-
-    # This gives us one position before the total set of top_p tokens we want to keep
-    keep_probs = less(cumulative_prob, top_p)
-
-    # Get the "cutoff" position
-    keep_probs = cast(keep_probs, s32)
-    keep_positions = reduce_sum(keep_probs, dim=dim)
-    positions = iota(probs.dtype, probs.sizes, dims=dim)
-
-    # Positional mask - Support minimum number of positions.
-    # Reference: https://github.com/huggingface/transformers/blob/v4.39.0/src/transformers/generation/logits_process.py#L409-L410
-    criteria = subtract(top_p_min_tokens, 1)
-    limit = maximum(criteria, keep_positions)
-    dims = list(range(len(positions.sizes)))
-    dims.pop(dim)
-    limit = broadcast(limit, positions.sizes, dims)
-    limit = cast(limit, positions.dtype)
-
-    # Keep all required values and mask out the rest with -30000
-    keep_mask = less_equal(positions, limit)
-    probs = masked_select(keep_mask, tensor, -30000)
-
-    return probs, indices
-
-
-def numel(tensor):
-    elements = 1
-    for dim in tensor.sizes:
-        elements *= dim
-    return elements
-
-
-def sort(tensor, dim=-1, descending=False):
-    if dim < 0:
-        dim = dim % len(tensor.sizes)
-
-    dtype = tensor.dtype
-    sizes = tensor.sizes
-
-    def comparator(scribe):
-        p0 = dtype.Parameter(parameter_number=0)
-        p1 = dtype.Parameter(parameter_number=1)
-        if descending:
-            return greater(p0, p1)
-        else:
-            return less(p0, p1)
-
-    return dtype[sizes].Sort(tensor, to_apply=comparator, dimensions=[dim])
-
-
-def sort_with_indices(tensor, dim=-1, descending=False):
-    if dim < 0:
-        dim = dim % len(tensor.sizes)
-
-    scribe = tensor.scribe
-    dtype = tensor.dtype
-    sizes = tensor.sizes
-    s32 = scribe.s32
-
-    def comparator(scribe):
-        p0 = dtype.Parameter(parameter_number=0)
-        p1 = dtype.Parameter(parameter_number=1)
-        # TODO: check if we need to unpack these parameters even if we don't use them
-        p2 = s32.Parameter(parameter_number=2) # noqa F841
-        p3 = s32.Parameter(parameter_number=3) # noqa F841
-        if descending:
-            return greater(p0, p1)
-        else:
-            return less(p0, p1)
-
-    indices = iota(s32, sizes, dims=[dim])
-    result = scribe.tuple(dtype[sizes], s32[sizes]).Sort(tensor, indices, to_apply=comparator, dimensions=[dim])
-    value = get_tuple_element(result, 0)
-    index = get_tuple_element(result, 1)
-    return value, index
-
-
-def argsort(tensor, dim=-1, descending=False):
-    _, index = sort_with_indices(tensor, dim, descending)
-    return index
-
-
-def multinomial(probabilities, dim, deterministic=False):
-    """
-    Single sample multinomial selection along a dimension.
-
-    Input probabilities must be sorted in descending order along the
-    dimension. This operator cannot validate that this prerequisite is true.
-
-    Args:
-        probabilities: The probabilities to sample. This must be sorted from
-            in descending order.
-        dim: The dimension to sample across.
-        deterministic: Flag which enables using a constant 0.5 as token
-            acceptance threshold instead of a random uniform. This is used for
-            debug/testing.
-
-    Returns:
-        indices: The selected index across the given dimension.
-    """
-    scribe = probabilities.scribe
-    dtype = probabilities.dtype
-    u32 = scribe.u32
-
-    cumprob = cumsum(probabilities, dim)
-
-    sizes = list(probabilities.sizes)
-    vocab_size = sizes.pop(dim)
-    # Fix to ensure cumprob add up to 1.0 to prevent chance of
-    # generating sample with value of vocab_size when cumprob is < 1.0.
-    # As an example, cumprob can be 0.996 or 1.007 due to floating point accumulation error.
-    max_prob = slice_along(cumprob, dim, vocab_size, start=vocab_size-1, stride=1)
-    max_prob = broadcast(max_prob, cumprob.sizes, list(range(len(cumprob.sizes))))
-    cumprob = divide(cumprob, max_prob)
-
-    if deterministic:
-        uniform = full(0.5, dtype, sizes)
-    else:
-        uniform = random_uniform(dtype, sizes)
-
-    dims = list(range(len(probabilities.sizes)))
-    dims.pop(dim)
-    uniform = broadcast(uniform, probabilities.sizes, dims)
-
-    result = greater(uniform, cumprob)
-    result = cast(result, u32)
-    result = reduce_sum(result, dim, keepdim=True)
-    return result
 
 
 def full(value, dtype, sizes):
@@ -2425,26 +1497,6 @@ def iota(dtype, shape, dims):
     return dtype[shape].Iota(dimensions=dims)
 
 
-def clamp(tensor, minimum=None, maximum=None):
-    if minimum is not None:
-        min = full_like(tensor, minimum)
-        condition = greater_equal(tensor, min)
-        tensor = masked_select(condition, tensor, min)
-
-    if maximum is not None:
-        maximum = full_like(tensor, maximum)
-        condition = less_equal(tensor, maximum)
-        tensor = masked_select(condition, tensor, maximum)
-
-    return tensor
-
-
-def random_uniform(dtype, shape, minimum=0, maximum=1):
-    minimum = dtype.Constant(constant_value=minimum)
-    maximum = dtype.Constant(constant_value=maximum)
-    return dtype[shape].Rng(minimum, maximum, distribution=1) # Uniform distribution
-
-
 def reshape(tensor, shape):
     # Return a scalar reshape directly
     if shape == []:
@@ -2463,9 +1515,6 @@ def reshape(tensor, shape):
     )
     return tensor.dtype[shape].Reshape(tensor)
 
-def get_hlo_scalar_by_index(tensor, index):
-    assert index < tensor.sizes[0]
-    return reshape(slice_along(tensor, 0, start=index, limit=index+1), [])
 
 def scatter(operands, scatter_indices, updates, scatter_dims, to_apply):
     operand_rank = len(operands.sizes)
@@ -2717,10 +1766,6 @@ def triangle_mask(dtype, sizes, comparison='GE'):
     result = pred[sizes].Compare(a, b, comparison_direction=comparison)
     result = cast(result, dtype)
     return result
-
-
-def triu_mask(dtype, sizes):
-    return triangle_mask(dtype, sizes, 'LE')
 
 
 def tril_mask(dtype, sizes):
@@ -3362,29 +2407,6 @@ def get_tuple_element(tup, tuple_index):
     return dtype[size].GetTupleElement(tup, tuple_index=tuple_index)
 
 
-def log_softmax(scores, tp_degree=1, dim=None):
-    rank = len(scores.sizes)
-    if dim is None:
-        dim = rank - 1
-    dtype = scores.dtype
-    br_dims = [di for di in range(rank) if di != dim]
-    reduce_sizes = [scores.sizes[di] for di in br_dims]
-    const_min = dtype.Constant(constant_value=float('-inf'))
-    max_func = gen_max_func(dtype)
-    reductions = dtype[reduce_sizes].Reduce(scores, const_min, dimensions=[dim], to_apply=max_func)
-    global_reductions = all_gather(reductions, dim, tp_degree)
-    global_max = reduce_max(global_reductions, dim, keepdim=True)
-    br_reduce_max = broadcast(global_max, scores.sizes, broadcast_dimensions=br_dims)
-    sub = subtract(scores, br_reduce_max)
-    exp_score = exp(sub)
-    exp_score = all_gather(exp_score, dim, tp_degree=tp_degree)
-    exp_score_max = reduce_sum(exp_score, dim)
-    log = dtype[exp_score_max.sizes].Log(exp_score_max)
-    br_log = broadcast(log, scores.sizes, broadcast_dimensions=br_dims)
-    out = subtract(scores, br_log)
-    return out
-
-
 # https://www.tensorflow.org/xla/operation_semantics#select
 def masked_select(mask, true_tensor, false_tensor):
     true_tensor, false_tensor = _binary_primitive_broadcast(true_tensor, false_tensor)
@@ -3439,84 +2461,6 @@ def reshape_and_cache(key, value, key_cache, value_cache, slot_mapping):
 
     return updated_keys, updated_values
 
-def select_from(
-    to_indices,
-    from_indices,
-    from_values,
-    default_values=None,
-):
-    """
-    Select the values from a given indices. We only support last dim for comparison
-
-    Example:
-        # 1. If to_indices has the same shape as from_indices
-        to_indices = [1, 4, 2, 3, 6]
-        from_indices = [4, 5, 3, 2, 7]
-        from_values = [20, 21, 22, 23, 24]
-        default_values = [0, 0, 0, 0, 0]
-
-        outputs = [0, 20, 23, 22, 0]
-
-        # 2. If to_indices is one rank lower than from_indices
-        to_indices = [3]
-        from_indices = [4, 5, 3, 2, 7]
-        from_values = [20, 21, 22, 23, 24]
-        default_values = [0]
-
-        outputs = [22]
-
-        # 3. If from_indices is one rank lower than to_indices
-        to_indices = [1, 4, 2, 3, 6]
-        from_indices = [3]
-        from_values = [22]
-        default_values = [0]
-
-        outputs = [0, 0, 0, 22, 0]
-    """
-    to_sizes = to_indices.sizes
-    from_sizes = from_indices.sizes
-
-    if default_values is None:
-        default_values = full(0, from_values.dtype, to_sizes)
-
-    if to_sizes == from_sizes:
-        size = to_sizes[-1]
-        new_sizes = *to_sizes, size
-
-        to_indices = broadcast(to_indices, new_sizes, [0, 1, 3])
-        from_indices = broadcast(from_indices, new_sizes, [0, 1, 2])
-        eq = cast(equal(to_indices, from_indices), to_indices.scribe.s32)
-        d = dict(
-                lhs_contracting_dimensions=[2],
-                lhs_batch_dimensions=[0, 1],
-                rhs_contracting_dimensions=[2],
-                rhs_batch_dimensions=[0, 1])
-        # TODO: need to fix this for non-zero defaul values
-        # from_values = [batch, k, topk]
-        # eq = [batch, k, topk, topk]
-        # output = [batch, k, topk]
-        to_values = dot_general(from_values, eq, d)
-    elif len(to_sizes) < len(from_sizes):
-        to_indices = broadcast(to_indices, from_sizes, [0, 1])
-        default_values = broadcast(default_values, from_sizes, [0, 1])
-        eq = equal(to_indices, from_indices)
-        to_values = masked_select(eq, from_values, default_values)
-        to_values = reduce_sum(to_values, dim=2)
-    else:
-        from_indices = broadcast(from_indices, to_sizes, [0, 1, 2])
-        from_values = broadcast(from_values, to_sizes, [0, 1, 2])
-        eq = cast(equal(to_indices, from_indices), from_values.dtype)
-        print(from_indices.sizes, eq.sizes, from_values.sizes)
-        to_values = multiply(from_values, eq)
-
-    return to_values
-
-
-def flip(tensor, dims):
-    if isinstance(dims, int):
-        dims = [dims]
-    return tensor.dtype[tensor.sizes].Reverse(tensor, dimensions=dims)
-
 
 def diff(tensor, dim):
     """
@@ -3535,173 +2479,3 @@ def diff(tensor, dim):
     b = slice_along(tensor, dim, limit=o_sizes[dim], start=1)
     output = subtract(b, a)
     return output
-
-
-def get_window_indices_from_cache_ids(cache_ids, window_size, n_positions):
-    """
-    Get the sliding-window indices from cache_ids
-    This funciton is used in token generation in sliding-window attention for mistral-7b-v0.1
-    Given a cache_id, the indices would be [cache_id-(w-1), cache_id-(w-2), ..., cache_id-1], w is the window size
-    When cache_id < w-1, the indices would be [0, 1, ..., w-2], we rely on the attention mask to remove the cache with indices of [cache_id, ..., w-1]
-    Arguments:
-        cache_ids: shape (b, s), b is batch size, s is the number of active tokens, s = 1 in token generation
-        window_size: window size in sliding-window attention
-        n_positions: sequence length of k/v cache
-    Return:
-        indices: indices for element in k/v cache corresponding to the sliding window, shape (b, w-1)
-    Example:
-        Denote n as n_positions and w as window_size
-        cache_ids = [[5], [15], [35]], batch size is 3
-        window_size = 8
-        indices = [[0, 1, ..., 6],
-                    [8+n, 9+n, ..., 14+n],
-                    [28+2n, 29+2n, ..., 34+2n]]
-    """
-    dtype = cache_ids.dtype
-    b, s = cache_ids.sizes # s = 1 for token generation
-    sizes = (b, window_size-1)
-
-    # generate matrix of shape (b, w-1)
-    #  [[0, 0, ..., 0],
-    #   [n, n, ..., n],
-    #   [2n, 2n, ..., 2n]]
-    offset = iota(dtype, sizes, [0])
-    offset = multiply(offset, n_positions)
-
-    # cacluate win_start from cache_ids and then broadcast to shape (b, w)
-    # cache_ids = [[5], [15], [35]]
-    # window_size = 8
-    # win_start = [[0], [8], [28]]
-    # after broadcast
-    #  [[0, 0, ..., 0],
-    #   [8, 8, ..., 8],
-    #   [28, 28, ..., 28]]
-    win_start = subtract(cache_ids, window_size-1)
-    win_start = maximum(win_start, 0)
-    win_start = broadcast(win_start, out_dim_size=sizes, broadcast_dimensions=[0, 1])
-
-    # calculate the indices of shape (b, w)
-    # win_indices = win_start + offset
-    #  [[0, 1, ..., 6],
-    #   [8+n, 9+n, ..., 14+n],
-    #   [28+2n, 28+2n, ..., 34+2n]]
-    win_indices = iota(dtype, sizes, [1])
-    win_indices = add(win_start, win_indices)
-    win_indices = add(win_indices, offset)
-
-    return win_indices
-
-
-def window_slice_kv(cache, indices):
-    """
-    Apply sliding-window slicing over k/v cache with provided indices
-    This funciton is used in token generation in sliding-window attention for mistral-7b-v0.1
-    k/v cache layout shall be (b, s, k, h), b: batch size, s: sequence length, k: num of kv heads per tp, h: hidden size
-    For k/v cache of (s, b, k, h) layout, cache needs to be transposed to (b, s, k, h) before calling this function
-    and transposed back to (s, b, k, h) afterwards
-    Arguments:
-        cache: key/value cache, shape (b, s, k, h)
-        indices: (b, w)
-    Return:
-        result: sliced k/v cache, shape (b, w-1, k, h)
-    """
-    sizes = cache.sizes # (b, s, k, h)
-    ind_sizes = indices.sizes # (b, w-1)
-
-    # (b, s, k, h) -> (b*s, k, h)
-    cache = reshape(cache, (sizes[0]*sizes[1], sizes[2], sizes[3]))
-
-    # (b, w-1) -> (b*(w-1),)
-    indices = reshape(indices, (ind_sizes[0]*ind_sizes[1]))
-
-    # (b*s, k, h) -> (b*(w-1), k, h)
-    result = index_select(cache, 0, indices)
-
-    # (b*(w-1), k, h) -> (b, w-1, k, h)
-    result = reshape(result, (ind_sizes[0], ind_sizes[1], sizes[2], sizes[3]))
-
-    return result
-
-
-def window_slice_mask(mask, indices):
-    """
-    Apply sliding-window slice over mask with provided indices
-    This funciton is used in token generation in sliding-window attention for mistral-7b-v0.1
-    mask layout shall be (b, n_active_tokens, s), n_active_tokens=1 for token generation
-    Arguments:
-        mask: (b, 1, s)
-        indices: (b, w)
-    Return:
-        result: sliced mask, shape (b, 1, w-1)
-    """
-    sizes = mask.sizes # (b, 1, s)
-    ind_sizes = indices.sizes # (b, w-1)
-
-    assert sizes[1] == 1, f"window_slice_mask works only for mask dim (b, 1, s), but mask dim[1]: {sizes[1]} != 1"
-
-    # (b, 1, s) -> (b*s,)
-    mask = reshape(mask, (sizes[0]*sizes[2]))
-
-    # (b, w-1) -> (b*(w-1),)
-    indices = reshape(indices, (ind_sizes[0]*ind_sizes[1]))
-
-    # (b*s,) -> (b*(w-1),)
-    result = index_select(mask, 0, indices)
-
-    # (b*(w-1),) -> (b, 1, w-1)
-    result = reshape(result, (ind_sizes[0], 1, ind_sizes[1]))
-
-    return result
-
-
-def sliding_window_slice(cached_keys, cached_values, mask, cache_ids, window_size, n_positions, cache_layout, lhs_aligned):
-        # slice the portion of kv cache and mask inside the sliding window
-        # this function is used in token generation only
-        # for continuous batcing, cache_ids is 2d, shape (b, s), s=1 for token gen
-        # for static batching, cache_ids is 1d, shape (s,), s=1 for token gen
-        use_2d_cache_ids = len(cache_ids.sizes) > 1
-
-        # continuous batching
-        if use_2d_cache_ids:
-            if cache_layout == constants.LAYOUT_BSH:
-                batch_size = list(cached_keys.sizes)[0]
-                seq_len = list(cached_keys.sizes)[1]
-                assert list(cached_keys.sizes)[1] == list(cached_values.sizes)[1] == list(mask.sizes)[2], \
-                    "Sequence length not equal for K/V cache and mask"
-            elif cache_layout == constants.LAYOUT_SBH:
-                batch_size = list(cached_keys.sizes)[1]
-                seq_len = list(cached_keys.sizes)[0]
-                assert list(cached_keys.sizes)[0] == list(cached_values.sizes)[0] == list(mask.sizes)[2], \
-                    "Sequence length not equal for K/V cache and mask"
-            else:
-                raise RuntimeError(f"Unsupported cache layout: {cache_layout}")
-
-            if seq_len > window_size:
-                indices = get_window_indices_from_cache_ids(cache_ids, window_size, n_positions)
-                useful_cached_keys = window_slice_kv(cached_keys, indices)
-                useful_cached_values = window_slice_kv(cached_values, indices)
-                useful_mask = window_slice_mask(mask, indices)
-            else:
-                useful_cached_keys, useful_cached_values, useful_mask = cached_keys, cached_values, mask
-        # static batching
-        else:
-            # slice when seq len > window size
-            # cache layout is (s, b, k, h), k is the num of kv heads per tp
-            curr_window_start = subtract(cache_ids, window_size - 1)
-            curr_window_start = maximum(curr_window_start, 0)
-            assert list(cached_keys.sizes)[0] == list(cached_values.sizes)[0] == list(mask.sizes)[2], \
-                "Sequence length not equal for K/V cache and mask"
-            seq_len = list(cached_keys.sizes)[0]
-            if seq_len > window_size:
-                batch_size = list(cached_keys.sizes)[1]
-                assert (lhs_aligned and batch_size == 1) or (not lhs_aligned), \
-                    f"Sliding-window attention under static batching with lhs alignment only works for batch size 1, but get {batch_size}"
-
-                curr_window_start_scalar = reshape(curr_window_start, [])
-                useful_cached_keys = dynamic_slice_along(cached_keys, dim=0, start=curr_window_start_scalar, size=window_size-1)
-                useful_cached_values = dynamic_slice_along(cached_values, dim=0, start=curr_window_start_scalar, size=window_size-1)
-                useful_mask = dynamic_slice_along(mask, dim=2, start=curr_window_start_scalar, size=window_size-1)
-            else:
-                useful_cached_keys, useful_cached_values, useful_mask = cached_keys, cached_values, mask
-
-        return useful_cached_keys, useful_cached_values, useful_mask

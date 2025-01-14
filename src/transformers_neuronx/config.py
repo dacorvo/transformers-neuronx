@@ -54,10 +54,6 @@ class ContinuousBatchingConfig:
                 return True
         return False
 
-    def init_cache_engine(self, block_size, num_blocks):
-        self.block_size = block_size
-        self.num_blocks = num_blocks
-
 
 valid_dtypes = [
     "float32",
@@ -262,11 +258,6 @@ class NeuronConfig():
     def vectorize_last_token_id(self):
         return self.lhs_aligned
 
-    def is_valid_layer(self, layer_id):
-        if not self.is_pp():
-            return True
-        return layer_id in self.layer_partition[self.rank_id]
-
     def is_pp(self):
         return self.pp_stages > 1
 
@@ -283,12 +274,6 @@ class NeuronConfig():
         logging.debug(f"auto_layer_partition: {self.layer_partition}")
 
         return self.layer_partition[self.rank_id]
-
-    def valid_layers(self):
-        if self.is_pp():
-            return len(self.layer_partition[self.rank_id])
-        else:
-            return self.num_layers
 
     def is_valid_lm_head(self):
         if self.is_pp():

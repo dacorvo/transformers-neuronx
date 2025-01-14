@@ -401,7 +401,7 @@ class PretrainedModel(LowMemoryModule):
             max_n_pos = max(n_positions) if isinstance(n_positions, list) else n_positions
             max_cle = max(context_length_estimate) if isinstance(context_length_estimate, list) else context_length_estimate
             # max_n_pos or max_cle could be None if customer intends to use defaults
-            if isinstance(max_n_pos, int) and isinstance(max_cle, int): 
+            if isinstance(max_n_pos, int) and isinstance(max_cle, int):
                 assert max_n_pos >= max_cle, \
                     f"Max context_length_estimate {max_cle} cannot be more than max n_positions {max_n_pos}."
             neuron_config = kwargs.get("neuron_config", None)
@@ -413,7 +413,7 @@ class PretrainedModel(LowMemoryModule):
                 batch_size_for_shared_caches = neuron_config.continuous_batching.batch_size_for_shared_caches
                 expected_batch_size = kwargs.get("batch_size")
                 assert batch_size_for_shared_caches == expected_batch_size, \
-                    f"invalid batch_size_for_shared_caches ({batch_size_for_shared_caches}), {expected_batch_size} is expected"   
+                    f"invalid batch_size_for_shared_caches ({batch_size_for_shared_caches}), {expected_batch_size} is expected"
                 if bsh_cache_layout and not neuron_config.continuous_batching.optimized_paged_attention:
                     assert isinstance(n_positions, list) and len(n_positions) == 1
                     assert isinstance(context_length_estimate, list) and len(context_length_estimate) == 1, \
@@ -424,11 +424,8 @@ class PretrainedModel(LowMemoryModule):
         _sanity_check(**kwargs)
         config = AutoConfig.from_pretrained(pretrained_model_path)
         model = cls(config, *model_args, **kwargs)
-        if getattr(config, 'is_presharded_checkpoint', False):
-            model._using_presharded_weights = pretrained_model_path
-        else:
-            pretrained_model_path = maybe_download_weights(pretrained_model_path, **kwargs)
-            model.load_state_dict_dir(pretrained_model_path)
+        pretrained_model_path = maybe_download_weights(pretrained_model_path, **kwargs)
+        model.load_state_dict_dir(pretrained_model_path)
         return model
 
     def load_state_dict_dir(self, pretrained_model_path):
