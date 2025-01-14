@@ -26,7 +26,6 @@ from transformers_neuronx.compiler import ParallelKernel
 from transformers_neuronx.constants import LAYOUT_BSH
 from transformers_neuronx.config import maybe_dump_config
 from concurrent.futures import ProcessPoolExecutor
-import json
 
 
 # Mainly used to expose top level APIs to the model object for serialization
@@ -34,15 +33,9 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
     is_fid = False
 
     # top level api
-    def save(self, directory, sharded_weights=False):
+    def save(self, directory):
         assert self.serialization_enabled(), 'serialization is not enabled for this model'
         self._save_compiled_artifacts(directory)
-        if sharded_weights:
-            assert self.neuron_config.on_device_embedding, "on_device_embedding must be True to save and load presharded weights"
-            self._save_presharded_weights(directory)
-            self.config.is_presharded_checkpoint = True
-            with open(os.path.join(directory, 'config.json'), 'w') as f:
-                f.write(json.dumps(self.config.__dict__))
 
     # top level api
     def load(self, directory):
@@ -76,10 +69,7 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
         self.decoder_lm_head._cpu_compile=False
         with maybe_dump_config(self.config, self.neuron_config):
             ops.init()
-            if hasattr(self, "_using_presharded_weights"):
-                self.load_presharded_weights()
-            else:
-                self.load_weights()
+            self.load_weights()
             if hasattr(self, "_compiled_artifacts_directory"):
                 self._load_compiled_artifacts(self._compiled_artifacts_directory)
             else:
@@ -89,28 +79,8 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
     def cpu_compile(self):
         self.decoder_lm_head._cpu_compile = True
         with maybe_dump_config(self.config, self.neuron_config):
-            if hasattr(self, "_using_presharded_weights"):
-                self.load_presharded_weights()
-            else:
-                self.load_weights()
+            self.load_weights()
             self.compile(parallel_degree=self.neuron_config.compilation_worker_count)
-
-    def load_presharded_weights(self):
-        assert self.neuron_config.on_device_embedding, "on_device_embedding must be True to save and load presharded weights"
-        ops.init()
-        ps_dir = self._using_presharded_weights
-
-        for i in range(self.decoder_lm_head.num_layers):
-            new_layer = self.decoder_lm_head.new_layer()
-            new_layer.load_presharded_weights(ps_dir)
-
-        self.decoder_lm_head.load_presharded_weights(ps_dir)
-        self.init_rest_of_model()
-
-    def _save_presharded_weights(self, directory):
-        self.decoder_lm_head.save_presharded_weights(directory)
-        for layer in self.decoder_lm_head.layers:
-            layer.save_presharded_weights(directory)
 
     def enable_window_context_decoder(self, window_context_length:Optional[Union[List[int], int]], unroll: Optional[int] = None):
         if isinstance(window_context_length, int):

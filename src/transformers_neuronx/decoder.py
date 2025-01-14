@@ -32,8 +32,6 @@ from transformers_neuronx.config import NeuronConfig
 from transformers_neuronx.utils import interleave_qkv
 from transformers_neuronx.llama.hlo import LlamaForSamplingNoEmbeddingHlo
 
-from safetensors.torch import save_file
-from safetensors import safe_open
 
 
 class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerializer):
@@ -668,42 +666,6 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
 
         return parameters
 
-    def save_presharded_weights(self, directory):
-        save_dict = {}
-        for key, value in self.__dict__.items():
-            cpu_tensor = None
-            if isinstance(value, torch.Tensor) and value.device.type == 'xla':
-                cpu_tensor = ops.parallel_cpu(value)
-            elif self._cpu_compile:
-                if isinstance(value, list) and len(value) == self.tp_degree and isinstance(value[0], torch.Tensor):
-                    cpu_tensor = value
-                elif isinstance(value, torch.Tensor):
-                    cpu_tensor = [value.contiguous()]
-            if cpu_tensor is not None:
-                for i in range(len(cpu_tensor)):
-                    save_dict[f'{key}*{i}'] = cpu_tensor[i].detach().clone()
-            del cpu_tensor
-
-        for i, param in enumerate(self.pre_layer_parameters):
-            if self._cpu_compile:
-                cpu_tensor = param
-            else:
-                cpu_tensor = ops.parallel_cpu(param)
-            for j in range(len(cpu_tensor)):
-                save_dict[f'pre_layer_parameter{i}*{j}'] = cpu_tensor[j].detach().clone()
-            del cpu_tensor
-
-        save_file(save_dict, os.path.join(directory, 'DecoderLMHead.safetensors'))
-
-    def load_presharded_weights(self, ps_dir):
-        with safe_open(os.path.join(ps_dir, "DecoderLMHead.safetensors"), framework='pt') as f:
-            lm_head_attr_names = get_attribute_names(f)
-            presharded_weights_to_neuron(f, self, lm_head_attr_names)
-
-        self.format_pre_layer_parameters()
-        self.format_ln_lm_head_params()
-        self.finish_program_setup()
-
     def format_pre_layer_parameters(self):
         # deal with the pre_layer_parameters (decoder_lm_head only)
         i = 0
@@ -1243,47 +1205,6 @@ class DecoderLayer(torch.nn.Module):
 
         self.extra_parameters = extras
         self.init_caches()
-
-    def save_presharded_weights(self, directory):
-        save_dict = {}
-        for key, value in self.__dict__.items():
-            cpu_tensor = None
-            if isinstance(value, torch.Tensor) and value.device.type == 'xla':
-                cpu_tensor = ops.parallel_cpu(value)
-            elif self._cpu_compile:
-                if isinstance(value, list) and len(value) == self.tp_degree and isinstance(value[0], torch.Tensor):
-                    cpu_tensor = value
-                elif isinstance(value, torch.Tensor):
-                    cpu_tensor = [value.contiguous()]
-            if cpu_tensor is not None:
-                for i in range(len(cpu_tensor)):
-                    save_dict[f'{key}*{i}'] = cpu_tensor[i].detach().clone()
-            del cpu_tensor
-
-        for i, param in enumerate(self.extra_parameters):
-            if param is None:
-                # save an empty tensor
-                cpu_tensor = [torch.tensor([])]
-            elif self._cpu_compile:
-                if isinstance(param, list):
-                    cpu_tensor = [tensor.detach().contiguous() for tensor in param]
-                else:
-                    cpu_tensor = [param.detach().contiguous()]
-            else:
-                cpu_tensor = ops.parallel_cpu(param)
-            for j in range(len(cpu_tensor)):
-                save_dict[f'extra_parameter{i}*{j}'] = cpu_tensor[j]
-
-        save_file(save_dict, os.path.join(directory, f"decoder_layer_{self.layer_num}.safetensors"))
-
-    def load_presharded_weights(self, ps_dir):
-        # only need to get names for first layer
-        with safe_open(os.path.join(ps_dir, f"decoder_layer_{self.layer_num}.safetensors"), framework='pt') as f:
-            layer_attr_names = get_attribute_names(f)
-            presharded_weights_to_neuron(f, self, layer_attr_names)
-            self.format_extra_parameters()
-            for batch_size in self.batch_sizes:
-                self.init_caches()
 
     def format_extra_parameters(self):
         # deal with the extra_parameters (decoder_layer only)
