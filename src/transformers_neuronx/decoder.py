@@ -26,11 +26,9 @@ from transformers_neuronx import hlo
 from transformers_neuronx import ops
 from transformers_neuronx import parallel
 from transformers_neuronx import utils
-from transformers_neuronx import config
 from transformers_neuronx import constants
 from transformers_neuronx import global_debugger
-from transformers_neuronx.layers import generation
-from transformers_neuronx.config import NeuronConfig, GenerationConfig
+from transformers_neuronx.config import NeuronConfig
 from transformers_neuronx.utils import interleave_qkv
 from transformers_neuronx.llama.hlo import LlamaForSamplingNoEmbeddingHlo
 
@@ -67,7 +65,6 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
         self.lm_head_weight = None
         self.lm_head_bias = None
         self.logits_indices = None
-        self.generation_inputs = []
         self.top_k = None
         self.top_p = None
         self.temperature = None
@@ -83,7 +80,7 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
         self.pre_layer_builder = None
         self.allow_pad = allow_pad
         self.use_executor = False
-        self.return_ranks = -1 if not self.neuron_config.on_device_generation else 1
+        self.return_ranks = -1
         self.need_reorder_cache = False
         self.builder = builder
         self.check_gqa_fallback()
@@ -295,7 +292,7 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
         self.need_reorder_cache = True
 
     def enable_executor(self, return_ranks=-1):
-        self.return_ranks = return_ranks if not self.neuron_config.on_device_generation else 1
+        self.return_ranks = return_ranks
         self.program.enable_executor()
 
     def add_inputs_builder(self, inputs_builder):
@@ -338,9 +335,6 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
         self.lm_head_bias = bias
 
     def to_neuron(self):
-        # validate on device generation params
-        if self.neuron_config.on_device_generation:
-            self.validate_generation_configs(self.neuron_config.on_device_generation)
 
         manipulator = MaybeParallelTensorManipulator(self.tp_degree, on_cpu=self._cpu_compile, rank_id=self.neuron_config.rank_id, local_tp_degree=self.neuron_config.get_local_tp(self.tp_degree))
         self.pre_layer_parameters = self._prepare_pre_layer_params(manipulator, self.pre_layer_parameters)
@@ -358,22 +352,6 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
         if self.lm_head_bias is not None:
             self.lm_head_bias = manipulator.shard_along(self.lm_head_bias, dim=0)
             ln_lm_head_params.append(self.lm_head_bias)
-        if self.neuron_config.on_device_generation:
-            logits_indices = torch.arange(lm_head_weight.shape[-1], dtype=torch.int32)
-            self.logits_indices = manipulator.shard_along(logits_indices, dim=0)
-            ln_lm_head_params.append(self.logits_indices)
-            if self.neuron_config.on_device_generation.dynamic:
-                config = self.neuron_config.on_device_generation
-                self.top_k = manipulator.duplicate(torch.tensor(config.top_k, dtype=torch.int32))
-                self.generation_inputs.append(self.top_k)
-                self.top_p = manipulator.duplicate(torch.tensor(config.top_p, dtype=torch.float32))
-                self.generation_inputs.append(self.top_p)
-                self.temperature = manipulator.duplicate(torch.tensor(config.temperature, dtype=torch.float32))
-                self.generation_inputs.append(self.temperature)
-                self.top_p_min_tokens = manipulator.duplicate(torch.tensor(config.top_p_min_tokens, dtype=torch.int32))
-                self.generation_inputs.append(self.top_p_min_tokens)
-                # FIXME: Use a better mechanism to pass extra params into the model
-                ln_lm_head_params += self.generation_inputs
         self.ln_lm_head_params = ln_lm_head_params
         self.finish_program_setup()
 
@@ -429,19 +407,6 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
         ln_lm_head_params = [param for param in ln_lm_head_params if param is not None]
         if new.lm_head_bias is not None:
             ln_lm_head_params.append(new.lm_head_bias)
-        if self.neuron_config.on_device_generation:
-            new.logits_indices = self.logits_indices
-            ln_lm_head_params.append(self.logits_indices)
-            if self.neuron_config.on_device_generation.dynamic:
-                new.top_k = self.top_k
-                new.generation_inputs.append(self.top_k)
-                new.top_p = self.top_p
-                new.generation_inputs.append(self.top_p)
-                new.temperature = self.temperature
-                new.generation_inputs.append(self.temperature)
-                new.top_p_min_tokens = self.top_p_min_tokens
-                new.generation_inputs.append(self.top_p_min_tokens)
-                ln_lm_head_params += new.generation_inputs
         new.ln_lm_head_params = ln_lm_head_params
         new.program = new._build_program()
         return new
@@ -666,12 +631,11 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
             param_builder = DecoderParameterBuilder(scribe, len(self.inputs_sdim))
 
             # Create inputs for all weights & caches
-            in_caches, layers_weights, pre_layer_params, lm_head_params, generation_params = self._hlo_parameters(n_positions, batch_size, param_builder)
+            in_caches, layers_weights, pre_layer_params, lm_head_params = self._hlo_parameters(n_positions, batch_size, param_builder)
 
             # Unroll the graph
             logits, out_caches = self._hlo_unroll(hidden, tensors, in_caches, layers_weights, pre_layer_params, lm_head_params)
             self._hlo_cache_aliases(in_caches, out_caches)
-            output = self._hlo_generation(logits, generation_params, start_ids=tensors[1])
 
             # Set the output
             out_caches = itertools.chain(*out_caches)
@@ -679,7 +643,7 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
                 logits, scores = self._hlo_post_layer(logits)
                 outputs = [logits, scores, *out_caches]
             else:
-                outputs = [output, *out_caches]
+                outputs = [logits, *out_caches]
 
             # Filter out the None's in outputs
             outputs = [o for o in outputs if o is not None]
@@ -694,7 +658,6 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
         self.builder.n_positions = n_positions
 
         def multi_layer(scribe):
-            # TODO: Add support for dynamic generation to multi layer
             dtype = getattr(scribe, self.amp)
             (hidden, *tensors), self.inputs_sdim = self.inputs_builder(
                 scribe, dtype, self.n_active_tokens, batch_size)
@@ -726,8 +689,7 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
         layers_caches, layers_weights = self._hlo_layers_params(param_builder, self.layers, n_positions, batch_size)
         pre_layer_params = self._hlo_pre_layer_params(param_builder)
         lm_head_params = self._hlo_lm_head_params(param_builder)
-        generation_params = self._hlo_generation_params(param_builder)
-        return layers_caches, layers_weights, pre_layer_params, lm_head_params, generation_params
+        return layers_caches, layers_weights, pre_layer_params, lm_head_params
 
     def all_parameters(self, n_positions, batch_size):
         """
@@ -757,13 +719,6 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
         parameters.append(self.ln_f_bias)
         parameters.append(self.lm_head_weight)
         parameters.append(self.lm_head_bias)
-
-        # Generation parameters
-        parameters.append(self.logits_indices)
-        parameters.append(self.top_k)
-        parameters.append(self.top_p)
-        parameters.append(self.temperature)
-        parameters.append(self.top_p_min_tokens)
 
         return parameters
 
@@ -800,7 +755,7 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
             presharded_weights_to_neuron(f, self, lm_head_attr_names)
 
         self.format_pre_layer_parameters()
-        self.format_ln_lm_head_params_and_generation_inputs()
+        self.format_ln_lm_head_params()
         self.finish_program_setup()
 
     def format_pre_layer_parameters(self):
@@ -814,13 +769,10 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
             self.pre_layer_parameters.append(pre_layer_parameter)
             i+=1
 
-    def format_ln_lm_head_params_and_generation_inputs(self):
+    def format_ln_lm_head_params(self):
         ln_lm_head_params = [self.ln_f_weight, self.ln_f_bias, self.lm_head_weight, self.lm_head_bias, self.logits_indices]
-        generation_inputs = [self.top_k, self.top_p, self.temperature, self.top_p_min_tokens]
         ln_lm_head_params = [param for param in ln_lm_head_params if param is not None]
-        generation_inputs = [param for param in generation_inputs if param is not None]
-        self.generation_inputs = generation_inputs
-        self.ln_lm_head_params = ln_lm_head_params + generation_inputs
+        self.ln_lm_head_params = ln_lm_head_params
 
     def valid_parameters(self, n_positions, batch_size):
         parameters = self.all_parameters(n_positions, batch_size)
@@ -938,115 +890,25 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
                 next_tok_id = scribe.s32[batch_size].Parameter(parameter_number=1)
             else:
                 next_tok_id = scribe.s32[1].Parameter(parameter_number=1)
-            start_ids = scribe.s32[batch_size].Parameter(parameter_number=2)
             param_builder = DecoderParameterBuilder(scribe, 3)
             ln_f_weight, ln_f_bias, head_weight, head_bias = self._hlo_lm_head_params(param_builder)
-            generation_params = self._hlo_generation_params(param_builder)
             logits = self.ln_lm_head_builder(hidden, next_tok_id, ln_f_weight, ln_f_bias, head_weight, head_bias, return_all_outputs=self.return_all_outputs)
-            output = self._hlo_generation(logits, generation_params, start_ids=start_ids)
             if self.neuron_config.log_softmax_scores:
                 logits, scores = self._hlo_post_layer(logits)
                 outputs = [logits, scores]
                 root_shapes = [shape.dtype[shape.sizes] for shape in outputs]
                 return scribe.tuple(*root_shapes).Tuple(*outputs)
-            return output
+            return logits
 
         return compiler.compile_py_func(ln_lm_head)
 
     def _hlo_post_layer(self, logits):
         return self.post_layer_builder(logits)
 
-    def _hlo_generation_params(self, param_builder):
-        logits_indices = param_builder.from_tensor(self.logits_indices)
-        logits_indices = maybe_transfer_with_static_ring(logits_indices)
-        params = [logits_indices]
-        if self.neuron_config.on_device_generation is not None and self.neuron_config.on_device_generation.dynamic:
-            for param in self.generation_inputs:
-                param = param_builder.from_tensor(param)
-                param = maybe_transfer_with_static_ring(param)
-                params.append(param)
-        return params
-
-    def _hlo_generation(self, logits, params, early_return=False, return_probs=False, start_ids=None):
-        generation_config = self.neuron_config.on_device_generation
-        if generation_config is None:
-            return logits
-        logits_indices, *dynamic_generation_params = params
-        if generation_config.dynamic:
-            top_k, top_p, temperature, top_p_min_tokens  = dynamic_generation_params
-            self.neuron_config.on_device_generation.top_k = top_k
-            self.neuron_config.on_device_generation.top_p = top_p
-            self.neuron_config.on_device_generation.temperature = temperature
-            self.neuron_config.on_device_generation.top_p_min_tokens = top_p_min_tokens
-
-        seq_ids = start_ids if self.neuron_config.continuous_batching is not None else None
-        return generation.generate(
-            logits,
-            logits_indices,
-            config=generation_config,
-            tp_degree=self.tp_degree,
-            early_return=early_return,
-            return_probs=return_probs,
-            seq_ids=seq_ids,
-        )
-
     # Mainly used for serialization purposes.
     # Defines how to access all the kernels.
     def get_all_kernels(self):
         return self.program.get_kernels()
-
-    def validate_generation_configs(self, generation_config: GenerationConfig):
-        current_generation_config = self.neuron_config.on_device_generation
-        if  current_generation_config:
-            assert generation_config.per_batch_line == current_generation_config.per_batch_line, f"Invalid new generation config. \n \
-            Recieved new generation config with per_batch_line = {generation_config.per_batch_line},\n \
-            while current generation config has per_batch_line = {current_generation_config.per_batch_line}"
-
-        batch_size = self.batch_size if isinstance(self.batch_size,int) else self.batch_size[0]
-
-        if generation_config.per_batch_line:
-            if not isinstance(generation_config.top_k, list):
-                generation_config.top_k = [generation_config.top_k] * batch_size
-
-            if not isinstance(generation_config.top_p, list):
-                generation_config.top_p = [generation_config.top_p] * batch_size
-
-            if not isinstance(generation_config.temperature, list):
-                generation_config.temperature = [generation_config.temperature] * batch_size
-
-            if not isinstance(generation_config.top_p_min_tokens, list):
-                generation_config.top_p_min_tokens = [generation_config.top_p_min_tokens] * batch_size
-
-            # check all sampling parameters lists are of same size
-
-            assert len(generation_config.top_k) \
-                   == len(generation_config.top_p) \
-                   == len(generation_config.temperature)  \
-                   == len(generation_config.top_p_min_tokens)  \
-                   == batch_size, f"For per batch-line sampling, sampling parameters top_k, top_p, \
-                   top_p_min_tokens, temperature must be of same size as bach_size. \n \
-                   Recieved len(top_k):  {len(generation_config.top_k)} \n \
-                   len(top_p): {len(generation_config.top_p)} \n \
-                   len(top_p_min_tokens): {len(generation_config.top_p_min_tokens)} \n \
-                   len(temperature): {len(generation_config.temperature)} \n \
-                   batch_size: {batch_size}"
-        else:
-            assert not isinstance(generation_config.top_k, list) \
-               and not isinstance(generation_config.top_p, list) \
-               and not isinstance(generation_config.top_p_min_tokens, list) \
-               and not isinstance(generation_config.temperature, list) \
-               , "Sampling parameters cannot be of type list when per_batch_line = False"
-
-    def update_generation_config(self, generation_config: config.GenerationConfig):
-        self.validate_generation_configs(generation_config)
-        num_cores = self.neuron_config.get_local_tp(self.tp_degree)
-        def duplicate(tensor, dtype):
-            return [torch.tensor(tensor, dtype=dtype) for _ in range(num_cores)]
-        ops.parallel_write(self.top_k, duplicate(generation_config.top_k, dtype=torch.int32))
-        ops.parallel_write(self.top_p, duplicate(generation_config.top_p, dtype=torch.float32))
-        ops.parallel_write(self.temperature, duplicate(generation_config.temperature, dtype=torch.float32))
-        ops.parallel_write(self.top_p_min_tokens, duplicate(generation_config.top_p_min_tokens, dtype=torch.int32))
-
 
 def read_n_position(hlo_module, num_inputs):
     return hlo_module.host_program_shape.parameters[num_inputs].dimensions[0]
@@ -2402,56 +2264,3 @@ class PipelineParallelProgram(DecoderProgramMultiLayer):
         if self.neuron_config.last_rank():
             logging.debug("Running send_logits")
             self.send_logits_kernels[batch_size].run()
-
-class FastCacheBroadcaster(base.NeuronBaseSerializer):
-
-    def __init__(self, n_positions, from_batch_size, to_batch_size, n_heads_tp, d_head, amp,
-                 tp_degree, n_layer):
-        cache_broadcast_impl = hlo.cache_broadcast(n_positions, from_batch_size, to_batch_size,
-                                                   n_heads_tp, d_head, amp, n_layer)
-        cache_broadcast_hlo_module = compiler.compile_py_func(cache_broadcast_impl)
-        self.cache_broadcast_kernel = compiler.ParallelKernel(cache_broadcast_hlo_module, tp_degree)
-        self._source_caches = None
-        self._target_caches = None
-
-    def set_source_caches(self, source_caches):
-        self._source_caches = source_caches
-
-    def set_target_caches(self, target_caches):
-        self._target_caches = target_caches
-
-    def setup(self):
-        assert self._source_caches is not None and self._target_caches is not None, "need to call set_source_caches and set_target_caches"
-        self.cache_broadcast_memory = self.cache_broadcast_kernel.build_memory()
-        self.cache_broadcast_kernel.load()
-        self.cache_broadcast_memory.setup(self._source_caches, self._target_caches)
-
-    def run_broadcast(self):
-        self.cache_broadcast_kernel(self.cache_broadcast_memory)
-
-    def get_all_kernels(self):
-        return [self.cache_broadcast_kernel]
-
-# loads weights from safetensors files and puts them on neuron while assigning
-# them to the corresponding attribute of decoder_layer_or_head
-def presharded_weights_to_neuron(safetensors_file, decoder_layer_or_head, attr_names):
-    for attr_name in attr_names:
-        shards = []
-        i = 0
-        while True:
-            if f"{attr_name}*{i}" not in safetensors_file.keys():
-                break
-            shards.append(safetensors_file.get_tensor(f"{attr_name}*{i}"))
-            i+=1
-        if all([torch.numel(shard) == 0 for shard in shards]):
-            setattr(decoder_layer_or_head, attr_name, 'None')
-        else:
-            setattr(decoder_layer_or_head, attr_name, ops.parallel_to_nc(shards))
-
-def get_attribute_names(safetensors_file):
-    attr_names = set()
-    for key in safetensors_file.keys():
-        attr_name, shard_id = key.split('*')
-        attr_names.add(attr_name)
-
-    return attr_names
