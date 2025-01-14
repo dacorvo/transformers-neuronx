@@ -22,7 +22,6 @@ import contextlib
 from typing import Optional
 
 from .constants import GQA, Layout
-from .sparse_attn_utils import SparseAttnConfig
 
 import torch
 
@@ -67,8 +66,6 @@ class NeuronConfig():
     Neuron configurations for extra features and performance optimizations.
 
     Arguments:
-        sparse_attn: Enables attention sparsity with the given
-            configurations.
         continuous_batching: Enables the model to be used with continuous
             batching using the given configurations.
         attention_layout: Layout to be used for attention computation.
@@ -99,8 +96,6 @@ class NeuronConfig():
             pass. To be selected from `["float32", "float16", "bfloat16"]`.
         fuse_qkv: Fuses the QKV projection into a single matrix multiplication.
         log_softmax_scores: Return log-softmax scores along with logits.
-        shard_over_sequence: Enables flash decoding / sequence parallel attention for token gen models, `default=False`
-        duplicate_q_weight_sos: Duplicate q weights to skip allgather in shard_over_sequence
         output_all_logits: Return all logits from each model invocation.
         fused_rmsnorm_qkv: Use the fused RMS norm and QKV input projection kernel.
         fused_rmsnorm_mlp: Use the fused RMSNorm and MLP BIR kernel for llama3.
@@ -108,7 +103,6 @@ class NeuronConfig():
         compilation_worker_count: Count of concurrent compilation workers.
     """
     def __init__(self, *,
-        sparse_attn: Optional[SparseAttnConfig] = None,
         continuous_batching: Optional[ContinuousBatchingConfig] = None,
         attention_layout: Layout = Layout.HSB,
         collectives_layout: Layout = Layout.HSB,
@@ -123,7 +117,6 @@ class NeuronConfig():
         cast_logits_dtype: str = 'float32',
         fuse_qkv: bool = False,
         log_softmax_scores: bool = False,
-        shard_over_sequence: bool = False,
         output_all_logits: bool = False,
         attn_output_transposed: bool = False,
         fused_rmsnorm_qkv: bool = False,
@@ -135,7 +128,6 @@ class NeuronConfig():
         **kwargs,
     ):
         self.all_reduce_dtype = all_reduce_dtype
-        self.sparse_attn = sparse_attn
         self.cast_logits_dtype = cast_logits_dtype
         assert cast_logits_dtype in valid_dtypes, (
             f"The `cast_logits_dtype={cast_logits_dtype}` argument must be one of {valid_dtypes}"
@@ -198,8 +190,6 @@ class NeuronConfig():
 
         self.layer_partition = {}
 
-        self.shard_over_sequence = shard_over_sequence
-
         self.is_sequence_parallel = False
 
         self.attn_output_transposed = attn_output_transposed
@@ -216,11 +206,6 @@ class NeuronConfig():
         if any([self.attention_layout != Layout.BSH,
                 self.group_query_attention != GQA.REPLICATED_HEADS]):
             self.fused_rmsnorm_mlp = False
-
-        if self.shard_over_sequence:
-            assert self.sparse_attn is None, "sparse attn is not supported with flash decoding"
-            if not (self.continuous_batching and self.continuous_batching.optimized_paged_attention):
-                assert self.cache_layout == Layout.SBH, f"flash decoding only support SBH layout , got {self.cache_layout}"
 
         self.duplicate_q_weight_sos = duplicate_q_weight_sos
 

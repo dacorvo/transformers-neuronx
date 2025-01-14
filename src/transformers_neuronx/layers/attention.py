@@ -393,31 +393,6 @@ def score(query, keys, tp_degree=None, n_kv_heads=0, block_to_seq=None, neuron_c
 
     return result_dot
 
-def sparse_attn_mask(score, mask, constant_value=-30000):
-    """
-    Masks the computed attention scores with a sparse attention mask. This method
-    has different assumptions to the mask shape from the mask() method below.
-
-    score = masked_fill(score, mask, constant_value)
-    """
-    dtype = score.dtype
-    score_sizes = score.sizes
-
-    # Note: This value can cause NaN issues if it is too large
-    masked_val = hlo.full(constant_value, dtype, score_sizes)
-
-    # We accept two mask shapes: [q_seq_len, kv_seq_len], or [nheads, q_seq_len, kv_seq_len]
-    bs, nheads, q_seq_len, kv_seq_len = score_sizes
-    assert (tuple(mask.sizes) == (q_seq_len, kv_seq_len)) or (tuple(mask.sizes) == (nheads, q_seq_len, kv_seq_len)), \
-        f'Expecting sparse mask shape of ({q_seq_len}, {kv_seq_len}) or ({nheads}, {q_seq_len}, {kv_seq_len}), but got {mask.sizes}!'
-
-    if len(mask.sizes) == 2:
-        mask_br = hlo.broadcast(mask, out_dim_size=score_sizes, broadcast_dimensions=[2, 3])
-    else:
-        mask_br = hlo.broadcast(mask, out_dim_size=score_sizes, broadcast_dimensions=[1, 2, 3])
-    score = dtype[score_sizes].Select(mask_br, score, masked_val)
-    return score
-
 
 def mask(score, mask, tp_degree=None, shard_over_batch=False, constant_value=-30000):
     """
@@ -457,7 +432,7 @@ def mask(score, mask, tp_degree=None, shard_over_batch=False, constant_value=-30
 
 
 def context(past_scores, active_score, past_values, active_values,
-            sparse_mask=None, past_mask=None, active_mask=None,
+            past_mask=None, active_mask=None,
             n_kv_heads=0, dtype=None, neuron_config=None, tp_degree=None, context_lens=None, num_active_blocks=None, block_to_seq=None):
     """
     Compute "context" output from the QK score and value projection.
@@ -471,8 +446,6 @@ def context(past_scores, active_score, past_values, active_values,
     Implementation details:
         - If n_kv_heads != 0, uses multi-query, multi-group attention.
         - If dtype is None, uses values datatype.
-        - If sparse_mask or active_sparse_mask is not None, use sparse attention
-            on the corresponding values.
         - If past_mask or active_mask is provided, apply the mask to the result
             of the softmax exp as an optimization to help with compiler
             constant propagation.
@@ -559,10 +532,6 @@ def context(past_scores, active_score, past_values, active_values,
     denom = hlo.add(denom, active_denom)
     active_prob = hlo.cast(active_prob, dtype)
 
-    # Apply sparse masks after softmax to help compiler optimization
-    if sparse_mask is not None:
-        past_prob = sparse_attn_mask(past_prob, sparse_mask, constant_value=0)
-
     # Ca = Pa @ Va
     # Cp = Pp @ Vp
     # C = Ca + Cp
@@ -619,7 +588,7 @@ def context(past_scores, active_score, past_values, active_values,
     return output
 
 
-def context_combined(score, values, sparse_mask=None, n_kv_heads=0, dtype=None, tp_degree=None, neuron_config=None, skip_softmax=False):
+def context_combined(score, values, n_kv_heads=0, dtype=None, tp_degree=None, neuron_config=None, skip_softmax=False):
     """
     Compute "context" output from the QK score and value projection.
 
@@ -634,7 +603,6 @@ def context_combined(score, values, sparse_mask=None, n_kv_heads=0, dtype=None, 
 
     If n_kv_heads != 0, uses multi-query, multi-group attention.
     If dtype is None, uses values datatype.
-    If sparse_mask is not None, use sparse attention on the corresponding values.
     """
     shard_over_batch = False
     bsh_cache_layout = False
@@ -646,9 +614,6 @@ def context_combined(score, values, sparse_mask=None, n_kv_heads=0, dtype=None, 
         probs = score
     else:
         probs = hlo.softmax(score)
-    # Apply sparse masks after softmax to help compiler optimization
-    if sparse_mask is not None:
-        probs = sparse_attn_mask(probs, sparse_mask, constant_value=0)
 
     n_seqs, n_heads_tp, n_active_tokens, n_positions = probs.sizes
     _, _, n_kv_heads_tp, d_head = values.sizes

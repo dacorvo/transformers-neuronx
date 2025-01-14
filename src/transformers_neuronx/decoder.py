@@ -102,12 +102,6 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
         if gqa is None:
             # MHA Early exit - This avoids emitting irrelevant GQA warnings
             if self.n_head == self.n_kv_head:
-                if self.neuron_config.shard_over_sequence:
-                    warnings.warn(
-                            f'Cannot enable shard_over_sequence when a n_heads ({self.n_head}) == n_kv_heads ({self.n_kv_head})'
-                            f'disabling shard over sequence'
-                        )
-                    self.neuron_config.shard_over_sequence = False
                 return
             self.neuron_config.group_query_attention = constants.GQA.SHARD_OVER_HEADS
 
@@ -322,12 +316,8 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
         self.ln_lm_head_params = ln_lm_head_params
         self.finish_program_setup()
 
-
     def finish_program_setup(self):
         self.program = self._build_program()
-        if self.neuron_config.shard_over_sequence:
-            assert self.tp_degree%self.n_kv_head == 0, f"tp_degree {self.tp_degree} not divisble by n_kv_heads {self.n_kv_head} shard_over_sequence is not supported"
-            self.kv_replication = self.tp_degree//self.n_kv_head
 
     def build_weight_shared(self, n_positions_list=None, n_active_tokens=None, batch_size=None,
                             unroll=None, share_caches=False, new=None, embed_weight=None):
@@ -350,8 +340,6 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
         for layer in self.layers:
             new_layer = new.new_layer()
             new_layer.assign_parameters(layer)
-            if self.neuron_config.shard_over_sequence:
-                new_layer.kv_replication = layer.kv_replication
             if share_caches:
                 buckets_from_src = self.neuron_config and self.neuron_config.continuous_batching
                 new_layer.assign_caches(layer, buckets_from_src=buckets_from_src)
@@ -401,8 +389,6 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
             else:
                 bucket_id = 0
                 batch_size, _ = cache_ids.shape
-        elif self.neuron_config and self.neuron_config.shard_over_sequence:
-             bucket_id = self.program.find_bucket_id(cache_ids.item() + self.kv_replication - 1)
         else:
             bucket_id = self.program.find_bucket_id(cache_ids.item())
         if self.use_executor:
@@ -720,11 +706,6 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
                 dim_size = {1: block_size} if self.bsh_cache_layout else {0: block_size}
         for layer in layers:
             layer_caches = []
-            if self.neuron_config.shard_over_sequence:
-                if self.neuron_config.enable_chunked_prefill:
-                    dim_size = {k:block_size//layer.kv_replication for k in dim_size.keys()}
-                else:
-                    dim_size = {k:n_positions//layer.kv_replication for k in dim_size.keys()}
             for cache in layer.attn_k_cache[batch_size], layer.attn_v_cache[batch_size]:
                 par = param_builder.from_tensor(cache, dim_size=dim_size)
                 layer_caches.append(par)
@@ -1024,12 +1005,6 @@ class DecoderLayer(torch.nn.Module):
             self.attn_q_bias = qkv_maybe_pad(self.attn_q_bias, dim=0)
 
             node_interleaving = False
-            if self.neuron_config.shard_over_sequence:
-                node_interleaving = utils.is_attn_node_interleaved(n_heads, self.n_kv_head, self.tp_degree)
-                if node_interleaving:
-                    replica_groups = utils.build_replica_groups(group_size=self.kv_replication,
-                                                                 num_groups=self.tp_degree//self.kv_replication, interleave=True)
-                    warnings.warn(f"[SOS] qkv node_inerleaving enabled with replica {replica_groups}")
 
             if n_kv_heads_padded != self.n_kv_head:
 
@@ -1094,20 +1069,6 @@ class DecoderLayer(torch.nn.Module):
                 view_shape = (stride, shape[0]//stride,shape[1]) if dim == 0 else (shape[0],stride, shape[1]//stride)
                 return (tensor.reshape(view_shape).permute(1, 0, 2).reshape(shape) if dim == 0
                                 else tensor.reshape(view_shape).permute(0, 2, 1).reshape(shape))
-
-            if self.neuron_config.shard_over_sequence and self.neuron_config.duplicate_q_weight_sos:
-                q_weight = self.attn_q_weight
-
-                n_kv_head = n_kv_heads_padded // self.kv_replication
-                q_weight = q_weight.reshape(self.attn_q_weight.shape[0], n_kv_head, self.n_head_padded // n_kv_head, self.attn_q_weight.shape[-1] // self.n_head_padded)
-                q_weight = q_weight.repeat(1, 1, self.kv_replication, 1)
-                self.attn_q_weight = q_weight.reshape(self.attn_q_weight.shape[0], self.kv_replication*self.attn_q_weight.shape[-1])
-
-                if self.attn_q_bias is not None:
-                    q_bias = self.attn_q_bias
-                    q_bias = q_bias.reshape(n_kv_head, self.n_head_padded // n_kv_head, self.attn_q_bias.shape[-1] // self.n_head_padded)
-                    q_bias = q_bias.repeat(1, self.kv_replication, 1)
-                    self.attn_q_bias = q_bias.reshape(-1)
 
             if node_interleaving:
                 n_nodes = self.tp_degree // constants.TRN1_WORLD_SIZE
@@ -1262,24 +1223,6 @@ class DecoderLayer(torch.nn.Module):
                 self.cache_shape[batch_size] = [block_size, num_blocks // self.tp_degree, n_heads_kv_cache, self.attention_head_size]
                 self.attn_k_cache[batch_size] = (manipulator.shard_along(cpu_cache, dim=1))
                 self.attn_v_cache[batch_size] = (manipulator.shard_along(cpu_cache, dim=1))
-            elif self.neuron_config.shard_over_sequence:
-                # note here we use kv_replication since self.n_kv_head is replicated
-                # for SOS we need original n_kv_head before replication
-                kv_replication = self.kv_replication
-                if self.neuron_config.paged_attention:
-                    cache_shape = [num_blocks, block_size*self.tp_degree//kv_replication, n_heads_kv_cache//self.tp_degree, self.attention_head_size]
-                    cpu_cache = torch.zeros(cache_shape, dtype=self.cache_dtype)
-                    self.cache_shape[batch_size] = [num_blocks, block_size//kv_replication, n_heads_kv_cache//self.tp_degree, self.attention_head_size]
-                    self.attn_k_cache[batch_size] = (manipulator.shard_along(cpu_cache, dim=1))
-                    self.attn_v_cache[batch_size] = (manipulator.shard_along(cpu_cache, dim=1))
-                else:
-                    cache_shape = [self.n_positions*self.tp_degree//kv_replication, batch_size, n_heads_kv_cache//self.tp_degree, self.attention_head_size]
-                    cpu_cache = torch.zeros(cache_shape, dtype=torch.uint8).to(torch.float8_e4m3fn) \
-                        if hasattr(torch, 'float8_e4m3fn') and self.cache_dtype==torch.float8_e4m3fn \
-                        else torch.zeros(cache_shape, dtype=self.cache_dtype)
-                    self.cache_shape[batch_size] = [self.n_positions//kv_replication, batch_size, n_heads_kv_cache//self.tp_degree, self.attention_head_size]
-                    self.attn_k_cache[batch_size] = (manipulator.shard_along(cpu_cache, dim=0))
-                    self.attn_v_cache[batch_size] = (manipulator.shard_along(cpu_cache, dim=0))
             else:
                 assert (n_heads_kv_cache >= self.tp_degree) and (n_heads_kv_cache % self.tp_degree == 0), \
                     f"cannot shard along kv_heads dimension: n_kv_head={n_heads_kv_cache}, tp_degree={self.tp_degree}"
@@ -1578,8 +1521,6 @@ class DecoderProgram:
                     # don't slice because we pass full KV cache for each bucket
                     cache_slice = cache
                 else:
-                    if self.neuron_config.shard_over_sequence:
-                        end = npos // layer.kv_replication
                     cache_slice = self.manipulator.slice_on_nc(cache, 0, start=0, end=end, step=1)
                 input_tensors.append(cache_slice)
                 output_tensors.append(cache_slice)
