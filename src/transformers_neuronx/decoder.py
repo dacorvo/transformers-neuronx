@@ -193,7 +193,7 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
                     builder=self.builder,
                     tag="context"
                 )
-                base.NeuronModelBase.register_for_serialization(model_obj,decoder_lm_head[context_length_estimate, batch_size])
+                model_obj.register_for_serialization(decoder_lm_head[context_length_estimate, batch_size])
         return decoder_lm_head
 
 
@@ -217,7 +217,7 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
             tag="token",
         )
         if not self.neuron_config.enable_chunked_prefill: # skip token model for chunked prefill due to not needed and also compiler error
-            base.NeuronModelBase.register_for_serialization(model_obj,decoder_lm_head)
+            model_obj.register_for_serialization(decoder_lm_head)
         decoder_lm_head.add_inputs_builder(self.builder.inputs)
         if hasattr(self.builder, 'pre_layer'):
             decoder_lm_head.add_pre_layer_builder(self.builder.pre_layer)
@@ -249,7 +249,7 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
             builder=self.builder,
             tag=f"window-width{n_active_tokens}",
         )
-        base.NeuronModelBase.register_for_serialization(model_obj,decoder_lm_head)
+        model_obj.register_for_serialization(decoder_lm_head)
         return decoder_lm_head
 
     def enable_executor(self, return_ranks=-1):

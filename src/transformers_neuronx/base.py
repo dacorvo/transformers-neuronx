@@ -17,6 +17,7 @@ import os
 import torch
 import logging
 import hashlib
+from abc import ABC, abstractmethod
 from typing import Optional, Union, List
 from transformers_neuronx import bucket
 from transformers_neuronx import utils
@@ -130,13 +131,11 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
     # function to register all nbs_obj of your model.
     # The nbs_obj must follow 2 rules:
     #   1. The nbs_obj must inherit from NeuronBaseSerializer.
-    #   2. Since this class shouldn't be used directly, a nbs_obj.get_all_kernels()
+    #   2. Since NeuronBaseSerializer is abstract, a nbs_obj.get_all_kernels()
     #      method should be implemented by the child class, which returns a
-    #      list of all kernels which have NEFFs.
+    #      list of all kernels which have NEFFs for that serialized object.
     def register_for_serialization(self, nbs_obj):
-        # check that requirement 1 and 2 are met.
-        assert issubclass(type(nbs_obj), NeuronBaseSerializer), 'The nbs_obj must inheret from NeuronBaseSerializer.'
-        assert getattr(nbs_obj, 'get_all_kernels', None) is not None, 'An nbs_obj.get_all_kernels() method should be implemented.'
+        assert issubclass(type(nbs_obj), NeuronBaseSerializer), 'The nbs_obj must inherit from NeuronBaseSerializer.'
         temp = getattr(self, 'nbs_objs', [])
         nbs_obj.compiler_artifacts_path = None
         temp.append(nbs_obj)
@@ -640,7 +639,7 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
 
 
 # Base class for all "Serializable Objects"
-class NeuronBaseSerializer:
+class NeuronBaseSerializer(ABC):
 
     def save_compiler_artifacts(self, path):
         for kernel in self.get_all_kernels():
@@ -661,10 +660,12 @@ class NeuronBaseSerializer:
                                           'has the same parameters as the one you saved or call "save" on '
                                           'this model to reserialize it.'))
 
+    @abstractmethod
     def get_all_kernels(self):
         raise NotImplementedError(
             f'Class {type(self)} deriving from NeuronBaseSerializer must implement get_all_kernels'
         )
+
 
 def hash_hlo(hlo_module):
     hash_gen = hashlib.sha256()
