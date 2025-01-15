@@ -21,10 +21,12 @@ import numpy as np
 
 from transformers_neuronx import activations
 from transformers_neuronx.constants import LAYOUT_BSH
-from transformers_neuronx import utils
 from transformers_neuronx import compiler
 from transformers_neuronx import dtypes
 from transformers_neuronx.nki.compile import nki_call
+
+from .utils import build_replica_groups, parse_dtype_replica_groups
+
 
 def ax_plus_by(a, x, b, y):
     """
@@ -434,7 +436,7 @@ def mlp(hidden, in_weight, in_bias, out_weight, out_bias,
         hidden = transpose(hidden, 0, 1)
         hidden = reshape(hidden, hidden_sizes)
 
-    dtype, replica_groups = utils.parse_dtype_replica_groups(neuron_config, tp_degree)
+    dtype, replica_groups = parse_dtype_replica_groups(neuron_config, tp_degree)
     if neuron_config is not None and neuron_config.is_sequence_parallel:
         hidden = reduce_scatter_sum(hidden, tp_degree=tp_degree, dim=1, replica_groups=replica_groups, dtype=dtype)
     else:
@@ -498,7 +500,7 @@ def gated_mlp_bsh(
     result = reshape(result, hidden_sizes)
 
     if not return_partial:
-        dtype, replica_groups = utils.parse_dtype_replica_groups(neuron_config, tp_degree)
+        dtype, replica_groups = parse_dtype_replica_groups(neuron_config, tp_degree)
         if neuron_config is not None and neuron_config.is_sequence_parallel:
             result = reduce_scatter_sum(result, tp_degree=tp_degree, dim=1, replica_groups=replica_groups, dtype=dtype)
         else:
@@ -571,7 +573,7 @@ def gated_mlp(
         result = reshape(result, hidden_sizes)
 
     if not return_partial:
-        dtype, replica_groups = utils.parse_dtype_replica_groups(neuron_config, tp_degree)
+        dtype, replica_groups = parse_dtype_replica_groups(neuron_config, tp_degree)
         if neuron_config is not None and neuron_config.is_sequence_parallel:
             result = reduce_scatter_sum(result, tp_degree=tp_degree, dim=1, replica_groups=replica_groups, dtype=dtype)
         else:
@@ -1027,7 +1029,7 @@ def embedding(weight, index, tp_degree=1, dim=1, dtype=None, core_id=None, seque
         masked_result = result.dtype[result.sizes].Select(mask_br, result, zero_br)
         if sequence_parallel:
             add_fn = gen_add_func(masked_result.dtype)
-            replica_groups = utils.build_replica_groups(1, group_size=tp_degree)
+            replica_groups = build_replica_groups(1, group_size=tp_degree)
             return reduce_scatter(masked_result, dim=1, replica_groups=replica_groups, to_apply=add_fn)
         # Combine embeddings from all partitions
         return all_reduce_sum(masked_result, tp_degree=tp_degree)

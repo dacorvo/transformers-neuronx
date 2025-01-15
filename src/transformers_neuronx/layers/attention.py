@@ -15,13 +15,15 @@
 from typing import Optional
 
 from transformers_neuronx import hlo
-from transformers_neuronx import utils
 from transformers_neuronx.constants import FUSED_QKV_TP_FACTOR
 from transformers_neuronx.constants import LAYOUT_BSH
 from transformers_neuronx import constants
 from transformers_neuronx.config import NeuronConfig
 from transformers_neuronx.layers import attention, attention_utils
 from transformers_neuronx.nki.compile import nki_call
+
+
+from ..utils import build_replica_groups, parse_dtype_replica_groups
 
 
 def query_key_value(
@@ -161,7 +163,7 @@ def _sharded_kv_projection(hidden, weight, bias, d_head, tp_degree):
     active = hlo.dot00_add1(hidden, weight, bias)
 
     # Gather portions of the groups together
-    replica_groups = utils.build_replica_groups(num_groups, group_size)
+    replica_groups = build_replica_groups(num_groups, group_size)
     active = hlo.all_gather(active, dim=1, tp_degree=tp_degree, replica_groups=replica_groups)
 
     # (s * b, n_head * d_head) => (s * b, n_head, d_head)
@@ -736,7 +738,7 @@ def output(
         result = hlo.transpose(result, 0, 1)
         result = hlo.reshape(result, hidden_sizes)
 
-    dtype, replica_groups = utils.parse_dtype_replica_groups(neuron_config, tp_degree)
+    dtype, replica_groups = parse_dtype_replica_groups(neuron_config, tp_degree)
     if neuron_config.is_sequence_parallel:
         result = hlo.reduce_scatter_sum(result, tp_degree=tp_degree, dim=1, replica_groups=replica_groups, dtype=dtype)
     else:

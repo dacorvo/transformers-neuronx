@@ -19,18 +19,19 @@ import logging
 import hashlib
 from abc import ABC, abstractmethod
 from typing import Optional, Union, List
-from transformers_neuronx import bucket
-from transformers_neuronx import utils
-from transformers_neuronx import module
-from transformers_neuronx import ops
-from transformers_neuronx.compiler import ParallelKernel
-from transformers_neuronx.constants import LAYOUT_BSH
-from transformers_neuronx.config import maybe_dump_config
 from concurrent.futures import ProcessPoolExecutor
+
+from .bucket import context_sizes, find_bucket
+from .module import WrappingCheckpointCompatibleModel
+from .compiler import ParallelKernel
+from .constants import LAYOUT_BSH
+from .config import maybe_dump_config
+from .ops import init_neuron
+from .utils import maybe_pad_tensor
 
 
 # Mainly used to expose top level APIs to the model object for serialization
-class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
+class NeuronModelBase(WrappingCheckpointCompatibleModel):
     is_fid = False
 
     # top level api
@@ -69,7 +70,7 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
     def to_neuron(self):
         self.decoder_lm_head._cpu_compile=False
         with maybe_dump_config(self.config, self.neuron_config):
-            ops.init()
+            init_neuron()
             self.load_weights()
             if hasattr(self, "_compiled_artifacts_directory"):
                 self._load_compiled_artifacts(self._compiled_artifacts_directory)
@@ -86,7 +87,7 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
     def enable_window_context_decoder(self, window_context_length:Optional[Union[List[int], int]], unroll: Optional[int] = None):
         if isinstance(window_context_length, int):
             window_context_length=[window_context_length]
-        self.window_context_buckets = bucket.context_sizes(window_context_length, self.token_buckets)
+        self.window_context_buckets = context_sizes(window_context_length, self.token_buckets)
         if unroll is None:
             unroll = self.decoder_param_set.num_layers
         for k in self.window_context_buckets:
@@ -177,7 +178,7 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
 
         current = 0
 
-        estimate = bucket.find(self.context_buckets, context_length)
+        estimate = find_bucket(self.context_buckets, context_length)
 
         if estimate is not None:
             hidden_context = hidden
@@ -206,7 +207,7 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
                     block_size = self.neuron_config.continuous_batching.block_size
                     seq_lens = context_lens + last_token_id
                     n_active_blocks = ((seq_lens+block_size-1) // block_size).sum().item()
-                    active_block_bucket = bucket.find(self.context_batch_sizes, n_active_blocks)
+                    active_block_bucket = find_bucket(self.context_batch_sizes, n_active_blocks)
                     # we use the model indexed by estimate (i.e., number of queries) and
                     # active_block_bucket (i.e., number of active KV cache blocks)
                     model = self.decoder_lm_head_for_context[estimate, active_block_bucket]
@@ -224,7 +225,7 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
             # find the optimal "window"
             estimate = None
             if hasattr(self, "window_context_buckets"):
-                estimate = bucket.find(self.window_context_buckets, context_length - current)
+                estimate = find_bucket(self.window_context_buckets, context_length - current)
 
             # when the leftovers is smaller than estimate, fall back to single token generation
             # TODO: can we pad?
@@ -298,12 +299,12 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
 
                 input_metadata = kwargs.get("input_metadata")
                 last_token_id = input_metadata.block_tables
-                last_token_id = utils.pad(last_token_id, 0, max_num_seqs, left=False)
-                last_token_id = utils.pad(last_token_id, 1, max_num_blocks_per_seq, left=False)
+                last_token_id = maybe_pad_tensor(last_token_id, 0, max_num_seqs, left=False)
+                last_token_id = maybe_pad_tensor(last_token_id, 1, max_num_blocks_per_seq, left=False)
             return input_ids, cache_ids, last_token_id, block_tables, context_lens
 
         if hasattr(self, "context_buckets"):
-            estimate = bucket.find(self.context_buckets, context_length)
+            estimate = find_bucket(self.context_buckets, context_length)
         else:
             estimate = self.context_length_estimate
 
@@ -322,15 +323,15 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
                         # set block_tables based on input_metadata and pad appropriately
                         input_metadata = kwargs.get("input_metadata")
                         block_tables = input_metadata.block_tables
-                        block_tables = utils.pad(block_tables, 0, max_num_seqs, left=False)
-                        block_tables = utils.pad(block_tables, 1, max_num_blocks_per_seq, left=False)
+                        block_tables = maybe_pad_tensor(block_tables, 0, max_num_seqs, left=False)
+                        block_tables = maybe_pad_tensor(block_tables, 1, max_num_blocks_per_seq, left=False)
                         # get context_lens and seq_lens from input_metadata
                         context_lens = input_metadata.context_lens
                         seq_lens = input_metadata.seq_lens_tensor
                         query_lens = seq_lens - context_lens
-                        context_lens = utils.pad(context_lens, 0, max_num_seqs, left=False) # padding
+                        context_lens = maybe_pad_tensor(context_lens, 0, max_num_seqs, left=False) # padding
                         # last_token_id is used for dynamic slicing logits
-                        last_token_id = utils.pad(query_lens, 0, max_num_seqs, left=False)
+                        last_token_id = maybe_pad_tensor(query_lens, 0, max_num_seqs, left=False)
 
                         # finally we set "context_length" to the total length of queries. We use the context
                         # encoding model with the queries being the active tokens and hence context_length
@@ -349,7 +350,7 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
                         # 2) dynamic slice logits for concatenated prompt encoding
                         # It should be safe to pad zeros, for both use cases.
                         max_num_seqs = self.neuron_config.continuous_batching.max_num_seqs
-                        last_token_id = utils.pad(prompt_lens, 0, max_num_seqs, left=False)
+                        last_token_id = maybe_pad_tensor(prompt_lens, 0, max_num_seqs, left=False)
                     else:
                         prompt_lens = cache_ids.max(dim=1).values + 1
                         context_length = prompt_lens.sum().item()
@@ -375,7 +376,7 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
             else:
                 last_token_id = torch.as_tensor([min(context_length - 1, estimate-1)], dtype=torch.int32)
             if context_length < estimate:
-                input_ids = utils.pad(input_ids, 1, estimate, left=False)
+                input_ids = maybe_pad_tensor(input_ids, 1, estimate, left=False)
                 cache_ids = self._pad_cache_ids(cache_ids, batch_size, context_length, estimate)
 
         return input_ids, cache_ids, last_token_id, block_tables, context_lens
@@ -387,7 +388,7 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
                     f"cache_ids is expected to be a 1xN matrix, but its shape is {cache_ids.shape}"
                 if self.neuron_config.enable_chunked_prefill:
                     # in this case, just pad with 0s
-                    cache_ids = utils.pad(cache_ids, 1, estimate, left=False)
+                    cache_ids = maybe_pad_tensor(cache_ids, 1, estimate, left=False)
                     return cache_ids
                 start_idx = cache_ids[0, -1].item() + 1
                 end_idx = estimate + start_idx - context_length
@@ -428,7 +429,7 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
         if ((n_active_tokens > 1) and cache_ids.flatten()[0].item() == 0) or self.neuron_config.enable_chunked_prefill:
             # context encoding
             n_active_seqs, n_active_tokens = input_ids.shape
-            continuous_batching_n_positions = bucket.find(self.context_buckets, n_active_tokens)
+            continuous_batching_n_positions = find_bucket(self.context_buckets, n_active_tokens)
             assert n_active_seqs == cache_ids.shape[0], f"invalid n_active_seqs ({n_active_seqs} vs {cache_ids.shape[0]})"
             assert n_active_tokens <= continuous_batching_n_positions, \
                 f"invalid input prompt length ({n_active_tokens} <= {continuous_batching_n_positions})"
@@ -441,8 +442,8 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
                     n_active_tokens = len(seq_ids)
                     assert input_ids.shape[-1] == n_active_tokens, \
                         f"slot_mapping length ({n_active_tokens}) is expected to match length of input_ids ({input_ids.shape[-1]})."
-                    continuous_batching_n_positions = bucket.find(self.context_buckets, n_active_tokens)
-                    seq_ids = utils.pad(seq_ids, 0, continuous_batching_n_positions, left=False)
+                    continuous_batching_n_positions = find_bucket(self.context_buckets, n_active_tokens)
+                    seq_ids = maybe_pad_tensor(seq_ids, 0, continuous_batching_n_positions, left=False)
                 else:
                     prompt_lens = cache_ids_pad.max(dim=1).values + 1
                     new_seq_ids = torch.tensor([], dtype=seq_ids.dtype)
@@ -450,7 +451,7 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
                         offset = continuous_batching_n_positions * seq_id
                         new_seq_ids = torch.concat([new_seq_ids, cache_ids[idx, :prompt_len] + offset], dim=0)
                     n_active_tokens = len(new_seq_ids)
-                    continuous_batching_n_positions = bucket.find(self.context_buckets, n_active_tokens)
+                    continuous_batching_n_positions = find_bucket(self.context_buckets, n_active_tokens)
                     assert continuous_batching_n_positions >= n_active_tokens, \
                         f"n_active_tokens ({n_active_tokens}) is expected to be less than n_positions " \
                         f"({continuous_batching_n_positions}) for concatenated prompt encoding"
@@ -467,9 +468,9 @@ class NeuronModelBase(module.WrappingCheckpointCompatibleModel):
             # - cache_ids are used as context_lens
             # - start_ids are used as slot_mapping
             # - last_token_id is used as block_tables
-            full_input_ids = utils.pad(input_ids, 0, batch_size, left=False)
-            full_cache_ids = utils.pad(cache_ids, 0, batch_size, left=False)
-            full_seq_ids = utils.pad(seq_ids, 0, batch_size, left=False)
+            full_input_ids = maybe_pad_tensor(input_ids, 0, batch_size, left=False)
+            full_cache_ids = maybe_pad_tensor(cache_ids, 0, batch_size, left=False)
+            full_seq_ids = maybe_pad_tensor(seq_ids, 0, batch_size, left=False)
             return full_input_ids, full_cache_ids, full_seq_ids
 
         # token generation - padding for naive continuous batching

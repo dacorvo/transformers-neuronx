@@ -19,19 +19,19 @@ import logging
 
 import torch
 from transformers_neuronx import base
-from transformers_neuronx import bucket
 from transformers_neuronx import compiler
 from transformers_neuronx import dtypes
 from transformers_neuronx import hlo
 from transformers_neuronx import ops
 from transformers_neuronx import parallel
-from transformers_neuronx import utils
 from transformers_neuronx import constants
 from transformers_neuronx import global_debugger
 from transformers_neuronx.config import NeuronConfig
-from transformers_neuronx.utils import interleave_qkv
 from transformers_neuronx.llama.hlo import LlamaForSamplingNoEmbeddingHlo
 
+
+from .bucket import batch_sizes, find_bucket
+from .utils import maybe_pad_tensor, round_up_to_divisor, interleave_qkv, get_qkv_padding, pad_interleaved, get_pad_size
 
 
 class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerializer):
@@ -46,7 +46,7 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
         self.tp_degree = tp_degree
         self.n_positions_list = n_positions_list
         self.n_active_tokens = n_active_tokens
-        self.batch_size = bucket.batch_sizes(batch_size)
+        self.batch_size = batch_sizes(batch_size)
         self.prompt_batch_size = prompt_batch_size
         self.attention_head_size = attention_head_size  # TODO: rename to size_per_head
         self.n_head = n_head
@@ -135,7 +135,7 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
             if self.n_head % self.tp_degree != 0:
                 # try pad on n_head, if pad_size could be evenly disible by n_kv_head,
                 # then we can evenly distribute same number of padding q_head to each k/v head
-                pad_size = utils.get_pad_size(self.n_head, self.tp_degree)
+                pad_size = get_pad_size(self.n_head, self.tp_degree)
 
                 if pad_size % self.n_kv_head == 0:
                     return
@@ -305,7 +305,7 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
         _, vocab_size = self.lm_head_weight.shape
         # Pad vocab size such that it can be divided by the following factor
         divisor = int(os.environ.get('NEURON_VOCAB_PAD_DIVISOR', str(self.tp_degree)))
-        vocab_pad = utils.get_pad_size(vocab_size, divisor)
+        vocab_pad = get_pad_size(vocab_size, divisor)
         lm_head_weight = torch.nn.functional.pad(self.lm_head_weight, (0, vocab_pad, 0, 0))
         self.lm_head_weight = manipulator.shard_along(lm_head_weight, dim=1)
         ln_lm_head_params = [self.ln_f_weight, self.ln_f_bias, self.lm_head_weight]
@@ -454,8 +454,8 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
         for param, dim, allow_pad in pre_layer_parameters:
             if allow_pad and dim is not None:
                 if param.shape[dim] % self.tp_degree != 0:
-                    size = utils.round_up_to_divisor(param.shape[dim], self.tp_degree)
-                    param = utils.pad(param, dim, size)
+                    size = round_up_to_divisor(param.shape[dim], self.tp_degree)
+                    param = maybe_pad_tensor(param, dim, size)
             extras.append(manipulator.duplicate_or_shard_along(param, dim))
         return extras
 
@@ -492,8 +492,6 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
                                                     batch_size_for_shared_caches=batch_size_for_shared_caches, tag=self.tag, on_cpu=self._cpu_compile)
         else:
 
-            if utils.amp_is_u8(self.amp):
-                raise NotImplementedError(f'amp={self.amp} only supports fully unrolled decoder')
             for npos,batch_size in itertools.product(self.n_positions_list, self.batch_size):
                 hlo_modules[npos,batch_size], debug_tensors[npos,batch_size] = self._hlo_multi_layer(npos,batch_size)
             ln_lm_head_hlo_modules = [self._hlo_ln_lm_head(batch_size) for batch_size in self.batch_size]
@@ -804,7 +802,7 @@ class MaybePadder:
 
     def __call__(self, weight, dim):
         if self.padding == "end":
-            return utils.pad(weight, dim, self.size, left=False)
+            return maybe_pad_tensor(weight, dim, self.size, left=False)
         else:
             if weight is None:
                 return weight
@@ -825,7 +823,7 @@ class MaybePadder:
                 new_shape = weight_shapes[:dim] + [self.split_size] + [weight_shapes[dim] // self.split_size] + weight_shapes[dim+1:]
                 weight = weight.view(new_shape)
                 new_size = self.size // (weight_shapes[dim] // self.split_size)
-            res = utils.pad_interleaved(weight, dim, new_size,
+            res = pad_interleaved(weight, dim, new_size,
                 weight.shape[dim]//self.interleaved_factor, (new_size-weight.shape[dim])//self.interleaved_factor)
             return res.view(padded_shape)
 
@@ -943,7 +941,7 @@ class DecoderLayer(torch.nn.Module):
             _, hidden_size = self.attn_q_weight.shape
             n_heads = hidden_size // self.attention_head_size
 
-            n_head_padded, n_kv_heads_padded = utils.get_qkv_padding(n_heads, self.n_kv_head, self.tp_degree, self.neuron_config)
+            n_head_padded, n_kv_heads_padded = get_qkv_padding(n_heads, self.n_kv_head, self.tp_degree, self.neuron_config)
             self.n_head_padded = n_head_padded
             self.neuron_config.n_head_padded = self.n_head_padded
 
@@ -1073,24 +1071,16 @@ class DecoderLayer(torch.nn.Module):
             # Intermediate MLP layer padding
             if self.mlp_in_weight is not None:
                 _, intermediate_size = self.mlp_in_weight.shape
-                intermediate_size_padded = utils.round_up_to_divisor(intermediate_size, self.tp_degree)
+                intermediate_size_padded = round_up_to_divisor(intermediate_size, self.tp_degree)
                 maybe_pad = MaybePadder(intermediate_size_padded)
 
                 self.mlp_in_weight = maybe_pad(self.mlp_in_weight, dim=1)
                 self.mlp_in_bias = maybe_pad(self.mlp_in_bias, dim=0)
                 if self.neuron_config.fuse_mlp:
                     intermediate_size = intermediate_size // 2
-                    intermediate_size_padded = utils.round_up_to_divisor(intermediate_size, self.tp_degree)
+                    intermediate_size_padded = round_up_to_divisor(intermediate_size, self.tp_degree)
                     maybe_pad = MaybePadder(intermediate_size_padded)
                 self.mlp_out_weight = maybe_pad(self.mlp_out_weight, dim=self.mlp_out_sharding)
-
-        if utils.amp_is_u8(self.amp):
-            self.attn_q_weight, self.attn_q_min, self.attn_q_max = utils.u8_encode(self.attn_q_weight)
-            self.attn_k_weight, self.attn_k_min, self.attn_k_max = utils.u8_encode(self.attn_k_weight)
-            self.attn_v_weight, self.attn_v_min, self.attn_v_max = utils.u8_encode(self.attn_v_weight)
-            self.attn_out_weight, self.attn_out_min, self.attn_out_max = utils.u8_encode(self.attn_out_weight)
-            self.mlp_in_weight, self.mlp_in_min, self.mlp_in_max = utils.u8_encode(self.mlp_in_weight)
-            self.mlp_out_weight, self.mlp_out_min, self.mlp_out_max = utils.u8_encode(self.mlp_out_weight)
 
         if self.neuron_config and self.neuron_config.fused_rmsnorm_qkv:
             self.fused_pre_attn_ln_qkv_weight = (fused_qkv_weight.T * self.pre_attn_ln_weight.to(dtype=fused_qkv_weight.dtype)).T
@@ -1130,8 +1120,8 @@ class DecoderLayer(torch.nn.Module):
         extras = []
         for param, dim, allow_pad, allow_transform in self.extra_parameters:
             if allow_pad:
-                size = utils.round_up_to_divisor(param.shape[dim], self.tp_degree)
-                param = utils.pad(param, dim, size)
+                size = round_up_to_divisor(param.shape[dim], self.tp_degree)
+                param = maybe_pad_tensor(param, dim, size)
 
             if allow_transform:
                 param = maybe_shard_along_and_transform(param, dim)
@@ -1158,7 +1148,7 @@ class DecoderLayer(torch.nn.Module):
         # allow the KV cache to be padded so it can be evenly divisible across
         # NeuronCores.
         if self.allow_pad and not self.shard_over_batch:
-            n_heads_kv_cache = utils.round_up_to_divisor(self.n_kv_head, self.tp_degree)
+            n_heads_kv_cache = round_up_to_divisor(self.n_kv_head, self.tp_degree)
         block_size = self.neuron_config.continuous_batching.block_size if self.neuron_config.paged_attention else self.n_positions
         # Select manipulator based on device
         if self._cpu_compile:
@@ -1407,7 +1397,7 @@ class DecoderProgram:
 
     def find_block_bucket_size(self, context_length, block_size):
         n_active_blocks = ((context_length+block_size-1) // block_size).sum().item()
-        active_block = bucket.find(self.batch_sizes, n_active_blocks)
+        active_block = find_bucket(self.batch_sizes, n_active_blocks)
         return active_block
 
     def inputs_host_to_device(self, input_tensors, batch_size):

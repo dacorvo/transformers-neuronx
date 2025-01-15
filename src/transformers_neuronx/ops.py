@@ -15,7 +15,7 @@
 import torch
 
 
-def init():
+def init_neuron():
     return torch.ops.neuron._init_neuron()
 
 

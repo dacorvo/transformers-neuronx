@@ -15,7 +15,15 @@
 import bisect
 from typing import List, Union, Optional
 
-from transformers_neuronx import utils
+
+def power_of_two_bucket_sizes(min_bucket_size, max_bucket_size):
+    sizes = []
+    bucket_size = min_bucket_size
+    while bucket_size < max_bucket_size:
+        sizes.append(bucket_size)
+        bucket_size *= 2
+    sizes.append(max_bucket_size)
+    return sizes
 
 
 def token_sizes(buckets_or_size: Union[List[int], int]) -> List[int]:
@@ -36,7 +44,7 @@ def token_sizes(buckets_or_size: Union[List[int], int]) -> List[int]:
     """
     if isinstance(buckets_or_size, list):
         return sorted(buckets_or_size)
-    return utils.power_of_two_bucket_sizes(128, buckets_or_size)
+    return power_of_two_bucket_sizes(128, buckets_or_size)
 
 
 def context_sizes(
@@ -91,7 +99,7 @@ def batch_sizes(batch_size: Union[List[int], int]) -> List[int]:
         raise TypeError("batch_size must be list of ints or int type")
 
 
-def find(buckets: Optional[List[int]], size: int) -> Optional[int]:
+def find_bucket(buckets: Optional[List[int]], size: int) -> Optional[int]:
     """
     Find the smallest bucket with that fits the given `size` input.
 

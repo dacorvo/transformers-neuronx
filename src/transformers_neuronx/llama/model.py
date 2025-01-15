@@ -15,14 +15,16 @@
 import torch
 
 from transformers_neuronx import base
-from transformers_neuronx import bucket
 from transformers_neuronx import decoder
-from transformers_neuronx import utils
 from transformers_neuronx.config import NeuronConfig
 from transformers_neuronx.constants import LAYOUT_HSB
 from transformers_neuronx.llama.config import LlamaConfig
 from transformers_neuronx.llama.hlo import LlamaForSamplingNoEmbeddingHlo
 from transformers_neuronx.llama.modules import LlamaForCausalLM
+
+
+from ..bucket import batch_sizes, context_sizes, token_sizes
+from ..utils import interleave_mlp
 
 
 class LlamaForSampling(base.NeuronModelBase):
@@ -47,8 +49,8 @@ class LlamaForSampling(base.NeuronModelBase):
             unroll = len(self.layers_after_partition)
         self.unroll = unroll
 
-        self.token_buckets = bucket.token_sizes(n_positions)
-        self.context_buckets = bucket.context_sizes(context_length_estimate, self.token_buckets)
+        self.token_buckets = token_sizes(n_positions)
+        self.context_buckets = context_sizes(context_length_estimate, self.token_buckets)
         # input length should be  divisable by tp_degree to activate seq paralle
         if neuron_config and neuron_config.sequence_parallel_norm:
             for bucket_size in self.context_buckets:
@@ -61,7 +63,7 @@ class LlamaForSampling(base.NeuronModelBase):
                 self.context_buckets.append(prefixed_length)
                 self.context_buckets = sorted(self.context_buckets)
 
-        self.batch_sizes = bucket.batch_sizes(batch_size)
+        self.batch_sizes = batch_sizes(batch_size)
         self.context_batch_sizes = [
             1] if self.neuron_config and self.neuron_config.continuous_batching else self.batch_sizes
         hlo_builder = LlamaForSamplingNoEmbeddingHlo(config, neuron_config=self.neuron_config)
@@ -135,7 +137,7 @@ class LlamaForSampling(base.NeuronModelBase):
                 assert all(getattr(mlp, attr, None).weight.shape[0] % self.config.tp_degree == 0
                            for attr in ['gate_proj', 'up_proj']), \
                     f" mlp weights are not  divisible tp_degree {self.config.tp_degree}"
-                mlp_in_weight = utils.interleave_mlp(mlp.gate_proj.weight, mlp.up_proj.weight,
+                mlp_in_weight = interleave_mlp(mlp.gate_proj.weight, mlp.up_proj.weight,
                                                      tp_degree=self.config.tp_degree, dim=0)
                 new_layer.add_mlp_input(mlp_in_weight.T.detach(), None)
                 new_layer.add_mlp_output(

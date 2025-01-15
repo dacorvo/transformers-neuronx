@@ -34,24 +34,6 @@ def parse_dtype_replica_groups(neuron_config, tp_degree):
     return dtype, replica_groups
 
 
-def maybe_override_attributes(self, kwargs):
-    for key, value in kwargs.items():
-        if not hasattr(self, key):
-            raise KeyError(f'Found invalid key "{key}".')
-        if value is not None:
-            setattr(self, key, value)
-
-
-def power_of_two_bucket_sizes(min_bucket_size, max_bucket_size):
-    sizes = []
-    bucket_size = min_bucket_size
-    while bucket_size < max_bucket_size:
-        sizes.append(bucket_size)
-        bucket_size *= 2
-    sizes.append(max_bucket_size)
-    return sizes
-
-
 def pad_sizes(shape, dims, sizes, left=False):
     if isinstance(dims, int):
         dims = (dims,)
@@ -109,7 +91,7 @@ def pad_interleaved(tensor, dim, size, source_len_per_group, pad_len_per_group):
     return padded_tensor
 
 
-def pad(tensor, dims, sizes, left=False):
+def maybe_pad_tensor(tensor, dims, sizes, left=False):
     if tensor is None:
         return tensor
     padding = pad_sizes(tensor.shape, dims, sizes, left=left)

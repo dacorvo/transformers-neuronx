@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-from transformers_neuronx import utils
 
 class LlamaConfig:
 
@@ -48,7 +47,12 @@ class LlamaConfig:
             raise ValueError(f"Only default and llama3 ropes scaling types are currently supported. Received {rope_scaling_type}")
         self.bias = getattr(config, "bias", True)
 
-        utils.maybe_override_attributes(self, kwargs)
+        # Maybe override attributes
+        for key, value in kwargs.items():
+            if not hasattr(self, key):
+                raise KeyError(f'Found invalid key "{key}".')
+            if value is not None:
+                setattr(self, key, value)
 
         # Add required Neuron configs
         self.n_positions = n_positions
