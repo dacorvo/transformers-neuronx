@@ -15,24 +15,29 @@
 
 import os
 import torch
-import logging
 import hashlib
 from abc import ABC, abstractmethod
 from typing import Optional, Union, List
 from concurrent.futures import ProcessPoolExecutor
 
 from .bucket import context_sizes, find_bucket
-from .module import WrappingCheckpointCompatibleModel
 from .compiler import ParallelKernel
 from .constants import LAYOUT_BSH
 from .config import maybe_dump_config
+from .module import PretrainedModel
 from .ops import init_neuron
 from .utils import maybe_pad_tensor
 
 
 # Mainly used to expose top level APIs to the model object for serialization
-class NeuronModelBase(WrappingCheckpointCompatibleModel):
-    is_fid = False
+class NeuronModelBase(PretrainedModel):
+
+    def __init__(self, chkpt_model_cls, *args, **kwargs):
+        super().__init__()
+        self.chkpt_model = chkpt_model_cls(*args, **kwargs)
+
+    def load_state_dict_dir(self, pretrained_model_path):
+        self.chkpt_model.load_state_dict_dir(pretrained_model_path)
 
     # top level api
     def save(self, directory):
@@ -58,11 +63,6 @@ class NeuronModelBase(WrappingCheckpointCompatibleModel):
 
     # top level api
     def setup(self):
-        if self.neuron_config and self.neuron_config.is_pp():
-            import torch.distributed as dist
-            logging.debug(f"Try to init process group, rank id {self.neuron_config.rank_id}, world size {self.neuron_config.pp_stages}")
-            dist.init_process_group("gloo", init_method=f"tcp://{os.getenv('CPU_COMM_ID', '127.0.0.1:9999')}",
-                    rank=self.neuron_config.rank_id, world_size=self.neuron_config.pp_stages)
         for nbs in self.nbs_objs:
             nbs.setup()
 
@@ -171,11 +171,6 @@ class NeuronModelBase(WrappingCheckpointCompatibleModel):
 
         all_logits = [] # Collect all logits if neuron_config.output_all_logits is True
 
-        if self.is_fid:
-            # Fusion-In-Decoder context encoding
-            fused_context_length = hidden.shape[1]
-            context_length = fused_context_length // self.batch_size
-
         current = 0
 
         estimate = find_bucket(self.context_buckets, context_length)
@@ -252,10 +247,6 @@ class NeuronModelBase(WrappingCheckpointCompatibleModel):
 
         if all_logits:
             logits = torch.cat(all_logits, dim=1)
-
-        if self.is_fid:
-            logits[:] = float('-inf')
-            logits[self.bos_token_id] = 1.0
 
         if self.neuron_config.log_softmax_scores:
             return logits, scores

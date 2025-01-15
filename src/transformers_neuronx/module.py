@@ -432,13 +432,3 @@ class PretrainedModel(LowMemoryModule):
             self.load_pytorch_model_bin_sharded(pretrained_model_path)
         else:
             raise FileNotFoundError(f"Can not find model.safetensors or pytorch_model.bin in {pretrained_model_path}")
-
-
-class WrappingCheckpointCompatibleModel(PretrainedModel):
-
-    def __init__(self, chkpt_model_cls, *args, **kwargs):
-        super().__init__()
-        self.chkpt_model = chkpt_model_cls(*args, **kwargs)
-
-    def load_state_dict_dir(self, pretrained_model_path):
-        self.chkpt_model.load_state_dict_dir(pretrained_model_path)

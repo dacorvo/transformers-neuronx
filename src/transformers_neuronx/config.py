@@ -15,8 +15,6 @@
 import os
 import json
 import enum
-import math
-import logging
 import warnings
 import contextlib
 from typing import Optional
@@ -243,28 +241,6 @@ class NeuronConfig():
     def vectorize_last_token_id(self):
         return self.lhs_aligned
 
-    def is_pp(self):
-        return self.pp_stages > 1
-
-    def auto_layer_partition(self, num_layers):
-        self.num_layers = num_layers
-        if not self.is_pp():
-            return list(range(self.num_layers))
-
-        num_layers_per_stage = math.ceil(num_layers / self.pp_stages)
-
-        for i in range(self.pp_stages):
-            self.layer_partition[i] = [ly for ly in range(i*num_layers_per_stage, min((i+1)*num_layers_per_stage, num_layers))]
-
-        logging.debug(f"auto_layer_partition: {self.layer_partition}")
-
-        return self.layer_partition[self.rank_id]
-
-    def is_valid_lm_head(self):
-        if self.is_pp():
-            return self.last_rank()
-        return True
-
     def first_rank(self):
         return self.rank_id == 0
 
@@ -275,9 +251,6 @@ class NeuronConfig():
         return self.pp_stages * tp_degree
 
     def get_replica_groups(self, tp_degree):
-        if self.is_pp():
-            return [list(range(self.rank_id*tp_degree, (self.rank_id+1)*tp_degree))]
-
         return [list(range(tp_degree))]
 
     def get_local_tp(self, tp):

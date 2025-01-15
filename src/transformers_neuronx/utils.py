@@ -110,20 +110,6 @@ def get_pad_size(vocab_size, divisor):
     return ((vocab_size // divisor + 1) * divisor - vocab_size) % divisor
 
 
-def amp_is_u8(amp):
-    return '-u8-' in amp
-
-
-def u8_encode(tensor):
-    tensor = tensor.to(torch.float32)
-    tensor_min = tensor.min().item()
-    tensor_max = tensor.max().item()
-    tensor = tensor - tensor_min
-    tensor *= 255.0 / (tensor_max - tensor_min)
-    tensor = tensor.round().to(torch.uint8)
-    return tensor, tensor_min, tensor_max
-
-
 def interleave_qkv(q, k, v, tp_degree, dim=1):
     """
     Create a merged QKV Tensor with weights arranged for sharding.

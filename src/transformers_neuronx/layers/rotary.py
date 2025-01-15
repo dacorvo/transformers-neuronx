@@ -36,19 +36,6 @@ def apply_inv_frequency_scaling(freq, rope_scaling):
     return new_freq.to(dtype=freq.dtype)
 
 
-def rotary_embedding(head_dim, cache_ids, base=10000, interpolation_factor=None):
-    seq_len = cache_ids.shape[0]
-    inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2) / head_dim))
-    t = torch.arange(seq_len, dtype=inv_freq.dtype)
-    if interpolation_factor:
-        t /= interpolation_factor
-    sinusoid_inp = torch.einsum("i , j -> i j", t, inv_freq).float()
-    sin = torch.sin(sinusoid_inp)
-    cos = torch.cos(sinusoid_inp)
-    pos_embd = torch.cat((sin, cos), dim=-1)
-    return pos_embd
-
-
 def hlo_rotary_embedding(dtype, head_dim, cache_ids, base=10000, interpolation_factor=None, rope_scaling=None):
 
     scribe = cache_ids.scribe
