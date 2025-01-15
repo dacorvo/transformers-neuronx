@@ -652,22 +652,6 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
 
         return parameters
 
-    def format_pre_layer_parameters(self):
-        # deal with the pre_layer_parameters (decoder_lm_head only)
-        i = 0
-        self.pre_layer_parameters = []
-        while True:
-            pre_layer_parameter = getattr(self, f"pre_layer_parameter{i}", None)
-            if pre_layer_parameter is None:
-                break
-            self.pre_layer_parameters.append(pre_layer_parameter)
-            i+=1
-
-    def format_ln_lm_head_params(self):
-        ln_lm_head_params = [self.ln_f_weight, self.ln_f_bias, self.lm_head_weight, self.lm_head_bias, self.logits_indices]
-        ln_lm_head_params = [param for param in ln_lm_head_params if param is not None]
-        self.ln_lm_head_params = ln_lm_head_params
-
     def valid_parameters(self, n_positions, batch_size):
         parameters = self.all_parameters(n_positions, batch_size)
         return [par for par in parameters if par is not None]
@@ -937,10 +921,6 @@ class DecoderLayer(torch.nn.Module):
         self.attn_out_contract_dims = contract_dims
         self.attn_out_pad = pad
 
-    def add_post_attention_layer_norm(self, weight, bias):
-        self.post_attn_ln_weight = weight
-        self.post_attn_ln_bias = bias
-
     def add_pre_mlp_layer_norm(self, weight, bias):
         self.pre_mlp_ln_weight = weight
         self.pre_mlp_ln_bias = bias
@@ -954,10 +934,6 @@ class DecoderLayer(torch.nn.Module):
         self.mlp_out_bias = bias
         self.mlp_out_sharding = sharding
         self.mlp_out_transposed = transposed
-
-    def add_post_mlp_layer_norm(self, weight, bias):
-        self.post_mlp_ln_weight = weight
-        self.post_mlp_ln_bias = bias
 
     def to_neuron(self):
         # If we allow padding then we need to pad non-sharded QKV weight dimensions
@@ -1166,21 +1142,6 @@ class DecoderLayer(torch.nn.Module):
 
         self.extra_parameters = extras
         self.init_caches()
-
-    def format_extra_parameters(self):
-        # deal with the extra_parameters (decoder_layer only)
-        i = 0
-        self.extra_parameters = []
-        while True:
-            extra_param = getattr(self, f"extra_parameter{i}", None)
-            if extra_param is not None:
-                if extra_param == 'None':
-                    self.extra_parameters.append(None)
-                else:
-                    self.extra_parameters.append(extra_param)
-            else: # Previous parameter was the last one
-                break
-            i+=1
 
     @property
     def shard_over_batch(self):
@@ -1424,7 +1385,7 @@ class DecoderProgram:
         else:
             self.manipulator = parallel.ParallelTensorManipulator(tp_degree, rank_id=self.neuron_config.rank_id, local_tp_degree=self.neuron_config.get_local_tp(tp_degree))
 
-    def setup(self, layers, pre_layer_params, ln_lm_head_params, io_ring_cache_size=1):
+    def setup(self, io_ring_cache_size):
         self.input_buffers = [[self.manipulator.duplicate(buf) for buf in input_buffers_for_batch_size] for input_buffers_for_batch_size in self.input_buffers]
         if self.logits_buffer:
             if self.neuron_config.log_softmax_scores:
@@ -1554,7 +1515,7 @@ class DecoderProgramFullyUnrolled(DecoderProgram):
 
 
     def setup(self, layers, pre_layer_params, ln_lm_head_params):
-        super().setup(layers, pre_layer_params, ln_lm_head_params)
+        super().setup(io_ring_cache_size=1)
 
         self.memories = dict()
         for npos,batch_size in itertools.product(self.n_positions_list, self.batch_sizes):
@@ -1637,7 +1598,7 @@ class DecoderProgramMultiLayer(DecoderProgram):
             self.ode_executors = []
 
     def setup(self, layers, pre_layer_params, ln_lm_head_params):
-        super().setup(layers, pre_layer_params, ln_lm_head_params, io_ring_cache_size=self.num_exec_repetition)
+        super().setup(io_ring_cache_size=self.num_exec_repetition)
 
         if self.neuron_config.on_device_embedding:
             for i in range(len(self.input_ids_buffer)):
