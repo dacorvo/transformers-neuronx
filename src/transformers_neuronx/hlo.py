@@ -2030,22 +2030,7 @@ def decoder_attention_mask_lhs_aligned(
         active_mask: The attention mask to apply to the active tokens.
     """
     batch_size, n_active_tokens = cache_ids.sizes
-    if (
-        neuron_config
-        and neuron_config.enable_chunked_prefill
-        and n_active_tokens == n_positions
-    ):
-        batch_size = neuron_config.continuous_batching.max_num_seqs
-        seq_lens = add(context_lens, last_token_id)  # last_token_id is query_lens
-        block_size = neuron_config.continuous_batching.block_size
-        return decoder_attention_block_diagonal_causal_from_bottomright_mask(
-            num_queries=last_token_id,
-            num_keys=seq_lens,
-            max_num_queries=n_active_tokens,
-            max_num_keys=block_size * num_active_blocks + n_active_tokens,
-            max_num_seqs=batch_size,
-        )
-    elif n_active_tokens == n_positions:
+    if n_active_tokens == n_positions:
         # Context Encoding
         if neuron_config and neuron_config.use_1d_query:
             # For concatenated prompt encoding (1D query), last_token_id is used as prompt_lens

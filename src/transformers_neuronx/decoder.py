@@ -196,9 +196,7 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         cls = type(self)
         decoder_lm_head = {}
         if context_batch_sizes:
-            # if context_batch_sizes is passed we directly use it. This is useful for cases
-            # like chunked prefill where batch size bucket is used for the number of active KV cache
-            # blocks.
+            # if context_batch_sizes is passed we directly use it.
             self.context_batch_sizes = context_batch_sizes
         elif self.prompt_batch_size:
             self.context_batch_sizes = [self.prompt_batch_size]
@@ -254,8 +252,7 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             builder=self.builder,
             tag="token",
         )
-        if not self.neuron_config.enable_chunked_prefill:  # skip token model for chunked prefill due to not needed and also compiler error
-            model_obj.register_for_serialization(decoder_lm_head)
+        model_obj.register_for_serialization(decoder_lm_head)
         decoder_lm_head.add_inputs_builder(self.builder.inputs)
         if hasattr(self.builder, "pre_layer"):
             decoder_lm_head.add_pre_layer_builder(self.builder.pre_layer)
@@ -477,11 +474,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
     def forward(self, *inputs):
         hidden, cache_ids, start_ids, *_ = inputs
         batch_size = 1 if self.neuron_config.use_1d_query else start_ids.shape[0]
-        if self.neuron_config.enable_chunked_prefill:
-            batch_size = self.batch_size[
-                0
-            ]  # in this case batch size is single element list
-            assert len(self.batch_size) == 1
         sequence_dim, *_ = self.inputs_sdim
         sequence_length = hidden.shape[sequence_dim]
         if sequence_length == 1:
@@ -502,15 +494,7 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
                     tensor = tensor[tuple(slices)].contiguous()
                 input_tensors.append(tensor)
             max_id = cache_ids.max().item()
-            # When context_length == m * n_active_tokens, bucket-size of n_active_tokens should be chosen.
-            # This is useful for Fusion-In-Decoder case, where 2nd n_active_tokens don't need to attend to
-            # 1st n_active_tokens.
-            if self.neuron_config.enable_chunked_prefill:
-                bucket_id = self.program.find_bucket_id(
-                    self.n_active_tokens - 1
-                )  # can't use max_id since it can be high
-            else:
-                bucket_id = self.program.find_bucket_id(max_id)
+            bucket_id = self.program.find_bucket_id(max_id)
             if self.use_executor:
                 if self.neuron_config and self.neuron_config.sequence_parallel_norm:
                     self.program.inputs_host_to_device(input_tensors, batch_size)
@@ -664,12 +648,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
 
     def _hlo_fully_unrolled(self, n_positions, batch_size):
         self.builder.n_positions = n_positions
-        if (
-            self.neuron_config.enable_chunked_prefill
-            and self.n_active_tokens == n_positions
-        ):
-            self.builder.num_active_blocks = batch_size
-            batch_size = 1
 
         def fully_unrolled(scribe):
             dtype = getattr(scribe, self.amp)
@@ -1716,10 +1694,6 @@ class DecoderProgram:
             kernel_tag = f"seqlen{npos}-batch{batch_size}"
             if tag is not None:
                 kernel_tag = f"{tag}-seqlen{npos}-batch{batch_size}"
-                if self.neuron_config.enable_chunked_prefill:
-                    kernel_tag = (
-                        f"{tag}-chunked-prefill-chunksize{npos}-block{batch_size}"
-                    )
             self.kernels[npos, batch_size] = compiler.ParallelKernel(
                 hlo_modules[npos, batch_size],
                 self.neuron_config.get_local_tp(tp_degree),

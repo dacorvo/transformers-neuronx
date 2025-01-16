@@ -223,24 +223,7 @@ class NeuronModelBase(PretrainedModel):
                 current = estimate
 
             if current == estimate:
-                if self.neuron_config.enable_chunked_prefill:
-                    # here the "batch_size" bucket is determined based on the number of blocks needed
-                    _, context_lens = rest[0], rest[1]
-                    block_size = self.neuron_config.continuous_batching.block_size
-                    seq_lens = context_lens + last_token_id
-                    n_active_blocks = (
-                        ((seq_lens + block_size - 1) // block_size).sum().item()
-                    )
-                    active_block_bucket = find_bucket(
-                        self.context_batch_sizes, n_active_blocks
-                    )
-                    # we use the model indexed by estimate (i.e., number of queries) and
-                    # active_block_bucket (i.e., number of active KV cache blocks)
-                    model = self.decoder_lm_head_for_context[
-                        estimate, active_block_bucket
-                    ]
-                else:
-                    model = self.decoder_lm_head_for_context[estimate, batch_size]
+                model = self.decoder_lm_head_for_context[estimate, batch_size]
                 if self.neuron_config.log_softmax_scores:
                     logits, scores = model.forward(
                         hidden_context, cache_context, start_ids, last_token_id, *rest
@@ -318,8 +301,6 @@ class NeuronModelBase(PretrainedModel):
         """
         batch_size, context_length = input_ids.shape
 
-        # define for chunked_prefill (set to size 1 zero tensor when no chunked prefill
-        # (unused in that case))
         block_tables = torch.tensor([0])
         context_lens = torch.tensor([0])
 
@@ -328,7 +309,7 @@ class NeuronModelBase(PretrainedModel):
             last_token_id = torch.zeros(batch_size, dtype=torch.int32)
         else:
             last_token_id = torch.as_tensor([0], dtype=torch.int32)
-        if context_length == 1 and not self.neuron_config.enable_chunked_prefill:
+        if context_length == 1:
             # token generation
             return input_ids, cache_ids, last_token_id, block_tables, context_lens
 
@@ -342,71 +323,31 @@ class NeuronModelBase(PretrainedModel):
             if self.neuron_config.vectorize_last_token_id:
                 if self.neuron_config.use_1d_query:
                     max_num_seqs = self.neuron_config.continuous_batching.batch_size_for_shared_caches
-                    if self.neuron_config.enable_chunked_prefill:
-                        # define useful variables
-                        input_metadata = kwargs.get("input_metadata")
-                        max_num_seqs = (
-                            self.neuron_config.continuous_batching.max_num_seqs
-                        )
-                        max_model_len = (
-                            self.neuron_config.continuous_batching.max_model_len
-                        )
-                        block_size = self.neuron_config.continuous_batching.block_size
-                        max_num_blocks_per_seq = (
-                            max_model_len + block_size - 1
-                        ) // block_size
-                        # set block_tables based on input_metadata and pad appropriately
-                        input_metadata = kwargs.get("input_metadata")
-                        block_tables = input_metadata.block_tables
-                        block_tables = maybe_pad_tensor(
-                            block_tables, 0, max_num_seqs, left=False
-                        )
-                        block_tables = maybe_pad_tensor(
-                            block_tables, 1, max_num_blocks_per_seq, left=False
-                        )
-                        # get context_lens and seq_lens from input_metadata
-                        context_lens = input_metadata.context_lens
-                        seq_lens = input_metadata.seq_lens_tensor
-                        query_lens = seq_lens - context_lens
-                        context_lens = maybe_pad_tensor(
-                            context_lens, 0, max_num_seqs, left=False
-                        )  # padding
-                        # last_token_id is used for dynamic slicing logits
-                        last_token_id = maybe_pad_tensor(
-                            query_lens, 0, max_num_seqs, left=False
-                        )
+                    prompt_lens = cache_ids.max(dim=1).values + 1
+                    context_length = prompt_lens.sum().item()
 
-                        # finally we set "context_length" to the total length of queries. We use the context
-                        # encoding model with the queries being the active tokens and hence context_length
-                        # refers to the active tokens (number of queries). This is not to be confused with
-                        # context_lens from input_metadata which refers to the past tokens for each request.
-                        context_length = query_lens.sum().item()
-                    else:
-                        prompt_lens = cache_ids.max(dim=1).values + 1
-                        context_length = prompt_lens.sum().item()
-
-                        # input_ids and cache_ids
-                        new_input_ids = torch.tensor([], dtype=input_ids.dtype)
-                        new_cache_ids = torch.tensor([], dtype=cache_ids.dtype)
-                        for idx, prompt_len in enumerate(prompt_lens):
-                            new_input_ids = torch.concat(
-                                [new_input_ids, input_ids[idx, :prompt_len]]
-                            )
-                            new_cache_ids = torch.concat(
-                                [new_cache_ids, cache_ids[idx, :prompt_len]]
-                            )
-                        input_ids = new_input_ids.unsqueeze(0)
-                        cache_ids = new_cache_ids.unsqueeze(0)
-
-                        # last_token_id
-                        # Note: With 1D query, last_token_id actually takes prompt lengths as input,
-                        #       and it's converted from prompt_lens to actual last_token_id in HLO.
-                        last_token_id = prompt_lens
-                        last_token_id_pad = torch.zeros(
-                            max_num_seqs, dtype=last_token_id.dtype
+                    # input_ids and cache_ids
+                    new_input_ids = torch.tensor([], dtype=input_ids.dtype)
+                    new_cache_ids = torch.tensor([], dtype=cache_ids.dtype)
+                    for idx, prompt_len in enumerate(prompt_lens):
+                        new_input_ids = torch.concat(
+                            [new_input_ids, input_ids[idx, :prompt_len]]
                         )
-                        last_token_id_pad[start_ids] = last_token_id
-                        last_token_id = last_token_id_pad
+                        new_cache_ids = torch.concat(
+                            [new_cache_ids, cache_ids[idx, :prompt_len]]
+                        )
+                    input_ids = new_input_ids.unsqueeze(0)
+                    cache_ids = new_cache_ids.unsqueeze(0)
+
+                    # last_token_id
+                    # Note: With 1D query, last_token_id actually takes prompt lengths as input,
+                    #       and it's converted from prompt_lens to actual last_token_id in HLO.
+                    last_token_id = prompt_lens
+                    last_token_id_pad = torch.zeros(
+                        max_num_seqs, dtype=last_token_id.dtype
+                    )
+                    last_token_id_pad[start_ids] = last_token_id
+                    last_token_id = last_token_id_pad
                 else:
                     last_token_id = cache_ids.max(dim=1).values
             else:
@@ -427,10 +368,6 @@ class NeuronModelBase(PretrainedModel):
                 assert (cache_ids.ndim == 2) and (cache_ids.shape[0] == 1), (
                     f"cache_ids is expected to be a 1xN matrix, but its shape is {cache_ids.shape}"
                 )
-                if self.neuron_config.enable_chunked_prefill:
-                    # in this case, just pad with 0s
-                    cache_ids = maybe_pad_tensor(cache_ids, 1, estimate, left=False)
-                    return cache_ids
                 start_idx = cache_ids[0, -1].item() + 1
                 end_idx = estimate + start_idx - context_length
                 pad_elements = torch.arange(
@@ -477,7 +414,7 @@ class NeuronModelBase(PretrainedModel):
 
         if (
             (n_active_tokens > 1) and cache_ids.flatten()[0].item() == 0
-        ) or self.neuron_config.enable_chunked_prefill:
+        ):
             # context encoding
             n_active_seqs, n_active_tokens = input_ids.shape
             continuous_batching_n_positions = find_bucket(
@@ -586,9 +523,7 @@ class NeuronModelBase(PretrainedModel):
 
         input_batch_size = start_ids.shape[0]
         seq_ids = start_ids.flatten()
-        if self.neuron_config.enable_chunked_prefill:
-            return logits
-        elif torch.equal(seq_ids, torch.arange(input_batch_size)):
+        if torch.equal(seq_ids, torch.arange(input_batch_size)):
             logits = logits[:input_batch_size]
         else:
             logits = logits[seq_ids.to(torch.long)]
@@ -616,12 +551,7 @@ class NeuronModelBase(PretrainedModel):
             f"{type(self)} doesn't support dynamic batching."
         )
 
-        # set running batch size to 1 for enable_chunked_prefill because context_batch_sizes is used for block bucketing
-        running_batch_size = (
-            1
-            if self.neuron_config.enable_chunked_prefill
-            else self.context_batch_sizes[-1]
-        )
+        running_batch_size = self.context_batch_sizes[-1]
         if input_batch_size > running_batch_size:
             assert input_batch_size % running_batch_size == 0, (
                 "input batch size ({input_batch_size}) not divisible by running batch size ({running_batch_size})"

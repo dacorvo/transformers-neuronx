@@ -114,18 +114,6 @@ def inputs(
         else:
             # regular token gen
             last_token_id = s32[batch_size].Parameter(parameter_number=3)
-        if neuron_config and neuron_config.enable_chunked_prefill:
-            # need to add two more inputs, block_table and context_lens
-            max_model_len = neuron_config.continuous_batching.max_model_len
-            block_size = neuron_config.continuous_batching.block_size
-            max_num_blocks_per_seq = (max_model_len + block_size - 1) // block_size
-            max_num_seqs = (
-                neuron_config.continuous_batching.batch_size_for_shared_caches
-            )
-            block_table = s32[max_num_seqs, max_num_blocks_per_seq].Parameter(
-                parameter_number=4
-            )
-            context_lens = s32[max_num_seqs].Parameter(parameter_number=5)
     else:
         last_token_id = s32[1].Parameter(parameter_number=3)
 

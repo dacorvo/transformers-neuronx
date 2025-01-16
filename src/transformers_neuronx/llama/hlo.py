@@ -972,7 +972,6 @@ class LlamaForSamplingNoEmbeddingHlo:
             batch_size = query.sizes[batch_dim]
             if (
                 (self.neuron_config.lhs_aligned or batch_size == 1)
-                and not self.neuron_config.enable_chunked_prefill
                 and not self.neuron_config.bsh_cache_layout
             ):
                 context = attention.flash_attention(query, key, value)
@@ -982,73 +981,28 @@ class LlamaForSamplingNoEmbeddingHlo:
                 context = None
 
             if context is None:
-                if self.neuron_config.enable_chunked_prefill:
-                    # S = Q @ K
-                    cached_keys_gathered = attention_utils.gather_blocks(
-                        cached_keys,
-                        block_tables=block_tables,
-                        neuron_config=self.neuron_config,
-                    )
-                    contexted_keys = attention_utils.contexted_kv(
-                        cached_keys_gathered,
-                        key,
-                        cached_mask,
-                        cached_to_contexted,
-                        active_to_contexted,
-                    )
-                    score = attention.score(
-                        query,
-                        contexted_keys,
-                        n_kv_heads=self.config.num_key_value_heads,
-                        tp_degree=tp_degree,
-                        neuron_config=self.neuron_config,
-                    )
+                # S = Q @ K
 
-                    score = attention.mask(score, mask, tp_degree=tp_degree)
-
-                    # C = softmax(Sa, Sp) @ (Va, Vp)
-                    cached_values_gathered = attention_utils.gather_blocks(
-                        cached_values,
-                        block_tables=block_tables,
-                        neuron_config=self.neuron_config,
-                    )
-                    contexted_values = attention_utils.contexted_kv(
-                        cached_values_gathered,
-                        value,
-                        cached_mask,
-                        cached_to_contexted,
-                        active_to_contexted,
-                    )
-                    context = attention.context_combined(
-                        score,
-                        contexted_values,
-                        n_kv_heads=self.config.num_key_value_heads,
-                        tp_degree=tp_degree,
-                        neuron_config=self.neuron_config,
-                    )
-                else:
-                    # S = Q @ K
-
-                    score = attention.score(
-                        query,
-                        key,
-                        n_kv_heads=self.config.num_key_value_heads,
-                        tp_degree=tp_degree,
-                        neuron_config=self.neuron_config,
-                    )
-                    score = attention.mask(
-                        score,
-                        mask,
-                        tp_degree=tp_degree,
-                        shard_over_batch=self.shard_over_batch,
-                    )
-                    context = attention.context_combined(
-                        score,
-                        value,
-                        n_kv_heads=self.config.num_key_value_heads,
-                        tp_degree=tp_degree,
-                        neuron_config=self.neuron_config,
-                    )
+                score = attention.score(
+                    query,
+                    key,
+                    n_kv_heads=self.config.num_key_value_heads,
+                    tp_degree=tp_degree,
+                    neuron_config=self.neuron_config,
+                )
+                score = attention.mask(
+                    score,
+                    mask,
+                    tp_degree=tp_degree,
+                    shard_over_batch=self.shard_over_batch,
+                )
+                context = attention.context_combined(
+                    score,
+                    value,
+                    n_kv_heads=self.config.num_key_value_heads,
+                    tp_degree=tp_degree,
+                    neuron_config=self.neuron_config,
+                )
 
             # KCache, VCache = K, V
             if cached_keys.sizes == key.sizes:
