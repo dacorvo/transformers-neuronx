@@ -18,7 +18,9 @@ from setuptools import setup, PEP420PackageFinder
 
 
 def version_py_path():
-    return os.path.join(os.path.dirname(__file__), 'src', 'transformers_neuronx', 'version.py')
+    return os.path.join(
+        os.path.dirname(__file__), "src", "transformers_neuronx", "version.py"
+    )
 
 
 exec(open(version_py_path()).read())
@@ -26,41 +28,41 @@ exec(open(version_py_path()).read())
 
 def get_version():
     # please make sure the major.minor version matches the interface version in Config
-    version = os.environ.get('TRANSFORMERS_NEURONX_VERSION', __version__) # noqa F821
-    today = datetime.today().strftime('%Y%m%d')
-    return version.replace('.x', f'.{today}')
+    version = os.environ.get("TRANSFORMERS_NEURONX_VERSION", __version__)  # noqa F821
+    today = datetime.today().strftime("%Y%m%d")
+    return version.replace(".x", f".{today}")
 
 
 setup(
-    name='transformers-neuronx',
+    name="transformers-neuronx",
     version=get_version(),
     classifiers=[
-        'Development Status :: 3 - Alpha',
-        'Intended Audience :: Developers',
-        'Intended Audience :: Education',
-        'Intended Audience :: Science/Research',
-        'License :: OSI Approved :: Apache Software License',
-        'Programming Language :: Python :: 3',
-        'Topic :: Scientific/Engineering',
-        'Topic :: Scientific/Engineering :: Mathematics',
-        'Topic :: Scientific/Engineering :: Artificial Intelligence',
-        'Topic :: Software Development',
-        'Topic :: Software Development :: Libraries',
-        'Topic :: Software Development :: Libraries :: Python Modules',
+        "Development Status :: 3 - Alpha",
+        "Intended Audience :: Developers",
+        "Intended Audience :: Education",
+        "Intended Audience :: Science/Research",
+        "License :: OSI Approved :: Apache Software License",
+        "Programming Language :: Python :: 3",
+        "Topic :: Scientific/Engineering",
+        "Topic :: Scientific/Engineering :: Mathematics",
+        "Topic :: Scientific/Engineering :: Artificial Intelligence",
+        "Topic :: Software Development",
+        "Topic :: Software Development :: Libraries",
+        "Topic :: Software Development :: Libraries :: Python Modules",
     ],
-    keywords='aws neuron neuronx transformers',
-    packages=PEP420PackageFinder.find(where='src'),
-    url='https://github.com/aws-neuron/transformers-neuronx',
-    maintainer='Amazon Web Services, Inc.',
-    description='Transformers Neuron for Trn1 and Inf2 is a software package that enables PyTorch users to perform large language model (LLM) inference on second-generation Neuron hardware',
-    license='Apache License',
-    license_files = ('LICENSE',),
+    keywords="aws neuron neuronx transformers",
+    packages=PEP420PackageFinder.find(where="src"),
+    url="https://github.com/aws-neuron/transformers-neuronx",
+    maintainer="Amazon Web Services, Inc.",
+    description="Transformers Neuron for Trn1 and Inf2 is a software package that enables PyTorch users to perform large language model (LLM) inference on second-generation Neuron hardware",
+    license="Apache License",
+    license_files=("LICENSE",),
     install_requires=[
-        'accelerate',
-        'safetensors',
-        'torch-neuronx',
-        'transformers>=4.36',
+        "accelerate",
+        "safetensors",
+        "torch-neuronx",
+        "transformers>=4.36",
     ],
-    python_requires='>=3.7',
-    package_dir={'': 'src'},
+    python_requires=">=3.7",
+    package_dir={"": "src"},
 )
