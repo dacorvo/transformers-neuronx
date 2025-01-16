@@ -175,7 +175,7 @@ class NeuronModelBase(PretrainedModel):
         This function simply called decoder_lm_head.
         It is defined as a function to enable wrapping with a decorator and measuring its runtime.
         """
-        return self.decoder_lm_head(hidden, *args)
+        return self.decoder_lm_head.forward(hidden, *args)
 
     def context(self, hidden, cache_ids, start_ids, last_token_id, *rest):
         """A helper to process context (prompt)
@@ -242,11 +242,11 @@ class NeuronModelBase(PretrainedModel):
                 else:
                     model = self.decoder_lm_head_for_context[estimate, batch_size]
                 if self.neuron_config.log_softmax_scores:
-                    logits, scores = model(
+                    logits, scores = model.forward(
                         hidden_context, cache_context, start_ids, last_token_id, *rest
                     )
                 else:
-                    logits = model(
+                    logits = model.forward(
                         hidden_context, cache_context, start_ids, last_token_id, *rest
                     )
                 if self.neuron_config.output_all_logits:

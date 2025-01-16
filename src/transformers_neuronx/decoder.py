@@ -41,7 +41,7 @@ from .utils import (
 )
 
 
-class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, NeuronBaseSerializer):
+class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
     def __init__(
         self,
         tp_degree,
@@ -80,7 +80,7 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, NeuronBaseSerializer)
         self.unroll = unroll
         self.neuron_config = NeuronConfig() if neuron_config is None else neuron_config
         self.prefixed_length = prefixed_length
-        self.layers = torch.nn.ModuleList()
+        self.layers = []
         self.ln_f_weight = None
         self.ln_f_bias = None
         self.lm_head_weight = None
@@ -1077,7 +1077,7 @@ class MaybePadder:
             return res.view(padded_shape)
 
 
-class DecoderLayer(torch.nn.Module):
+class DecoderLayer():
     def __init__(
         self,
         tp_degree,
