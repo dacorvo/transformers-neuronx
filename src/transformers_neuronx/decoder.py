@@ -15,9 +15,9 @@
 import os
 import itertools
 import warnings
+from typing import List
 
 import torch
-from transformers_neuronx import base
 from transformers_neuronx import compiler
 from transformers_neuronx import dtypes
 from transformers_neuronx import hlo
@@ -29,6 +29,7 @@ from transformers_neuronx.config import NeuronConfig
 from transformers_neuronx.llama.hlo import LlamaForSamplingNoEmbeddingHlo
 
 
+from .base import NeuronModelBase, NeuronBaseSerializer
 from .bucket import batch_sizes, find_bucket
 from .utils import (
     maybe_pad_tensor,
@@ -40,7 +41,7 @@ from .utils import (
 )
 
 
-class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerializer):
+class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, NeuronBaseSerializer):
     def __init__(
         self,
         tp_degree,
@@ -186,7 +187,11 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
             self.neuron_config.group_query_attention = constants.GQA.REPLICATED_HEADS
 
     def init_context_decoder(
-        self, unroll, buckets, model_obj, context_batch_sizes=None
+        self,
+        unroll: int,
+        buckets: List[int],
+        model_obj: NeuronModelBase,
+        context_batch_sizes: List[int] = None,
     ):
         cls = type(self)
         decoder_lm_head = {}
@@ -228,7 +233,9 @@ class DecoderLmHeadForSamplingNoEmbedding(torch.nn.Module, base.NeuronBaseSerial
                 )
         return decoder_lm_head
 
-    def init_token_decoder(self, unroll, buckets, model_obj):
+    def init_token_decoder(
+        self, unroll: int, buckets: List[int], model_obj: NeuronModelBase
+    ):
         cls = type(self)
         decoder_lm_head = cls(
             tp_degree=self.tp_degree,
