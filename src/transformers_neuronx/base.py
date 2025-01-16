@@ -758,38 +758,6 @@ class NeuronModelBase(PretrainedModel):
             logits = logits.transpose(0, 1)
         return logits
 
-    def pp_forward(self, *args, **kwargs):
-        """
-        forward wrapper for pipeline parallel
-        """
-        import torch.distributed as dist
-
-        # if host, run normal forward
-        if self.neuron_config.rank_id == 0:
-            broad_cast_objects = [args, kwargs]
-            dist.broadcast_object_list(
-                broad_cast_objects, src=0, device=torch.device("cpu")
-            )
-            res = self(*args, **kwargs)
-            return res
-        else:
-            # if non-host, fall back to a for loop
-            # all it does is to receive hidden from previous pp stage
-            # if it is last pp stage, send back logits to first pp stage
-            # to continue sampling loop
-            while True:
-                broad_cast_objects = [None, None]
-                # we need to receive information from host
-                # to determine which decoder to run and which NEFF of decoder to run
-                # i.e. run token generation with some batch_size and bucket_id
-                #
-                # it is now naturally handled in forward call
-                dist.broadcast_object_list(
-                    broad_cast_objects, src=0, device=torch.device("cpu")
-                )
-                args, kwargs = broad_cast_objects
-                self(*args, **kwargs)
-
     def serialization_enabled(self):
         return getattr(self, "nbs_objs", None) is not None
 
