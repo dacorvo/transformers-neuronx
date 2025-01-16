@@ -18,26 +18,33 @@ from transformers_neuronx import hlo
 
 
 def apply_inv_frequency_scaling(freq, rope_scaling):
-    scale_factor = rope_scaling.get('factor')
-    low_freq_factor = rope_scaling.get('low_freq_factor')
-    high_freq_factor = rope_scaling.get('high_freq_factor')
-    old_context_len = rope_scaling.get('original_max_position_embeddings')
+    scale_factor = rope_scaling.get("factor")
+    low_freq_factor = rope_scaling.get("low_freq_factor")
+    high_freq_factor = rope_scaling.get("high_freq_factor")
+    old_context_len = rope_scaling.get("original_max_position_embeddings")
 
     low_freq_wavelen = old_context_len / low_freq_factor
     high_freq_wavelen = old_context_len / high_freq_factor
     assert low_freq_wavelen != high_freq_wavelen
 
     wavelen = 2 * math.pi / freq
-    smooth = (old_context_len / wavelen - low_freq_factor) / (high_freq_factor - low_freq_factor)
+    smooth = (old_context_len / wavelen - low_freq_factor) / (
+        high_freq_factor - low_freq_factor
+    )
 
-    new_freq = torch.where(wavelen < high_freq_wavelen, freq, freq/scale_factor)
-    smooth_cond = torch.logical_and(wavelen >= high_freq_wavelen, wavelen <= low_freq_wavelen)
-    new_freq = torch.where(smooth_cond, (1 - smooth) * freq / scale_factor + smooth * freq, new_freq)
+    new_freq = torch.where(wavelen < high_freq_wavelen, freq, freq / scale_factor)
+    smooth_cond = torch.logical_and(
+        wavelen >= high_freq_wavelen, wavelen <= low_freq_wavelen
+    )
+    new_freq = torch.where(
+        smooth_cond, (1 - smooth) * freq / scale_factor + smooth * freq, new_freq
+    )
     return new_freq.to(dtype=freq.dtype)
 
 
-def hlo_rotary_embedding(dtype, head_dim, cache_ids, base=10000, interpolation_factor=None, rope_scaling=None):
-
+def hlo_rotary_embedding(
+    dtype, head_dim, cache_ids, base=10000, interpolation_factor=None, rope_scaling=None
+):
     scribe = cache_ids.scribe
     # Using f16 during compute causes relatively high error
     mtype = scribe.f32
@@ -50,13 +57,16 @@ def hlo_rotary_embedding(dtype, head_dim, cache_ids, base=10000, interpolation_f
         cache_ids = hlo.reshape(cache_ids, [batch_size, n_active_tokens, 1])
         dot_dims = dict(lhs_contracting_dimensions=[2], rhs_contracting_dimensions=[0])
     else:
-        n_active_tokens, = cache_ids.sizes  # 1d cache_ids
+        (n_active_tokens,) = cache_ids.sizes  # 1d cache_ids
         cache_ids = hlo.reshape(cache_ids, [n_active_tokens, 1])
         dot_dims = dict(lhs_contracting_dimensions=[1], rhs_contracting_dimensions=[0])
     size = head_dim // 2
 
     inv_freq = 1.0 / (base ** (torch.arange(0, head_dim, 2) / head_dim))
-    if rope_scaling is not None and rope_scaling.get("rope_type", rope_scaling.get("type", None)) == "llama3":
+    if (
+        rope_scaling is not None
+        and rope_scaling.get("rope_type", rope_scaling.get("type", None)) == "llama3"
+    ):
         inv_freq = apply_inv_frequency_scaling(inv_freq, rope_scaling)
     inv_freq = hlo.literal(mtype, inv_freq)
 
@@ -78,9 +88,10 @@ def get_up_down(q):
     Given a tensor, returns its upper and lower halves (divided in the last dimension)
     """
     head_dim = q.sizes[-1]
-    q_up = hlo.slice_along(q, -1, head_dim//2)
-    q_down = hlo.slice_along(q, -1, head_dim, head_dim//2)
+    q_up = hlo.slice_along(q, -1, head_dim // 2)
+    q_down = hlo.slice_along(q, -1, head_dim, head_dim // 2)
     return q_up, q_down
+
 
 def get_up_down_with_percentage(q, percentage):
     """
@@ -90,6 +101,7 @@ def get_up_down_with_percentage(q, percentage):
     q_up = hlo.slice_along(q, -1, int(head_dim * percentage))
     q_down = hlo.slice_along(q, -1, head_dim, int(head_dim * percentage))
     return q_up, q_down
+
 
 def rotate_vec(q, sin_r, cos_r, rotary_percentage=1):
     """
@@ -106,11 +118,15 @@ def rotate_vec(q, sin_r, cos_r, rotary_percentage=1):
         q_rotary_up, q_rotary_down = get_up_down(q_rotary)
         q_rotary_rot_up = hlo.ax_minus_by(cos_r, q_rotary_up, sin_r, q_rotary_down)
         q_rotary_rot_down = hlo.ax_plus_by(cos_r, q_rotary_down, sin_r, q_rotary_up)
-        q_rotary_rot = hlo.concatenate([q_rotary_rot_up, q_rotary_rot_down], dimension=3)
+        q_rotary_rot = hlo.concatenate(
+            [q_rotary_rot_up, q_rotary_rot_down], dimension=3
+        )
         return hlo.concatenate([q_rotary_rot, q_pass], dimension=3)
 
 
-def rotate_half(query, key, sin_cos, rotary_percentage=1, tp_degree=None, shard_over_batch=False):
+def rotate_half(
+    query, key, sin_cos, rotary_percentage=1, tp_degree=None, shard_over_batch=False
+):
     """
     A secondary projection to apply to input query/key projections (used in
     specific models: GPT-J/GPT-NeoX/Llama).
@@ -119,8 +135,18 @@ def rotate_half(query, key, sin_cos, rotary_percentage=1, tp_degree=None, shard_
     if shard_over_batch:
         n_active_tokens, n_seqs_per_nc, n_kv_heads, d_head = key.sizes
         _, _, n_heads, _ = query.sizes
-        broadcast_sizes = n_active_tokens, n_seqs_per_nc, n_heads, int((d_head // 2) * rotary_percentage)
-        kv_broadcast_sizes = n_active_tokens, n_seqs_per_nc, n_kv_heads, int((d_head // 2) * rotary_percentage)
+        broadcast_sizes = (
+            n_active_tokens,
+            n_seqs_per_nc,
+            n_heads,
+            int((d_head // 2) * rotary_percentage),
+        )
+        kv_broadcast_sizes = (
+            n_active_tokens,
+            n_seqs_per_nc,
+            n_kv_heads,
+            int((d_head // 2) * rotary_percentage),
+        )
     else:
         n_active_tokens, n_seqs, n_kv_heads_tp, d_head = key.sizes
         _, _, n_heads_tp, _ = query.sizes
@@ -131,8 +157,18 @@ def rotate_half(query, key, sin_cos, rotary_percentage=1, tp_degree=None, shard_
             | q_up sin + q_down cos |
         """
         # Rotate query and key
-        broadcast_sizes = n_active_tokens, n_seqs, n_heads_tp, int((d_head // 2) * rotary_percentage)
-        kv_broadcast_sizes = n_active_tokens, n_seqs, n_kv_heads_tp, int((d_head // 2) * rotary_percentage)
+        broadcast_sizes = (
+            n_active_tokens,
+            n_seqs,
+            n_heads_tp,
+            int((d_head // 2) * rotary_percentage),
+        )
+        kv_broadcast_sizes = (
+            n_active_tokens,
+            n_seqs,
+            n_kv_heads_tp,
+            int((d_head // 2) * rotary_percentage),
+        )
 
     def _broadcast_sin_cos(sin_cos, broadcast_sizes):
         sin, cos = sin_cos

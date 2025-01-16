@@ -14,10 +14,7 @@
 # ==============================================================================
 
 
-
-
 class DecoderProgram:
-
     def setup(self, layers, ln_lm_head):
         raise NotImplementedError(DecoderProgram)
 

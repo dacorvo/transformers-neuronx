@@ -37,6 +37,7 @@ def ax_plus_by(a, x, b, y):
     ax_by = ax.dtype[ax.sizes].Add(ax, by)
     return ax_by
 
+
 def ax_minus_by(a, x, b, y):
     """
     Calculates a * x - b * y
@@ -76,7 +77,9 @@ def batch_norm(tensor, feature_index, epsilon=1e-5):
     scale = full(1, dtype, num_features)
     offset = full(0, dtype, num_features)
     shape = scribe.tuple(dtype[sizes], dtype[num_features], dtype[num_features])
-    bn_tuple = shape.BatchNormTraining(tensor, scale, offset, epsilon=epsilon, feature_index=feature_index)
+    bn_tuple = shape.BatchNormTraining(
+        tensor, scale, offset, epsilon=epsilon, feature_index=feature_index
+    )
     return bn_tuple
 
 
@@ -128,7 +131,9 @@ def layer_norm_bsh(hidden, weight, bias, neuron_config=None, tp_degree=None):
     return output
 
 
-def rms_norm_legacy(hidden, weight, eps=1e-6, dim=2, neuron_config=None, tp_degree=None):
+def rms_norm_legacy(
+    hidden, weight, eps=1e-6, dim=2, neuron_config=None, tp_degree=None
+):
     # Reference: https://github.com/huggingface/transformers/blob/v4.29.2/src/transformers/models/t5/modeling_t5.py#L238-L260
 
     size = hidden.sizes
@@ -170,7 +175,6 @@ def rms_norm_legacy(hidden, weight, eps=1e-6, dim=2, neuron_config=None, tp_degr
 
 
 def rms_norm(hidden, weight, eps=1e-6, dim=2, neuron_config=None, tp_degree=None):
-
     dtype = hidden.dtype
     shape = hidden.sizes
     # Fallback on generic HLO implementation when norm dimension is 1
@@ -187,7 +191,13 @@ def rms_norm(hidden, weight, eps=1e-6, dim=2, neuron_config=None, tp_degree=None
         f32 = scribe.f32
         hidden = cast(hidden, f32)
 
-    result = dtype[shape].CustomCall(hidden, weight, eps, custom_call_target="AwsNeuronRmsNorm", backend_config=backend_config,)
+    result = dtype[shape].CustomCall(
+        hidden,
+        weight,
+        eps,
+        custom_call_target="AwsNeuronRmsNorm",
+        backend_config=backend_config,
+    )
     if neuron_config and neuron_config.is_sequence_parallel:
         result = all_gather(result, 1, tp_degree, replica_groups=None)
 
@@ -207,25 +217,46 @@ def dot_general(lhs, rhs, dimension_numbers, dtype=None):
     dtype = dtype if dtype else lhs.dtype
     lhs_sizes = lhs.sizes
     rhs_sizes = rhs.sizes
-    dot_dims = dict(lhs_contracting_dimensions=dimension_numbers.get("lhs_contracting_dimensions", [0]),
-                    lhs_batch_dimensions=dimension_numbers.get("lhs_batch_dimensions", []),
-                    rhs_contracting_dimensions=dimension_numbers.get("rhs_contracting_dimensions", [0]),
-                    rhs_batch_dimensions=dimension_numbers.get("rhs_batch_dimensions", []))
-    lhs_free_dimensions = list(filter(lambda x: x not in dot_dims["lhs_batch_dimensions"] and \
-                                      x not in dot_dims["lhs_contracting_dimensions"],
-                                      list(range(len(lhs_sizes)))))
-    rhs_free_dimensions = list(filter(lambda x: x not in dot_dims["rhs_batch_dimensions"] and \
-                                      x not in dot_dims["rhs_contracting_dimensions"],
-                                      list(range(len(rhs_sizes)))))
+    dot_dims = dict(
+        lhs_contracting_dimensions=dimension_numbers.get(
+            "lhs_contracting_dimensions", [0]
+        ),
+        lhs_batch_dimensions=dimension_numbers.get("lhs_batch_dimensions", []),
+        rhs_contracting_dimensions=dimension_numbers.get(
+            "rhs_contracting_dimensions", [0]
+        ),
+        rhs_batch_dimensions=dimension_numbers.get("rhs_batch_dimensions", []),
+    )
+    lhs_free_dimensions = list(
+        filter(
+            lambda x: x not in dot_dims["lhs_batch_dimensions"]
+            and x not in dot_dims["lhs_contracting_dimensions"],
+            list(range(len(lhs_sizes))),
+        )
+    )
+    rhs_free_dimensions = list(
+        filter(
+            lambda x: x not in dot_dims["rhs_batch_dimensions"]
+            and x not in dot_dims["rhs_contracting_dimensions"],
+            list(range(len(rhs_sizes))),
+        )
+    )
 
     # Calculate batch/contracting/free sizes
     lhs_batch_sizes = [lhs_sizes[idx] for idx in dot_dims["lhs_batch_dimensions"]]
     rhs_batch_sizes = [rhs_sizes[idx] for idx in dot_dims["rhs_batch_dimensions"]]
-    assert lhs_batch_sizes == rhs_batch_sizes, f"unmatched batch_sizes ({lhs_batch_sizes}) vs ({rhs_batch_sizes})"
-    lhs_contracting_sizes = [lhs_sizes[idx] for idx in dot_dims["lhs_contracting_dimensions"]]
-    rhs_contracting_sizes = [rhs_sizes[idx] for idx in dot_dims["rhs_contracting_dimensions"]]
-    assert lhs_contracting_sizes == rhs_contracting_sizes, \
+    assert lhs_batch_sizes == rhs_batch_sizes, (
+        f"unmatched batch_sizes ({lhs_batch_sizes}) vs ({rhs_batch_sizes})"
+    )
+    lhs_contracting_sizes = [
+        lhs_sizes[idx] for idx in dot_dims["lhs_contracting_dimensions"]
+    ]
+    rhs_contracting_sizes = [
+        rhs_sizes[idx] for idx in dot_dims["rhs_contracting_dimensions"]
+    ]
+    assert lhs_contracting_sizes == rhs_contracting_sizes, (
         f"unmatched contracting_sizes ({lhs_contracting_sizes}) vs ({rhs_contracting_sizes})"
+    )
     lhs_free_sizes = [lhs_sizes[idx] for idx in lhs_free_dimensions]
     rhs_free_sizes = [rhs_sizes[idx] for idx in rhs_free_dimensions]
 
@@ -235,7 +266,9 @@ def dot_general(lhs, rhs, dimension_numbers, dtype=None):
 
 
 def blockwise_qk_matmul(query, keys, neuron_config):
-    output_dot = full(0, )
+    output_dot = full(
+        0,
+    )
     return output_dot
 
 
@@ -256,9 +289,9 @@ def dot01(lhs, rhs):
 
 
 def dot_add(
-    lhs: 'HloShape', # noqa F821
-    rhs: 'HloShape', # noqa F821
-    bias: 'HloShape' = None, # noqa F821
+    lhs: "HloShape",  # noqa F821
+    rhs: "HloShape",  # noqa F821
+    bias: "HloShape" = None,  # noqa F821
     lhs_contracting_dimension: List[int] = 0,
     rhs_contracting_dimension: List[int] = 0,
     bias_dimension: int = 0,
@@ -316,19 +349,31 @@ def dot11_add1(lhs, rhs, bias):
     return dot_add(lhs, rhs, bias, 1, 1, 1)
 
 
-def dot_with_tiled_weight_add(lhs, rhs, bias,
-                              lhs_contracting_dimensions,
-                              rhs_contracting_dimensions,
-                              bias_dimension=0):
+def dot_with_tiled_weight_add(
+    lhs,
+    rhs,
+    bias,
+    lhs_contracting_dimensions,
+    rhs_contracting_dimensions,
+    bias_dimension=0,
+):
     dtype = lhs.dtype
-    dot_result_lhs_dims = list(filter(lambda x: x not in lhs_contracting_dimensions,
-                                       list(range(len(lhs.sizes)))))
+    dot_result_lhs_dims = list(
+        filter(
+            lambda x: x not in lhs_contracting_dimensions, list(range(len(lhs.sizes)))
+        )
+    )
     dot_result_lhs_sizes = [lhs.sizes[i] for i in dot_result_lhs_dims]
-    dot_result_rhs_dims = list(filter(lambda x: x not in rhs_contracting_dimensions,
-                                       list(range(len(rhs.sizes)))))
+    dot_result_rhs_dims = list(
+        filter(
+            lambda x: x not in rhs_contracting_dimensions, list(range(len(rhs.sizes)))
+        )
+    )
     dot_result_rhs_sizes = [rhs.sizes[i] for i in dot_result_rhs_dims]
-    dot_dims = dict(lhs_contracting_dimensions=lhs_contracting_dimensions,
-                    rhs_contracting_dimensions=rhs_contracting_dimensions)
+    dot_dims = dict(
+        lhs_contracting_dimensions=lhs_contracting_dimensions,
+        rhs_contracting_dimensions=rhs_contracting_dimensions,
+    )
     dot_result_sizes = dot_result_lhs_sizes + dot_result_rhs_sizes
     dot = dtype[dot_result_sizes].Dot(lhs, rhs, dot_dimension_numbers=dot_dims)
     lhs_size = np.product(dot_result_lhs_sizes)
@@ -343,20 +388,28 @@ def dot_with_tiled_weight_add(lhs, rhs, bias,
 
 
 def dot_1220_add1(lhs, rhs, bias):
-    return dot_with_tiled_weight_add(lhs, rhs, bias,
-                                     lhs_contracting_dimensions=[1, 2],
-                                     rhs_contracting_dimensions=[2, 0],
-                                     bias_dimension=1)
+    return dot_with_tiled_weight_add(
+        lhs,
+        rhs,
+        bias,
+        lhs_contracting_dimensions=[1, 2],
+        rhs_contracting_dimensions=[2, 0],
+        bias_dimension=1,
+    )
+
 
 def dot_0120_add1(lhs, rhs, bias):
-    return dot_with_tiled_weight_add(lhs, rhs, bias,
-                                     lhs_contracting_dimensions=[0, 1],
-                                     rhs_contracting_dimensions=[2, 0],
-                                     bias_dimension=1)
+    return dot_with_tiled_weight_add(
+        lhs,
+        rhs,
+        bias,
+        lhs_contracting_dimensions=[0, 1],
+        rhs_contracting_dimensions=[2, 0],
+        bias_dimension=1,
+    )
 
 
 def gen_add_func(dtype):
-
     def add_func(scribe):
         p0 = dtype.Parameter(parameter_number=0)
         p1 = dtype.Parameter(parameter_number=1)
@@ -366,10 +419,9 @@ def gen_add_func(dtype):
 
 
 def gen_assign_func(dtype):
-
     def assign_func(scribe):
         # Note: we need to unpack the first parameter even if we don't use it
-        p0 = dtype.Parameter(parameter_number=0) # noqa F841
+        p0 = dtype.Parameter(parameter_number=0)  # noqa F841
         p1 = dtype.Parameter(parameter_number=1)
         return p1
 
@@ -389,15 +441,26 @@ def get_activation(activation_function: Union[str, Callable]) -> Callable:
     """
     if callable(activation_function):
         return activation_function
-    assert hasattr(activations, activation_function), f"{activation_function} is not defined in activations.py"
+    assert hasattr(activations, activation_function), (
+        f"{activation_function} is not defined in activations.py"
+    )
     activation = getattr(activations, activation_function)
-    assert callable(activation), f"Expected a callable activation function but recieved a {type(activation)}"
+    assert callable(activation), (
+        f"Expected a callable activation function but recieved a {type(activation)}"
+    )
     return activation
 
 
-def mlp(hidden, in_weight, in_bias, out_weight, out_bias,
-        activation_function, tp_degree,
-        neuron_config=None, transposed=False,
+def mlp(
+    hidden,
+    in_weight,
+    in_bias,
+    out_weight,
+    out_bias,
+    activation_function,
+    tp_degree,
+    neuron_config=None,
+    transposed=False,
 ):
     # single:
     #   hidden: [h, a, b]
@@ -438,9 +501,17 @@ def mlp(hidden, in_weight, in_bias, out_weight, out_bias,
 
     dtype, replica_groups = parse_dtype_replica_groups(neuron_config, tp_degree)
     if neuron_config is not None and neuron_config.is_sequence_parallel:
-        hidden = reduce_scatter_sum(hidden, tp_degree=tp_degree, dim=1, replica_groups=replica_groups, dtype=dtype)
+        hidden = reduce_scatter_sum(
+            hidden,
+            tp_degree=tp_degree,
+            dim=1,
+            replica_groups=replica_groups,
+            dtype=dtype,
+        )
     else:
-        hidden = all_reduce_sum(hidden, tp_degree, dtype=dtype, replica_groups=replica_groups)
+        hidden = all_reduce_sum(
+            hidden, tp_degree, dtype=dtype, replica_groups=replica_groups
+        )
 
     # Transpose back to HSB if applicable
     return permute(hidden, (2, 1, 0)) if is_bsh else hidden
@@ -454,7 +525,7 @@ def gated_mlp_bsh(
     in0_bias=None,
     in1_bias=None,
     out_bias=None,
-    activation_function='silu',
+    activation_function="silu",
     tp_degree=1,
     neuron_config=None,
     return_partial=False,
@@ -488,9 +559,9 @@ def gated_mlp_bsh(
     else:
         hidden_active = dot10_add1(hidden, in0_weight, in0_bias)
         if neuron_config and neuron_config.fuse_mlp:
-            size = hidden_active.sizes[1]//2
+            size = hidden_active.sizes[1] // 2
             hidden_gate = slice_along(hidden_active, 1, limit=size, start=0)
-            hidden_linear = slice_along(hidden_active, 1, limit=2*size, start=size)
+            hidden_linear = slice_along(hidden_active, 1, limit=2 * size, start=size)
             hidden_active = get_activation(activation_function)(hidden_gate)
         else:
             hidden_active = get_activation(activation_function)(hidden_active)
@@ -502,9 +573,17 @@ def gated_mlp_bsh(
     if not return_partial:
         dtype, replica_groups = parse_dtype_replica_groups(neuron_config, tp_degree)
         if neuron_config is not None and neuron_config.is_sequence_parallel:
-            result = reduce_scatter_sum(result, tp_degree=tp_degree, dim=1, replica_groups=replica_groups, dtype=dtype)
+            result = reduce_scatter_sum(
+                result,
+                tp_degree=tp_degree,
+                dim=1,
+                replica_groups=replica_groups,
+                dtype=dtype,
+            )
         else:
-            result = all_reduce_sum(result, tp_degree, dtype=dtype, replica_groups=replica_groups)
+            result = all_reduce_sum(
+                result, tp_degree, dtype=dtype, replica_groups=replica_groups
+            )
     return result
 
 
@@ -516,7 +595,7 @@ def gated_mlp(
     in0_bias=None,
     in1_bias=None,
     out_bias=None,
-    activation_function='silu',
+    activation_function="silu",
     tp_degree=1,
     neuron_config=None,
     return_partial=False,
@@ -548,9 +627,9 @@ def gated_mlp(
     # (h, b * s) @ (h, i) contract=(0, 0) => (b * s, i)
     hidden_active = dot00_add1(hidden, in0_weight, in0_bias)
     if neuron_config and neuron_config.fuse_mlp:
-        size = hidden_active.sizes[1]//2
+        size = hidden_active.sizes[1] // 2
         hidden_gate = slice_along(hidden_active, 1, limit=size, start=0)
-        hidden_linear = slice_along(hidden_active, 1, limit=2*size, start=size)
+        hidden_linear = slice_along(hidden_active, 1, limit=2 * size, start=size)
         hidden_active = get_activation(activation_function)(hidden_gate)
     else:
         hidden_active = get_activation(activation_function)(hidden_active)
@@ -575,9 +654,17 @@ def gated_mlp(
     if not return_partial:
         dtype, replica_groups = parse_dtype_replica_groups(neuron_config, tp_degree)
         if neuron_config is not None and neuron_config.is_sequence_parallel:
-            result = reduce_scatter_sum(result, tp_degree=tp_degree, dim=1, replica_groups=replica_groups, dtype=dtype)
+            result = reduce_scatter_sum(
+                result,
+                tp_degree=tp_degree,
+                dim=1,
+                replica_groups=replica_groups,
+                dtype=dtype,
+            )
         else:
-            result = all_reduce_sum(result, tp_degree, dtype=dtype, replica_groups=replica_groups)
+            result = all_reduce_sum(
+                result, tp_degree, dtype=dtype, replica_groups=replica_groups
+            )
 
     # Transpose back to HSB if applicable
     return permute(result, (2, 1, 0)) if is_bsh else result
@@ -611,11 +698,21 @@ def softmax(logits, dim=None, tp_degree=1):
 
 
 def transfer_with_static_ring(shape):
-    custom_call_target = 'AwsNeuronTransferWithStaticRing'
-    return shape.dtype[shape.sizes].CustomCall(shape, custom_call_target=custom_call_target)
+    custom_call_target = "AwsNeuronTransferWithStaticRing"
+    return shape.dtype[shape.sizes].CustomCall(
+        shape, custom_call_target=custom_call_target
+    )
 
 
-def attention_mask(cache_ids, start_ids, n_positions, last_token_id=None, num_active_blocks=None, neuron_config=None, context_lens=None):
+def attention_mask(
+    cache_ids,
+    start_ids,
+    n_positions,
+    last_token_id=None,
+    num_active_blocks=None,
+    neuron_config=None,
+    context_lens=None,
+):
     """
     Create decomposed prior/active attention masks.
 
@@ -663,9 +760,9 @@ def attention_mask(cache_ids, start_ids, n_positions, last_token_id=None, num_ac
             context_lens=context_lens,
         )
     else:
-        n_active_tokens, = cache_ids.sizes
+        (n_active_tokens,) = cache_ids.sizes
         use_prefetch = n_active_tokens != n_positions
-        triu_comparison = 'LT' if use_prefetch else 'LE'
+        triu_comparison = "LT" if use_prefetch else "LE"
         return decoder_attention_mask(
             start_ids,
             cache_ids,
@@ -676,9 +773,15 @@ def attention_mask(cache_ids, start_ids, n_positions, last_token_id=None, num_ac
         )
 
 
-def decoder_attention_mask(start_ids, position_ids, n_positions, triu_comparison='LE',
-                           allow_kv_dot_prefetch=False, start_mask=True):
-    batch_size, = start_ids.sizes
+def decoder_attention_mask(
+    start_ids,
+    position_ids,
+    n_positions,
+    triu_comparison="LE",
+    allow_kv_dot_prefetch=False,
+    start_mask=True,
+):
+    (batch_size,) = start_ids.sizes
     int_dtype = position_ids.dtype
     use_2d_cache_ids = len(position_ids.sizes) > 1
     if use_2d_cache_ids:
@@ -687,7 +790,7 @@ def decoder_attention_mask(start_ids, position_ids, n_positions, triu_comparison
         # TODO: fix the following broadcast for 2D position_ids
         position_ids = int_dtype[n_active_tokens].Iota(dimensions=[0])
     else:
-        n_active_tokens,  = position_ids.sizes  # 1d position_ids
+        (n_active_tokens,) = position_ids.sizes  # 1d position_ids
     triu_sizes = n_active_tokens, n_positions
     pred = position_ids.scribe.pred
 
@@ -703,13 +806,17 @@ def decoder_attention_mask(start_ids, position_ids, n_positions, triu_comparison
 
     position_ids_br = int_dtype[triu_sizes].Broadcast(position_ids, dimensions=[0])
 
-    mask_triu = pred[triu_sizes].Compare(iota1t, position_ids_br, comparison_direction=triu_comparison)
+    mask_triu = pred[triu_sizes].Compare(
+        iota1t, position_ids_br, comparison_direction=triu_comparison
+    )
     if not start_mask:
         return mask_triu, None
     start_sizes = batch_size, n_positions
     iota1s = int_dtype[start_sizes].Broadcast(iota1, dimensions=[1])
     start_ids_br = int_dtype[start_sizes].Broadcast(start_ids, dimensions=[0])
-    mask_start = pred[start_sizes].Compare(iota1s, start_ids_br, comparison_direction='GE')
+    mask_start = pred[start_sizes].Compare(
+        iota1s, start_ids_br, comparison_direction="GE"
+    )
     mask_sizes = batch_size, n_active_tokens, n_positions
     mask_triu = pred[mask_sizes].Broadcast(mask_triu, dimensions=[1, 2])
     mask_start = pred[mask_sizes].Broadcast(mask_start, dimensions=[0, 2])
@@ -719,28 +826,29 @@ def decoder_attention_mask(start_ids, position_ids, n_positions, triu_comparison
     sizes = batch_size, n_active_tokens
     start_ids_br = int_dtype[sizes].Broadcast(start_ids, dimensions=[0])
     position_ids_br = int_dtype[sizes].Broadcast(position_ids, dimensions=[1])
-    active_mask = pred[sizes].Compare(position_ids_br, start_ids_br, comparison_direction='GE')
+    active_mask = pred[sizes].Compare(
+        position_ids_br, start_ids_br, comparison_direction="GE"
+    )
     return mask, active_mask
 
 
 def dtype_minimum(dtype):
     scribe = dtype.scribe
     minimums = {
-         scribe.s64: -2 ** 63,
-         scribe.s32: -2 ** 31,
-         scribe.s16: -2 ** 15,
-         scribe.s8: -2 ** 7,
-         scribe.u64: 0,
-         scribe.u32: 0,
-         scribe.u16: 0,
-         scribe.u8: 0,
-         scribe.pred: False,
+        scribe.s64: -(2**63),
+        scribe.s32: -(2**31),
+        scribe.s16: -(2**15),
+        scribe.s8: -(2**7),
+        scribe.u64: 0,
+        scribe.u32: 0,
+        scribe.u16: 0,
+        scribe.u8: 0,
+        scribe.pred: False,
     }
-    return minimums.get(dtype, float('-inf'))
+    return minimums.get(dtype, float("-inf"))
 
 
 def reduce_max(tensor, dim, keepdim=False):
-
     dtype = tensor.dtype
     reduce_shape = list(tensor.sizes)
     reduce_shape.pop(dim)
@@ -751,7 +859,9 @@ def reduce_max(tensor, dim, keepdim=False):
         return dtype.Maximum(p0, p1)
 
     minimum = dtype.Constant(constant_value=dtype_minimum(dtype))
-    value = dtype[reduce_shape].Reduce(tensor, minimum, dimensions=[dim], to_apply=reducer)
+    value = dtype[reduce_shape].Reduce(
+        tensor, minimum, dimensions=[dim], to_apply=reducer
+    )
 
     if keepdim:
         keepdim_shape = list(tensor.sizes)
@@ -760,8 +870,8 @@ def reduce_max(tensor, dim, keepdim=False):
 
     return value
 
-def reduce_sum(tensor, dim, keepdim=False):
 
+def reduce_sum(tensor, dim, keepdim=False):
     dtype = tensor.dtype
     reduce_shape = list(tensor.sizes)
     reduce_shape.pop(dim)
@@ -772,7 +882,9 @@ def reduce_sum(tensor, dim, keepdim=False):
         return dtype.Add(p0, p1)
 
     minimum = dtype.Constant(constant_value=0)
-    value = dtype[reduce_shape].Reduce(tensor, minimum, dimensions=[dim], to_apply=reducer)
+    value = dtype[reduce_shape].Reduce(
+        tensor, minimum, dimensions=[dim], to_apply=reducer
+    )
 
     if keepdim:
         keepdim_shape = list(tensor.sizes)
@@ -797,9 +909,7 @@ def all_reduce(tensor, replica_groups, to_apply, dtype=None):
     tensor = cast(tensor, all_reduce_dtype)
 
     result = all_reduce_dtype[size].AllReduce(
-        tensor,
-        replica_groups=replica_groups,
-        to_apply=to_apply
+        tensor, replica_groups=replica_groups, to_apply=to_apply
     )
 
     result = cast(result, tensor_dtype)
@@ -825,14 +935,13 @@ def all_gather(tensor, dim, tp_degree, replica_groups=None):
 
 
 def all_reduce_sum(tensor, tp_degree, dtype=None, replica_groups=None):
-
     if tp_degree == 1:
         return tensor
 
     scribe = tensor.scribe
 
     if dtype is None:
-        all_reduce_dtype =  tensor.dtype
+        all_reduce_dtype = tensor.dtype
     elif isinstance(dtype, str):
         all_reduce_dtype = dtypes.to_pyhlo_type(scribe, dtype)
     else:
@@ -847,10 +956,7 @@ def all_reduce_sum(tensor, tp_degree, dtype=None, replica_groups=None):
         return all_reduce_dtype.Add(p0, p1)
 
     return all_reduce(
-        tensor,
-        replica_groups=replica_groups,
-        to_apply=reducer,
-        dtype=all_reduce_dtype
+        tensor, replica_groups=replica_groups, to_apply=reducer, dtype=all_reduce_dtype
     )
 
 
@@ -861,10 +967,12 @@ def _all_to_all(tensor, split_dim, concat_dim, tp_degree):
     # 3) we can only split/concat outer most dimension
     shape = list(tensor.sizes)
     dtype = tensor.dtype
-    assert (split_dim == 0 and concat_dim == 1) or (split_dim == 1 and concat_dim == 0), \
-        f"invalid input dimensions: split_dim={split_dim}, concat_dim={concat_dim}"
-    assert shape[split_dim] >= tp_degree and shape[split_dim] % tp_degree == 0, \
+    assert (split_dim == 0 and concat_dim == 1) or (
+        split_dim == 1 and concat_dim == 0
+    ), f"invalid input dimensions: split_dim={split_dim}, concat_dim={concat_dim}"
+    assert shape[split_dim] >= tp_degree and shape[split_dim] % tp_degree == 0, (
         f"invalid split size ({shape[split_dim]}) and tp_degree ({tp_degree})"
+    )
     shape_flat = shape[1:].copy()
     shape_flat[0] *= shape[0]
 
@@ -926,7 +1034,7 @@ def _embedding(weight, index, dtype=None):
     Performs embedding on a single partition
     """
     assert len(weight.sizes) == 2, (
-        f'Expected rank 2 embedding weights but found shape: {weight.sizes}'
+        f"Expected rank 2 embedding weights but found shape: {weight.sizes}"
     )
 
     n_embedding, embedding_dim = weight.sizes
@@ -954,7 +1062,9 @@ def _embedding(weight, index, dtype=None):
     return reshape(result, (*index.sizes, embedding_dim))
 
 
-def embedding(weight, index, tp_degree=1, dim=1, dtype=None, core_id=None, sequence_parallel=False):
+def embedding(
+    weight, index, tp_degree=1, dim=1, dtype=None, core_id=None, sequence_parallel=False
+):
     """
     An embedding operation analogous to torch.nn.Embedding
 
@@ -995,13 +1105,12 @@ def embedding(weight, index, tp_degree=1, dim=1, dtype=None, core_id=None, seque
     # Case 2: Partitioned vocabulary - Sum masked embeddings
     if dim == 0:
         if core_id is None:
-
             raise NotImplementedError(
-                'Embedding `dim` may not be 0. ReplicaId instruction unsupported'
+                "Embedding `dim` may not be 0. ReplicaId instruction unsupported"
             )
-            replica_id = index.dtype.ReplicaId() # XXX: Unsupported
+            replica_id = index.dtype.ReplicaId()  # XXX: Unsupported
         else:
-            replica_id = reshape(core_id,[])
+            replica_id = reshape(core_id, [])
         replica_id = cast(replica_id, index.dtype)
         pred = index.scribe.pred
 
@@ -1016,11 +1125,15 @@ def embedding(weight, index, tp_degree=1, dim=1, dtype=None, core_id=None, seque
         minimum_br = index.dtype[index.sizes].Broadcast(minimum, dimensions=[])
         maximum_br = index.dtype[index.sizes].Broadcast(maximum, dimensions=[])
 
-        mask_min = pred[index.sizes].Compare(index, minimum_br, comparison_direction='GE')
-        mask_max = pred[index.sizes].Compare(index, maximum_br, comparison_direction='LT')
+        mask_min = pred[index.sizes].Compare(
+            index, minimum_br, comparison_direction="GE"
+        )
+        mask_max = pred[index.sizes].Compare(
+            index, maximum_br, comparison_direction="LT"
+        )
 
         mask = pred[index.sizes].And(mask_min, mask_max)
-        dims = range(len(result.sizes))[:-1] # All but the embedding dimension
+        dims = range(len(result.sizes))[:-1]  # All but the embedding dimension
         mask_br = pred[result.sizes].Broadcast(mask, dimensions=dims)
 
         # Zero out embeddings which are not contained in this partition
@@ -1030,19 +1143,21 @@ def embedding(weight, index, tp_degree=1, dim=1, dtype=None, core_id=None, seque
         if sequence_parallel:
             add_fn = gen_add_func(masked_result.dtype)
             replica_groups = build_replica_groups(1, group_size=tp_degree)
-            return reduce_scatter(masked_result, dim=1, replica_groups=replica_groups, to_apply=add_fn)
+            return reduce_scatter(
+                masked_result, dim=1, replica_groups=replica_groups, to_apply=add_fn
+            )
         # Combine embeddings from all partitions
         return all_reduce_sum(masked_result, tp_degree=tp_degree)
 
     # Case 3: Partitioned embedding: Concatenate embedding pieces
     if dim == 1:
         # Using BSH, concatenate along the last dim
-        assert sequence_parallel is False, "sequence_parallel with dim=1 is not compatible for BSH layout"
+        assert sequence_parallel is False, (
+            "sequence_parallel with dim=1 is not compatible for BSH layout"
+        )
         return all_gather(result, 2, tp_degree=tp_degree)
 
-    raise NotImplementedError(
-        f'Embedding operation does not support dim={dim}'
-    )
+    raise NotImplementedError(f"Embedding operation does not support dim={dim}")
 
 
 def concatenate(operands, dimension):
@@ -1052,15 +1167,15 @@ def concatenate(operands, dimension):
     for op_idx in range(1, len(operands)):
         for dim_idx in range(len(sizes)):
             if dim_idx != dimension:
-                assert sizes[dim_idx] == operands[op_idx].sizes[dim_idx], \
+                assert sizes[dim_idx] == operands[op_idx].sizes[dim_idx], (
                     "All tensors must have the same shape (except in the concatenating dimension)."
+                )
         sizes[dimension] = sizes[dimension] + operands[op_idx].sizes[dimension]
     output = dtype[sizes].Concatenate(*operands, dimensions=[dimension])
     return output
 
 
 def reduce_mean(tensor, dims, keepdim=False):
-
     dtype = tensor.dtype
 
     if dims is None:
@@ -1081,7 +1196,9 @@ def reduce_mean(tensor, dims, keepdim=False):
         return dtype.Add(p0, p1)
 
     minimum = dtype.Constant(constant_value=0)
-    value = dtype[reduce_shape].Reduce(tensor, minimum, dimensions=dims, to_apply=reducer)
+    value = dtype[reduce_shape].Reduce(
+        tensor, minimum, dimensions=dims, to_apply=reducer
+    )
     divisor = dtype.Constant(constant_value=1.0 / elements)
     divisor_br = dtype[reduce_shape].Broadcast(divisor)
     value = dtype[reduce_shape].Multiply(value, divisor_br)
@@ -1096,7 +1213,6 @@ def reduce_mean(tensor, dims, keepdim=False):
 
 
 def cumsum(tensor, dim):
-
     if is_floating_point(tensor):
         return _cumsum_fast(tensor, dim)
 
@@ -1119,14 +1235,17 @@ def cumsum(tensor, dim):
     # Build triu mask
     a = s32[sizes].Iota(dimensions=[0])
     b = s32[sizes].Iota(dimensions=[1])
-    triu = pred[sizes].Compare(a, b, comparison_direction='LE')
+    triu = pred[sizes].Compare(a, b, comparison_direction="LE")
     triu = dtype[sizes].Convert(triu)
 
     # Cumulative sum along final dimension
-    result = dtype[tensor.sizes].Dot(tensor, triu, dot_dimension_numbers=dict(
-        lhs_contracting_dimensions=[last],
-        rhs_contracting_dimensions=[0]
-    ))
+    result = dtype[tensor.sizes].Dot(
+        tensor,
+        triu,
+        dot_dimension_numbers=dict(
+            lhs_contracting_dimensions=[last], rhs_contracting_dimensions=[0]
+        ),
+    )
     if dim != last:
         result = transpose(result, dim, last)
 
@@ -1134,7 +1253,6 @@ def cumsum(tensor, dim):
 
 
 def _cumsum_fast(tensor, dim):
-
     try:
         from neuronxcc.nki._private_kernels.cumsum import cumsum as nki_cumsum
     except ImportError:
@@ -1161,6 +1279,7 @@ def _cumsum_fast(tensor, dim):
 
     def _cumsum(inputs, output):
         return nki_cumsum(inputs, output, axis=1)
+
     result = nki_call(_cumsum, tensor, output_HloShapes=tensor.dtype[tensor.sizes])
 
     if reshaped:
@@ -1182,22 +1301,16 @@ def slice_along(tensor, dim, limit, start=0, stride=1):
     """
     Slice along a dimension.
     """
-    dimensions = [
-        dict(start=0, limit=size, stride=1) for size in tensor.sizes
-    ]
+    dimensions = [dict(start=0, limit=size, stride=1) for size in tensor.sizes]
     dimensions[dim] = dict(start=start, limit=limit, stride=stride)
 
     sizes = list(tensor.sizes)
-    sizes[dim] = (limit - start + stride - 1)//stride
+    sizes[dim] = (limit - start + stride - 1) // stride
 
-    return tensor.dtype[sizes].Slice(
-        tensor,
-        slice_dimensions=dimensions
-    )
+    return tensor.dtype[sizes].Slice(tensor, slice_dimensions=dimensions)
 
 
 def dynamic_slice_along(tensor, dim, start, size):
-
     scribe = tensor.scribe
     s32 = scribe.s32
     u32 = scribe.u32
@@ -1210,7 +1323,7 @@ def dynamic_slice_along(tensor, dim, start, size):
     )
     assert not isinstance(start, int), (
         f"Parameter 'start must be a tensor. Found type={type(size)}"
-)
+    )
     assert len(start.sizes) == 0, (
         f"Parameter 'start' must be a scalar. Found shape={start.sizes}"
     )
@@ -1240,8 +1353,12 @@ def pad(tensor, dim, size, value=0):
     rank = len(tensor.sizes)
     dtype = tensor.dtype
 
-    dimensions = [dict(edge_padding_low=0, edge_padding_high=0, interior_padding=0)] * rank
-    dimensions[dim] = dict(edge_padding_low=0, edge_padding_high=size, interior_padding=0)
+    dimensions = [
+        dict(edge_padding_low=0, edge_padding_high=0, interior_padding=0)
+    ] * rank
+    dimensions[dim] = dict(
+        edge_padding_low=0, edge_padding_high=size, interior_padding=0
+    )
 
     sizes = list(tensor.sizes)
     sizes[dim] += size
@@ -1270,7 +1387,6 @@ def all_reduce_max(tensor, tp_degree=1, dtype=None, replica_groups=None):
     if tp_degree == 1:
         return tensor
 
-
     scribe = tensor.scribe
 
     if dtype is None:
@@ -1289,10 +1405,7 @@ def all_reduce_max(tensor, tp_degree=1, dtype=None, replica_groups=None):
         return all_reduce_dtype.Maximum(p0, p1)
 
     return all_reduce(
-        tensor,
-        replica_groups=replica_groups,
-        to_apply=reducer,
-        dtype=all_reduce_dtype
+        tensor, replica_groups=replica_groups, to_apply=reducer, dtype=all_reduce_dtype
     )
 
 
@@ -1314,7 +1427,6 @@ def broadcast(tensor, out_dim_size, broadcast_dimensions):
     br_dims_to_keep = []
     reshape_sizes = []
     for i, (dim, size) in enumerate(zip(broadcast_dimensions, sizes)):
-
         # Broadcast dimension must be within the output shape
         assert dim < len(out_dim_size), (
             f"Broadcasting dimension {dim} is out of range of destination size {out_dim_size} (src={tensor.sizes} dst={out_dim_size})"
@@ -1344,7 +1456,6 @@ def broadcast(tensor, out_dim_size, broadcast_dimensions):
 
 
 def literal(dtype, tensor):
-
     accessors = {
         # https://github.com/tensorflow/tensorflow/blob/v2.8.0/tensorflow/compiler/xla/xla_data.proto#L401
         torch.bool: "preds",
@@ -1354,14 +1465,12 @@ def literal(dtype, tensor):
         torch.int64: "s64s",
         torch.float32: "f32s",
         torch.float64: "f64s",
-
-        torch.complex64: "c64s", # Stored as interleaved real, imag floats.
-        torch.complex128: "c128s", # Stored as interleaved real, imag doubles.
-
+        torch.complex64: "c64s",  # Stored as interleaved real, imag floats.
+        torch.complex128: "c128s",  # Stored as interleaved real, imag doubles.
         # The F16s, BF16s, U16s and S16s are encoded in little endian byte order
-        torch.float16: "f16s",     # Stored as bytes
-        torch.bfloat16: "bf16s",   # Stored as bytes
-        torch.int16: "s16s",       # Stored as bytes
+        torch.float16: "f16s",  # Stored as bytes
+        torch.bfloat16: "bf16s",  # Stored as bytes
+        torch.int16: "s16s",  # Stored as bytes
     }
 
     converter = compiler.DataTypeConverter()
@@ -1388,7 +1497,7 @@ def literal(dtype, tensor):
     result = dtype[sizes].Constant(
         literal={
             accessor: data,
-            'shape': dict(
+            "shape": dict(
                 dimensions=sizes,
                 element_type=element_type,
                 is_dynamic_dimension=[False] * len(sizes),
@@ -1416,8 +1525,10 @@ def select(tensor, dim, index, keepdim=False):
     dtype = tensor.dtype
 
     iota = index.dtype[size].Iota(dimensions=[dim])
-    index_br = index.dtype[size].Broadcast(index, dimensions=list(range(len(index.sizes))))
-    mask = pred[size].Compare(iota, index_br, comparison_direction='EQ')
+    index_br = index.dtype[size].Broadcast(
+        index, dimensions=list(range(len(index.sizes)))
+    )
+    mask = pred[size].Compare(iota, index_br, comparison_direction="EQ")
     mask = cast(mask, dtype)
 
     masked = dtype[size].Multiply(mask, tensor)
@@ -1429,7 +1540,7 @@ def select(tensor, dim, index, keepdim=False):
 
 def index_select(tensor, dim, index):
     dtype = tensor.dtype
-    n_index, = index.sizes
+    (n_index,) = index.sizes
 
     sizes = list(tensor.sizes)
     sizes[dim] = n_index
@@ -1475,15 +1586,18 @@ def multiply(lhs, rhs):
     _check_binary_arguments(lhs, rhs)
     return lhs.dtype[lhs.sizes].Multiply(lhs, rhs)
 
+
 def minimum(lhs, rhs):
     lhs, rhs = _binary_primitive_broadcast(lhs, rhs)
     _check_binary_arguments(lhs, rhs)
     return lhs.dtype[lhs.sizes].Minimum(lhs, rhs)
 
+
 def maximum(lhs, rhs):
     lhs, rhs = _binary_primitive_broadcast(lhs, rhs)
     _check_binary_arguments(lhs, rhs)
     return lhs.dtype[lhs.sizes].Maximum(lhs, rhs)
+
 
 def remainder(lhs, rhs):
     lhs, rhs = _binary_primitive_broadcast(lhs, rhs)
@@ -1495,7 +1609,9 @@ def iota(dtype, shape, dims):
     if isinstance(dims, int):
         dims = [dims]
     for dim in dims:
-        assert dim < len(shape), f"Dimension {dim} is larger than tensor rank {len(shape)}"
+        assert dim < len(shape), (
+            f"Dimension {dim} is larger than tensor rank {len(shape)}"
+        )
     return dtype[shape].Iota(dimensions=dims)
 
 
@@ -1507,7 +1623,7 @@ def reshape(tensor, shape):
         shape = [shape]
     if shape == tensor.sizes:
         return tensor
-    if not tensor.sizes: # Handle scalar input special case
+    if not tensor.sizes:  # Handle scalar input special case
         return tensor.dtype[shape].Reshape(tensor)
     dst_numel = functools.reduce(operator.mul, shape)
     src_numel = functools.reduce(operator.mul, tensor.sizes)
@@ -1523,9 +1639,12 @@ def scatter(operands, scatter_indices, updates, scatter_dims, to_apply):
     index_vector_dim = scatter_dims.get("index_vector_dim", [])
     update_window_dims = scatter_dims.get("update_window_dims", [])
     inserted_window_dims = scatter_dims.get("inserted_window_dims", [])
-    assert operand_rank == (len(update_window_dims) + len(inserted_window_dims)), \
+    assert operand_rank == (len(update_window_dims) + len(inserted_window_dims)), (
         "operand.rank must equal the sum of update_window_dims.size and inserted_window_dims.size"
-    assert operands.dtype == updates.dtype, "inconsistent dtype between operands and updates"
+    )
+    assert operands.dtype == updates.dtype, (
+        "inconsistent dtype between operands and updates"
+    )
     scatter_dims_to_operand_dims = scatter_dims.get("scatter_dims_to_operand_dims", [])
     if index_vector_dim == len(scatter_indices.sizes):
         # If index_vector_dim is equal to scatter_indices.rank
@@ -1533,16 +1652,28 @@ def scatter(operands, scatter_indices, updates, scatter_dims, to_apply):
         scatter_indices_sizes = list(scatter_indices.sizes) + [1]
     else:
         scatter_indices_sizes = list(scatter_indices.sizes)
-    assert len(scatter_dims_to_operand_dims) == scatter_indices_sizes[index_vector_dim], \
+    assert (
+        len(scatter_dims_to_operand_dims) == scatter_indices_sizes[index_vector_dim]
+    ), (
         "scatter_dims_to_operand_dims.size must be equal to scatter_indices.shape.dims[index_vector_dim]"
-    assert len(updates.sizes) == (len(update_window_dims) + len(scatter_indices_sizes) - 1), \
+    )
+    assert len(updates.sizes) == (
+        len(update_window_dims) + len(scatter_indices_sizes) - 1
+    ), (
         "Each updates array must be of rank (update_window_dims.size + scatter_indices.rank - 1)"
+    )
     dtype = updates.dtype
     updated_sizes = operands.sizes
-    assert scatter_indices.sizes[0] == updates.sizes[0], \
+    assert scatter_indices.sizes[0] == updates.sizes[0], (
         "update window size must match betwen scatter_indices and updates."
+    )
     updated = dtype[updated_sizes].Scatter(
-        operands, scatter_indices, updates, scatter_dimension_numbers=scatter_dims, to_apply=to_apply)
+        operands,
+        scatter_indices,
+        updates,
+        scatter_dimension_numbers=scatter_dims,
+        to_apply=to_apply,
+    )
     return updated
 
 
@@ -1558,14 +1689,14 @@ def reduce_scatter(tensor, dim, replica_groups, to_apply, dtype=None):
     else:
         all_reduce_dtype = dtype
     tensor = cast(tensor, all_reduce_dtype)
-    size[dim] = size[dim]//len(replica_groups[0])
-    output = all_reduce_dtype[size].ReduceScatter(tensor,  dimensions = [dim],
-                                        replica_groups = replica_groups, to_apply=to_apply)
+    size[dim] = size[dim] // len(replica_groups[0])
+    output = all_reduce_dtype[size].ReduceScatter(
+        tensor, dimensions=[dim], replica_groups=replica_groups, to_apply=to_apply
+    )
     return output
 
 
 def reduce_scatter_sum(tensor, tp_degree, dim, dtype=None, replica_groups=None):
-
     if tp_degree == 1:
         return tensor
 
@@ -1602,12 +1733,13 @@ def floor(tensor):
 def transpose210(tensor):
     dtype = tensor.dtype
     size0, size1, size2 = tensor.sizes
-    return dtype[size2,size1,size0].Transpose(tensor, dimensions=[2, 1, 0])
+    return dtype[size2, size1, size0].Transpose(tensor, dimensions=[2, 1, 0])
+
 
 def transpose102(tensor):
     dtype = tensor.dtype
     size0, size1, size2 = tensor.sizes
-    return dtype[size1,size0,size2].Transpose(tensor, dimensions=[1, 0, 2])
+    return dtype[size1, size0, size2].Transpose(tensor, dimensions=[1, 0, 2])
 
 
 # credit: https://github.com/facebookresearch/llama/blob/8992dea3b2c98e82e335efef004534413f4f2d2e/llama/model.py#L164-L173
@@ -1617,15 +1749,19 @@ def repeat_kv(tensor, n_repeats, repeat_dim):
     if repeat_dim == 2:
         n_positions, n_seqs, n_kv_heads, d_head = tensor.sizes
         tensor_br_sizes = n_positions, n_seqs, n_kv_heads, n_repeats, d_head
-        tensor_br = broadcast(tensor, out_dim_size=tensor_br_sizes, broadcast_dimensions=[0, 1, 2, 4])
-        output = reshape(tensor_br, [n_positions, n_seqs, n_kv_heads * n_repeats, d_head])
+        tensor_br = broadcast(
+            tensor, out_dim_size=tensor_br_sizes, broadcast_dimensions=[0, 1, 2, 4]
+        )
+        output = reshape(
+            tensor_br, [n_positions, n_seqs, n_kv_heads * n_repeats, d_head]
+        )
     else:
         raise RuntimeError(f"invalid repeat_dim ({repeat_dim})")
     return output
 
 
 def _is_hlo_scalar(value):
-    return hasattr(value, 'sizes') and value.sizes == ()
+    return hasattr(value, "sizes") and value.sizes == ()
 
 
 def is_floating_point(value):
@@ -1663,9 +1799,7 @@ def _binary_primitive_broadcast(lhs, rhs):
 
 def _check_binary_arguments(lhs, rhs, dtype=None):
     assert lhs.sizes == rhs.sizes, (
-        "Tensor Size Mismatch. "
-        f"LHS shape={lhs.sizes} "
-        f"RHS shape={rhs.sizes}"
+        f"Tensor Size Mismatch. LHS shape={lhs.sizes} RHS shape={rhs.sizes}"
     )
     assert lhs.dtype == rhs.dtype
     if dtype is not None:
@@ -1681,23 +1815,23 @@ def compare(lhs, rhs, direction):
 
 
 def equal(lhs, rhs):
-    return compare(lhs, rhs, 'EQ')
+    return compare(lhs, rhs, "EQ")
 
 
 def less(lhs, rhs):
-    return compare(lhs, rhs, 'LT')
+    return compare(lhs, rhs, "LT")
 
 
 def less_equal(lhs, rhs):
-    return compare(lhs, rhs, 'LE')
+    return compare(lhs, rhs, "LE")
 
 
 def greater(lhs, rhs):
-    return compare(lhs, rhs, 'GT')
+    return compare(lhs, rhs, "GT")
 
 
 def greater_equal(lhs, rhs):
-    return compare(lhs, rhs, 'GE')
+    return compare(lhs, rhs, "GE")
 
 
 def logical_and(lhs, rhs):
@@ -1722,21 +1856,20 @@ def logical_not(lhs):
 def dtype_maximum(dtype):
     scribe = dtype.scribe
     maximums = {
-         scribe.s64: 2 ** 63 - 1,
-         scribe.s32: 2 ** 31 - 1,
-         scribe.s16: 2 ** 15 - 1,
-         scribe.s8:  2 ** 7 - 1,
-         scribe.u64: 2 ** 64,
-         scribe.u32: 2 ** 32,
-         scribe.u16: 2 ** 16,
-         scribe.u8:  2 ** 8,
-         scribe.pred: True,
+        scribe.s64: 2**63 - 1,
+        scribe.s32: 2**31 - 1,
+        scribe.s16: 2**15 - 1,
+        scribe.s8: 2**7 - 1,
+        scribe.u64: 2**64,
+        scribe.u32: 2**32,
+        scribe.u16: 2**16,
+        scribe.u8: 2**8,
+        scribe.pred: True,
     }
-    return maximums.get(dtype, float('inf'))
+    return maximums.get(dtype, float("inf"))
 
 
 def reduce_min(tensor, dim, keepdim=False):
-
     dtype = tensor.dtype
     reduce_shape = list(tensor.sizes)
     reduce_shape.pop(dim)
@@ -1747,7 +1880,9 @@ def reduce_min(tensor, dim, keepdim=False):
         return dtype.Minimum(p0, p1)
 
     minimum = dtype.Constant(constant_value=dtype_maximum(dtype))
-    value = dtype[reduce_shape].Reduce(tensor, minimum, dimensions=[dim], to_apply=reducer)
+    value = dtype[reduce_shape].Reduce(
+        tensor, minimum, dimensions=[dim], to_apply=reducer
+    )
 
     if keepdim:
         keepdim_shape = list(tensor.sizes)
@@ -1757,10 +1892,8 @@ def reduce_min(tensor, dim, keepdim=False):
     return value
 
 
-def triangle_mask(dtype, sizes, comparison='GE'):
-    assert len(sizes) == 2, (
-        f"Expected rank 2 triangle mask size but found {sizes}"
-    )
+def triangle_mask(dtype, sizes, comparison="GE"):
+    assert len(sizes) == 2, f"Expected rank 2 triangle mask size but found {sizes}"
     pred = dtype.scribe.pred
     s32 = dtype.scribe.s32
     a = s32[sizes].Iota(dimensions=[0])
@@ -1771,7 +1904,7 @@ def triangle_mask(dtype, sizes, comparison='GE'):
 
 
 def tril_mask(dtype, sizes):
-    return triangle_mask(dtype, sizes, 'GE')
+    return triangle_mask(dtype, sizes, "GE")
 
 
 def decoder_attention_mask_window(cache_ids, start_ids, n_positions):
@@ -1844,8 +1977,8 @@ def decoder_attention_mask_window(cache_ids, start_ids, n_positions):
     scribe = cache_ids.scribe
     s32 = scribe.s32
     pred = scribe.pred
-    batch_size, = start_ids.sizes
-    n_active_tokens, = cache_ids.sizes
+    (batch_size,) = start_ids.sizes
+    (n_active_tokens,) = cache_ids.sizes
 
     cache_ids = cast(cache_ids, s32)
     start_ids = cast(start_ids, s32)
@@ -1876,7 +2009,14 @@ def decoder_attention_mask_window(cache_ids, start_ids, n_positions):
     return prior_mask, active_mask
 
 
-def decoder_attention_mask_lhs_aligned(cache_ids, n_positions, last_token_id=None, num_active_blocks=None, neuron_config=None, context_lens=None):
+def decoder_attention_mask_lhs_aligned(
+    cache_ids,
+    n_positions,
+    last_token_id=None,
+    num_active_blocks=None,
+    neuron_config=None,
+    context_lens=None,
+):
     """
     Create attention masks for LHS-aligned sequences.
 
@@ -1890,23 +2030,38 @@ def decoder_attention_mask_lhs_aligned(cache_ids, n_positions, last_token_id=Non
         active_mask: The attention mask to apply to the active tokens.
     """
     batch_size, n_active_tokens = cache_ids.sizes
-    if neuron_config and neuron_config.enable_chunked_prefill and n_active_tokens == n_positions:
+    if (
+        neuron_config
+        and neuron_config.enable_chunked_prefill
+        and n_active_tokens == n_positions
+    ):
         batch_size = neuron_config.continuous_batching.max_num_seqs
-        seq_lens = add(context_lens, last_token_id) # last_token_id is query_lens
+        seq_lens = add(context_lens, last_token_id)  # last_token_id is query_lens
         block_size = neuron_config.continuous_batching.block_size
         return decoder_attention_block_diagonal_causal_from_bottomright_mask(
-            num_queries=last_token_id, num_keys=seq_lens, max_num_queries=n_active_tokens, max_num_keys=block_size*num_active_blocks+n_active_tokens, max_num_seqs=batch_size)
+            num_queries=last_token_id,
+            num_keys=seq_lens,
+            max_num_queries=n_active_tokens,
+            max_num_keys=block_size * num_active_blocks + n_active_tokens,
+            max_num_seqs=batch_size,
+        )
     elif n_active_tokens == n_positions:
         # Context Encoding
         if neuron_config and neuron_config.use_1d_query:
             # For concatenated prompt encoding (1D query), last_token_id is used as prompt_lens
-            return decoder_attention_block_diagonal_causal_mask(last_token_id, n_positions)
+            return decoder_attention_block_diagonal_causal_mask(
+                last_token_id, n_positions
+            )
         else:
             return decoder_attention_mask_lhs_aligned_context(cache_ids, n_positions)
     else:
         # Token generation
         return decoder_attention_mask_lhs_aligned_token(
-            cache_ids, n_positions, num_active_blocks=num_active_blocks, neuron_config=neuron_config)
+            cache_ids,
+            n_positions,
+            num_active_blocks=num_active_blocks,
+            neuron_config=neuron_config,
+        )
 
 
 def decoder_attention_mask_lhs_aligned_context(cache_ids, n_positions):
@@ -1981,7 +2136,7 @@ def decoder_attention_block_diagonal_causal_mask(prompt_lens, n_positions):
     """
     s32 = prompt_lens.scribe.s32
     sizes = n_positions, n_positions
-    num_prompts, = prompt_lens.sizes
+    (num_prompts,) = prompt_lens.sizes
 
     a = iota(s32, sizes, [0])
     b = iota(s32, sizes, [1])
@@ -2010,7 +2165,9 @@ def decoder_attention_block_diagonal_causal_mask(prompt_lens, n_positions):
     return prior_mask, active_mask
 
 
-def decoder_attention_block_diagonal_causal_from_bottomright_mask(num_queries, num_keys, max_num_queries, max_num_keys, max_num_seqs):
+def decoder_attention_block_diagonal_causal_from_bottomright_mask(
+    num_queries, num_keys, max_num_queries, max_num_keys, max_num_seqs
+):
     """
     Creates block diagonal causal masks for multiple prompts.
 
@@ -2101,7 +2258,9 @@ def decoder_attention_block_diagonal_causal_from_bottomright_mask(num_queries, n
         left_mask = compare(b, _br(ci), "GE")
         top_mask = compare(a, _br(ri), "GE")
         bottom_mask = compare(a, _br(add(ri, nr)), "LT")
-        new_mask = logical_and(logical_and(logical_and(new_mask, left_mask), top_mask), bottom_mask)
+        new_mask = logical_and(
+            logical_and(logical_and(new_mask, left_mask), top_mask), bottom_mask
+        )
 
         prior_mask = logical_or(prior_mask, new_mask)
 
@@ -2111,17 +2270,24 @@ def decoder_attention_block_diagonal_causal_from_bottomright_mask(num_queries, n
     return prior_mask, active_mask
 
 
-def decoder_attention_mask_lhs_aligned_token(cache_ids, n_positions, num_active_blocks=None, neuron_config=None):
+def decoder_attention_mask_lhs_aligned_token(
+    cache_ids, n_positions, num_active_blocks=None, neuron_config=None
+):
     if neuron_config and neuron_config.optimized_paged_attention:
         block_size = neuron_config.continuous_batching.block_size
-        assert isinstance(num_active_blocks, int) and (num_active_blocks is not None), \
+        assert isinstance(num_active_blocks, int) and (num_active_blocks is not None), (
             f"num_active_blocks is expected to be an int, but got {num_active_blocks}"
-        return decoder_attention_mask_lhs_aligned_token_blockwise(cache_ids, block_size=block_size, num_blocks=num_active_blocks)
+        )
+        return decoder_attention_mask_lhs_aligned_token_blockwise(
+            cache_ids, block_size=block_size, num_blocks=num_active_blocks
+        )
     else:
         return decoder_attention_mask_lhs_aligned_token_padded(cache_ids, n_positions)
 
 
-def decoder_attention_mask_lhs_aligned_token_blockwise(context_lens, block_size, num_blocks):
+def decoder_attention_mask_lhs_aligned_token_blockwise(
+    context_lens, block_size, num_blocks
+):
     """
     Creates the block-wise attention mask for decoding with multiple KV cache blocks.
 
@@ -2179,7 +2345,7 @@ def decoder_attention_mask_lhs_aligned_token_blockwise(context_lens, block_size,
     context_lens = reshape(context_lens, (max_num_seqs,))
 
     # blocks_cumsum = cumsum((context_lens+block_size-1)//block_size, axis=0)
-    blocks_add = add(context_lens, block_size-1)
+    blocks_add = add(context_lens, block_size - 1)
     blocks_div = cast(floor(divide(cast(blocks_add, f32), block_size)), s32)
     blocks_cumsum = cumsum(blocks_div, dim=0)
 
@@ -2187,17 +2353,34 @@ def decoder_attention_mask_lhs_aligned_token_blockwise(context_lens, block_size,
     prior_mask = full(0, dtype=pred, sizes=(num_tokens,))
     mask_iota = iota(s32, (num_tokens,), [0])
     for seq_id in range(max_num_seqs):
-        zero, prev_seq_id, curr_seq_id = s32.Constant(constant_value=0), s32.Constant(constant_value=seq_id-1), s32.Constant(constant_value=seq_id)
-        start_idx = zero if seq_id == 0 else dynamic_slice_along(blocks_mul, dim=0, start=prev_seq_id, size=1)
+        zero, prev_seq_id, curr_seq_id = (
+            s32.Constant(constant_value=0),
+            s32.Constant(constant_value=seq_id - 1),
+            s32.Constant(constant_value=seq_id),
+        )
+        start_idx = (
+            zero
+            if seq_id == 0
+            else dynamic_slice_along(blocks_mul, dim=0, start=prev_seq_id, size=1)
+        )
         br_dims = [] if seq_id == 0 else [0]
-        start_idx_br = broadcast(start_idx, out_dim_size=(num_tokens,), broadcast_dimensions=br_dims)
-        end_idx = add(dynamic_slice_along(context_lens, dim=0, start=curr_seq_id, size=1), start_idx)
-        end_idx_br = broadcast(end_idx, out_dim_size=(num_tokens,), broadcast_dimensions=[0])
-        mask = logical_and(greater_equal(mask_iota, start_idx_br), less(mask_iota, end_idx_br))
+        start_idx_br = broadcast(
+            start_idx, out_dim_size=(num_tokens,), broadcast_dimensions=br_dims
+        )
+        end_idx = add(
+            dynamic_slice_along(context_lens, dim=0, start=curr_seq_id, size=1),
+            start_idx,
+        )
+        end_idx_br = broadcast(
+            end_idx, out_dim_size=(num_tokens,), broadcast_dimensions=[0]
+        )
+        mask = logical_and(
+            greater_equal(mask_iota, start_idx_br), less(mask_iota, end_idx_br)
+        )
         # start_idx is loaded from cumsum of block placement location, therefore the mask update location should never overlap.
         prior_mask = add(prior_mask, cast(mask, pred))
     prior_mask = reshape(prior_mask, (num_blocks, 1, block_size))
-    active_mask = full(1, dtype=pred, sizes=(max_num_seqs,1,1))
+    active_mask = full(1, dtype=pred, sizes=(max_num_seqs, 1, 1))
     return prior_mask, active_mask
 
 
@@ -2343,15 +2526,25 @@ def reshape_and_cache(key, value, key_cache, value_cache, slot_mapping):
 
     key = reshape(key, [n_active_tokens, hidden_size])
     value = reshape(value, [n_active_tokens, hidden_size])
-    key_cache = reshape(key_cache, [n_blocks*block_size, hidden_size])
-    value_cache = reshape(value_cache, [n_blocks*block_size, hidden_size])
+    key_cache = reshape(key_cache, [n_blocks * block_size, hidden_size])
+    value_cache = reshape(value_cache, [n_blocks * block_size, hidden_size])
 
-    scatter_dims = dict(update_window_dims=[1],
-                        inserted_window_dims=[0],
-                        scatter_dims_to_operand_dims=[0],
-                        index_vector_dim=1)
-    updated_keys = scatter(key_cache, slot_mapping, key, scatter_dims=scatter_dims, to_apply=assign_func)
-    updated_values = scatter(value_cache, slot_mapping, value, scatter_dims=scatter_dims, to_apply=assign_func)
+    scatter_dims = dict(
+        update_window_dims=[1],
+        inserted_window_dims=[0],
+        scatter_dims_to_operand_dims=[0],
+        index_vector_dim=1,
+    )
+    updated_keys = scatter(
+        key_cache, slot_mapping, key, scatter_dims=scatter_dims, to_apply=assign_func
+    )
+    updated_values = scatter(
+        value_cache,
+        slot_mapping,
+        value,
+        scatter_dims=scatter_dims,
+        to_apply=assign_func,
+    )
 
     updated_keys = reshape(updated_keys, [n_blocks, block_size, n_head, d_head])
     updated_values = reshape(updated_values, [n_blocks, block_size, n_head, d_head])
@@ -2372,7 +2565,7 @@ def diff(tensor, dim):
             [1, 1]])
     """
     o_sizes = tensor.sizes
-    a = slice_along(tensor, dim, limit=o_sizes[dim]-1, start=0)
+    a = slice_along(tensor, dim, limit=o_sizes[dim] - 1, start=0)
     b = slice_along(tensor, dim, limit=o_sizes[dim], start=1)
     output = subtract(b, a)
     return output

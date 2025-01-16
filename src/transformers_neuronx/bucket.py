@@ -48,9 +48,9 @@ def token_sizes(buckets_or_size: Union[List[int], int]) -> List[int]:
 
 
 def context_sizes(
-        buckets_or_size: Optional[Union[List[int], int]],
-        token_buckets: Optional[List[int]] = None,
-    ) -> List[int]:
+    buckets_or_size: Optional[Union[List[int], int]],
+    token_buckets: Optional[List[int]] = None,
+) -> List[int]:
     """
     Compute the bucket sizes for context encoding.
 
@@ -78,7 +78,7 @@ def context_sizes(
         return [buckets_or_size]
     if token_buckets is not None and buckets_or_size is None:
         return [bucket // 2 for bucket in token_buckets]
-    raise NotImplementedError(f'Prompt bucket config {buckets_or_size} not supported')
+    raise NotImplementedError(f"Prompt bucket config {buckets_or_size} not supported")
 
 
 def batch_sizes(batch_size: Union[List[int], int]) -> List[int]:

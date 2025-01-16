@@ -13,24 +13,19 @@
 # limitations under the License.
 # ==============================================================================
 
+
 class LlamaConfig:
-
-    def __init__(
-            self,
-            config,
-            n_positions,
-            batch_size,
-            amp,
-            tp_degree,
-            **kwargs
-        ):
-
+    def __init__(self, config, n_positions, batch_size, amp, tp_degree, **kwargs):
         # Extract configs used for building HLO
         self.intermediate_size = config.intermediate_size
         self.hidden_size = config.hidden_size
         self.attention_head_size = config.hidden_size // config.num_attention_heads
         self.num_attention_heads = config.num_attention_heads
-        self.num_key_value_heads = config.num_key_value_heads if hasattr(config, "num_key_value_heads") else config.num_attention_heads
+        self.num_key_value_heads = (
+            config.num_key_value_heads
+            if hasattr(config, "num_key_value_heads")
+            else config.num_attention_heads
+        )
         self.num_hidden_layers = config.num_hidden_layers
         self.vocab_size = config.vocab_size
         self.hidden_act = config.hidden_act
@@ -40,11 +35,22 @@ class LlamaConfig:
         self.rms_norm_eps = config.rms_norm_eps
         self.rotary_percentage = getattr(config, "rotary_percentage", 1)
         self.rope_theta = getattr(config, "rope_theta", 10000)
-        self.position_interpolation_factor = getattr(config, "position_interpolation_factor", None)
+        self.position_interpolation_factor = getattr(
+            config, "position_interpolation_factor", None
+        )
         self.rope_scaling = getattr(config, "rope_scaling", None)
-        rope_scaling_type = self.rope_scaling.get("rope_type", self.rope_scaling.get("type", None)) if self.rope_scaling is not None else None
-        if self.rope_scaling is not None and rope_scaling_type not in {'default', 'llama3'}:
-            raise ValueError(f"Only default and llama3 ropes scaling types are currently supported. Received {rope_scaling_type}")
+        rope_scaling_type = (
+            self.rope_scaling.get("rope_type", self.rope_scaling.get("type", None))
+            if self.rope_scaling is not None
+            else None
+        )
+        if self.rope_scaling is not None and rope_scaling_type not in {
+            "default",
+            "llama3",
+        }:
+            raise ValueError(
+                f"Only default and llama3 ropes scaling types are currently supported. Received {rope_scaling_type}"
+            )
         self.bias = getattr(config, "bias", True)
 
         # Maybe override attributes
@@ -59,5 +65,4 @@ class LlamaConfig:
         self.batch_size = batch_size
         self.amp = amp
         self.tp_degree = tp_degree
-        self.model_type = 'llama'
-
+        self.model_type = "llama"

@@ -14,6 +14,7 @@
 # ==============================================================================
 from transformers_neuronx import hlo
 from transformers_neuronx import constants
+
 try:
     from neuronxcc.nki.kernels.attention import attention_isa_kernel
 except ImportError:
@@ -137,19 +138,27 @@ def active_block_tables(block_tables, context_lens, num_active_blocks, neuron_co
     # input/output initialization
     active_table = hlo.full(0, block_tables.dtype, (num_active_blocks, N))
     block_tables_flat = hlo.reshape(block_tables, (num_seqs * blocks_per_seq, 1))
-    block_tables_br = hlo.broadcast(block_tables_flat, out_dim_size=(num_seqs * blocks_per_seq, N), broadcast_dimensions=[0, 1])
+    block_tables_br = hlo.broadcast(
+        block_tables_flat,
+        out_dim_size=(num_seqs * blocks_per_seq, N),
+        broadcast_dimensions=[0, 1],
+    )
     context_lens = hlo.reshape(context_lens, (num_seqs,))
 
     zero = hlo.reshape(s32.Constant(constant_value=0), (1,))
     assign_func = hlo.gen_assign_func(active_table.dtype)
-    scatter_dims = dict(update_window_dims=[1],
-                        inserted_window_dims=[0],
-                        scatter_dims_to_operand_dims=[0],
-                        index_vector_dim=1)
+    scatter_dims = dict(
+        update_window_dims=[1],
+        inserted_window_dims=[0],
+        scatter_dims_to_operand_dims=[0],
+        index_vector_dim=1,
+    )
 
     # blocks_cumsum = cumsum((context_lens+block_size-1)//block_size, axis=0)
-    blocks_add = hlo.add(context_lens, block_size-1)
-    blocks_div = hlo.cast(hlo.floor(hlo.divide(hlo.cast(blocks_add, f32), block_size)), s32)
+    blocks_add = hlo.add(context_lens, block_size - 1)
+    blocks_div = hlo.cast(
+        hlo.floor(hlo.divide(hlo.cast(blocks_add, f32), block_size)), s32
+    )
     blocks_cumsum = hlo.cumsum(blocks_div, dim=0)
 
     # seq_iota = jnp.arange(max_seqs)
@@ -159,18 +168,32 @@ def active_block_tables(block_tables, context_lens, num_active_blocks, neuron_co
     for block_id in range(num_active_blocks):
         seq_mask = hlo.cast(hlo.less_equal(blocks_cumsum, block_id), s32)
         # seq_id = jnp.minimum(max_num_seqs-1,jnp.max(jnp.int32(seq_mask)*(seq_iota+1)))
-        seq_id = hlo.minimum(hlo.reduce_max(hlo.multiply(seq_mask, seq_iota), dim=0), num_seqs-1)
+        seq_id = hlo.minimum(
+            hlo.reduce_max(hlo.multiply(seq_mask, seq_iota), dim=0), num_seqs - 1
+        )
         # seq_start_block_id = 0 if seq_id == 0 else blocks_cumsum[seq_id-1]
-        blocks_cumsum_slice = hlo.dynamic_slice_along(blocks_cumsum, dim=0, start=hlo.maximum(hlo.subtract(seq_id, 1), 0), size=1)
+        blocks_cumsum_slice = hlo.dynamic_slice_along(
+            blocks_cumsum, dim=0, start=hlo.maximum(hlo.subtract(seq_id, 1), 0), size=1
+        )
         seq_id = hlo.reshape(seq_id, (1,))
-        seq_start_block_id = hlo.masked_select(hlo.equal(seq_id, 0), zero, blocks_cumsum_slice)
+        seq_start_block_id = hlo.masked_select(
+            hlo.equal(seq_id, 0), zero, blocks_cumsum_slice
+        )
         offset = hlo.subtract(hlo.full(block_id, s32, (1,)), seq_start_block_id)
-        src_index = hlo.minimum(hlo.add(hlo.multiply(seq_id, blocks_per_seq), offset), num_seqs * blocks_per_seq - 1)
+        src_index = hlo.minimum(
+            hlo.add(hlo.multiply(seq_id, blocks_per_seq), offset),
+            num_seqs * blocks_per_seq - 1,
+        )
 
         dst_index = hlo.full(block_id, s32, (1,))
         block_data = hlo.index_select(block_tables_br, dim=0, index=src_index)
-        active_table = hlo.scatter(active_table, dst_index, block_data,
-                                   scatter_dims=scatter_dims, to_apply=assign_func)
+        active_table = hlo.scatter(
+            active_table,
+            dst_index,
+            block_data,
+            scatter_dims=scatter_dims,
+            to_apply=assign_func,
+        )
 
     # HACK: need to take broadcasted active table to the output, in order to workaround a known issue.
     active_table = hlo.reduce_min(active_table, dim=1)
@@ -199,12 +222,14 @@ def gather_blocks_active(key_cache, block_tables):
     """
     num_blocks, block_size, n_kv_heads, d_head = key_cache.sizes
     assert len(block_tables.sizes) == 1, "invalid block_table input shape."
-    n_active_blocks, = block_tables.sizes
+    (n_active_blocks,) = block_tables.sizes
     hidden_size = n_kv_heads * d_head
     chunk_size = block_size * hidden_size
     key_cache = hlo.reshape(key_cache, (num_blocks, chunk_size))
     cached_keys = hlo.index_select(key_cache, dim=0, index=block_tables)
-    cached_keys = hlo.reshape(cached_keys, (n_active_blocks, block_size, n_kv_heads, d_head))
+    cached_keys = hlo.reshape(
+        cached_keys, (n_active_blocks, block_size, n_kv_heads, d_head)
+    )
     return cached_keys
 
 
@@ -234,7 +259,9 @@ def gather_blocks_all(key_cache, block_tables):
     key_cache = hlo.reshape(key_cache, (num_blocks, chunk_size))
     index = hlo.reshape(block_tables, (n_seqs * max_num_blocks_per_seq,))
     cached_keys = hlo.index_select(key_cache, dim=0, index=index)
-    cached_keys = hlo.reshape(cached_keys, (n_seqs, max_num_blocks_per_seq * block_size, n_kv_heads, d_head))
+    cached_keys = hlo.reshape(
+        cached_keys, (n_seqs, max_num_blocks_per_seq * block_size, n_kv_heads, d_head)
+    )
     return cached_keys
 
 
@@ -286,16 +313,20 @@ def contexted_kv_indexing(query_lens, key_lens, max_num_keys, block_size):
     pred = query_lens.scribe.pred
     query_lens = hlo.cast(query_lens, s32)
     key_lens = hlo.cast(key_lens, s32)
-    max_num_seqs, = query_lens.sizes
+    (max_num_seqs,) = query_lens.sizes
     context_lens = hlo.subtract(key_lens, query_lens)
-    key_lens_cumsum = hlo.concatenate([hlo.full(0, s32, [1]), hlo.cumsum(key_lens, dim=0)], dimension=0)
-    query_lens_cumsum = hlo.concatenate([hlo.full(0, s32, [1]), hlo.cumsum(query_lens, dim=0)], dimension=0)
+    key_lens_cumsum = hlo.concatenate(
+        [hlo.full(0, s32, [1]), hlo.cumsum(key_lens, dim=0)], dimension=0
+    )
+    query_lens_cumsum = hlo.concatenate(
+        [hlo.full(0, s32, [1]), hlo.cumsum(query_lens, dim=0)], dimension=0
+    )
     cached_steps = hlo.slice_along(key_lens_cumsum, dim=0, limit=max_num_seqs)
     contexted_steps = hlo.add(cached_steps, context_lens)
 
     # compute block-wise cache loading index, according to the equation
     # > cached_start = cumsum((context_lens+block_size-1) // block_size) * block_size
-    block_lens = hlo.divide(hlo.add(context_lens, block_size-1), block_size)
+    block_lens = hlo.divide(hlo.add(context_lens, block_size - 1), block_size)
     block_lens = hlo.concatenate([hlo.full(0, s32, [1]), block_lens], dimension=0)
     # [3, 5, 4, 0] -(divide)-> [1, 2, 1, 0] -> [0, 1, 2, 1, 0] -(cumsum)-> [0, 1, 3, 4, 4] -> [0, 4, 12, 16, 16]
     cached_start = hlo.multiply(hlo.cumsum(block_lens, dim=0), block_size)
@@ -304,9 +335,9 @@ def contexted_kv_indexing(query_lens, key_lens, max_num_keys, block_size):
         return hlo.broadcast(x, [max_num_keys], [0])
 
     def _selective_masking(steps, cumsum, lens, idx, seq_id, x_to_ctx):
-        loc = hlo.slice_along(steps, dim=0, limit=seq_id+1, start=seq_id)
-        start = hlo.slice_along(cumsum, dim=0, limit=seq_id+1, start=seq_id)
-        length = hlo.slice_along(lens, dim=0, limit=seq_id+1, start=seq_id)
+        loc = hlo.slice_along(steps, dim=0, limit=seq_id + 1, start=seq_id)
+        start = hlo.slice_along(cumsum, dim=0, limit=seq_id + 1, start=seq_id)
+        length = hlo.slice_along(lens, dim=0, limit=seq_id + 1, start=seq_id)
         # the output x can be either cached index or active index
         x = hlo.subtract(idx, _br(hlo.subtract(loc, start)))
         upper_bound = hlo.add(hlo.add(start, length), -1)
@@ -323,8 +354,12 @@ def contexted_kv_indexing(query_lens, key_lens, max_num_keys, block_size):
     active_to_ctx = hlo.full(0, s32, [max_num_keys])
     idx = hlo.iota(s32, (max_num_keys,), [0])
     for seq_id in range(max_num_seqs):
-        cached_to_ctx, mask = _selective_masking(cached_steps, cached_start, context_lens, idx, seq_id, cached_to_ctx)
-        active_to_ctx, _ = _selective_masking(contexted_steps, query_lens_cumsum, query_lens, idx, seq_id, active_to_ctx)
+        cached_to_ctx, mask = _selective_masking(
+            cached_steps, cached_start, context_lens, idx, seq_id, cached_to_ctx
+        )
+        active_to_ctx, _ = _selective_masking(
+            contexted_steps, query_lens_cumsum, query_lens, idx, seq_id, active_to_ctx
+        )
         cached_mask = hlo.logical_or(cached_mask, mask)
 
     return cached_mask, cached_to_ctx, active_to_ctx
@@ -347,7 +382,7 @@ def contexted_kv(cached_keys, active_keys, cached_mask, cached_to_ctx, active_to
     active_keys = hlo.reshape(active_keys, (active_seq_len, 1, n_kv_head, d_head))
 
     # cached keys/values are loaded as blocks from HBM to SRAM
-    cached_keys = hlo.reshape(cached_keys, (n_blocks*block_size, n_kv_head*d_head))
+    cached_keys = hlo.reshape(cached_keys, (n_blocks * block_size, n_kv_head * d_head))
     cached_keys = hlo.index_select(cached_keys, dim=0, index=cached_to_ctx)
     cached_keys = hlo.reshape(cached_keys, sizes)
 
@@ -370,10 +405,12 @@ def blockwise_qk_matmul(query, keys, block_to_seq):
 
     block_to_seq_vec = hlo.reshape(block_to_seq, (num_blocks, 1))
     replicated_queries = gather_blocks_all(query, block_to_seq_vec)
-    dot_dims = dict(lhs_contracting_dimensions=[3],
-                    lhs_batch_dimensions=[0, 2],
-                    rhs_contracting_dimensions=[3],
-                    rhs_batch_dimensions=[0, 2])
+    dot_dims = dict(
+        lhs_contracting_dimensions=[3],
+        lhs_batch_dimensions=[0, 2],
+        rhs_contracting_dimensions=[3],
+        rhs_batch_dimensions=[0, 2],
+    )
     output_dot = hlo.dot_general(replicated_queries, keys, dimension_numbers=dot_dims)
     return output_dot
 
@@ -416,13 +453,15 @@ def block_to_seq_indexing(context_lens, num_seqs, num_blocks, block_size):
     context_lens = hlo.reshape(context_lens, (num_seqs,))
 
     assign_func = hlo.gen_assign_func(block_to_seq_vec.dtype)
-    scatter_dims = dict(update_window_dims=[1],
-                        inserted_window_dims=[0],
-                        scatter_dims_to_operand_dims=[0],
-                        index_vector_dim=1)
+    scatter_dims = dict(
+        update_window_dims=[1],
+        inserted_window_dims=[0],
+        scatter_dims_to_operand_dims=[0],
+        index_vector_dim=1,
+    )
 
     # blocks_cumsum = cumsum((context_lens+block_size-1)//block_size, axis=0)
-    blocks_add = hlo.add(context_lens, block_size-1)
+    blocks_add = hlo.add(context_lens, block_size - 1)
     blocks_div = hlo.floor(hlo.divide(hlo.cast(blocks_add, f32), block_size))
     blocks_cumsum = hlo.cumsum(blocks_div, dim=0)
 
@@ -433,11 +472,22 @@ def block_to_seq_indexing(context_lens, num_seqs, num_blocks, block_size):
     for block_id in range(num_blocks):
         seq_mask = hlo.cast(hlo.less_equal(blocks_cumsum, block_id), s32)
         # seq_id = jnp.minimum(max_num_seqs-1,jnp.max(jnp.int32(seq_mask)*(seq_iota+1)))
-        seq_id = hlo.minimum(hlo.reduce_max(hlo.multiply(seq_mask, seq_iota), dim=0), num_seqs-1)
-        seq_id_br = hlo.broadcast(hlo.reshape(seq_id, (1,1)), out_dim_size=(1, N), broadcast_dimensions=[0, 1])
+        seq_id = hlo.minimum(
+            hlo.reduce_max(hlo.multiply(seq_mask, seq_iota), dim=0), num_seqs - 1
+        )
+        seq_id_br = hlo.broadcast(
+            hlo.reshape(seq_id, (1, 1)),
+            out_dim_size=(1, N),
+            broadcast_dimensions=[0, 1],
+        )
         dst_index = hlo.full(block_id, s32, (1,))
-        block_to_seq_vec = hlo.scatter(block_to_seq_vec, dst_index, seq_id_br,
-                                       scatter_dims=scatter_dims, to_apply=assign_func)
+        block_to_seq_vec = hlo.scatter(
+            block_to_seq_vec,
+            dst_index,
+            seq_id_br,
+            scatter_dims=scatter_dims,
+            to_apply=assign_func,
+        )
 
     # HACK: need to take broadcasted active table to the output, in order to workaround a known issue.
     block_to_seq_red = hlo.reduce_min(block_to_seq_vec, dim=1)
@@ -457,7 +507,9 @@ def blockwise_reduce_max(logits, block_to_seq, num_seqs):
         seq_full = hlo.full(seq_id, s32, o_sizes)
         seq_mask = hlo.equal(seq_iota, seq_full)
         masked_logits = hlo.masked_select(seq_mask, logits, neg)
-        output_br = hlo.broadcast(hlo.reduce_max(masked_logits, dim=0, keepdim=True), o_sizes, [0, 1, 2])
+        output_br = hlo.broadcast(
+            hlo.reduce_max(masked_logits, dim=0, keepdim=True), o_sizes, [0, 1, 2]
+        )
         output = hlo.masked_select(seq_mask, output_br, output)
     return output
 
@@ -475,7 +527,9 @@ def blockwise_reduce_sum(logits, block_to_seq, num_seqs):
         seq_full = hlo.full(seq_id, s32, o_sizes)
         seq_mask = hlo.equal(seq_iota, seq_full)
         masked_logits = hlo.masked_select(seq_mask, logits, zero)
-        output_br = hlo.broadcast(hlo.reduce_sum(masked_logits, dim=0, keepdim=True), o_sizes, [0, 1, 2])
+        output_br = hlo.broadcast(
+            hlo.reduce_sum(masked_logits, dim=0, keepdim=True), o_sizes, [0, 1, 2]
+        )
         output = hlo.masked_select(seq_mask, output_br, output)
     return output
 
@@ -499,12 +553,15 @@ def sample_block_indices(context_lens, num_active_blocks, block_size):
     # - output: minimum(num_blocks_cumsum - 1, num_active_blocks - 1)
     # (The extra minimum operator is needed to avoid out-of-bound issues)
     # [0, 3, 5, 5]
-    blocks_add = hlo.add(context_lens, block_size-1)
-    blocks_div = hlo.cast(hlo.floor(hlo.divide(hlo.cast(blocks_add, f32), block_size)), s32)
+    blocks_add = hlo.add(context_lens, block_size - 1)
+    blocks_div = hlo.cast(
+        hlo.floor(hlo.divide(hlo.cast(blocks_add, f32), block_size)), s32
+    )
     blocks_cumsum = hlo.subtract(hlo.cumsum(blocks_div, dim=0), 1)
-    indices = hlo.minimum(blocks_cumsum, num_active_blocks-1)
+    indices = hlo.minimum(blocks_cumsum, num_active_blocks - 1)
     indices = hlo.reshape(indices, (num_seqs,))
     return indices
+
 
 def blockwise_tensor_contraction(input_tensor, selected_block_indices):
     input_cumsum = hlo.cumsum(input_tensor, dim=0)
@@ -517,5 +574,7 @@ def blockwise_tensor_contraction(input_tensor, selected_block_indices):
     return output
 
 
-def wrapper_flash_attention_bir(q, k, v, out, scale=1.0, kernel_name="CausalAttentionMMSoftmaxMMWithoutSwap"):
+def wrapper_flash_attention_bir(
+    q, k, v, out, scale=1.0, kernel_name="CausalAttentionMMSoftmaxMMWithoutSwap"
+):
     attention_isa_kernel(q, k, v, scale, out, kernel_name)

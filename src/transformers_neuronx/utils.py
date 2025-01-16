@@ -29,7 +29,7 @@ def parse_dtype_replica_groups(neuron_config, tp_degree):
 
     if neuron_config:
         dtype = neuron_config.all_reduce_dtype
-        replica_groups=neuron_config.get_replica_groups(tp_degree)
+        replica_groups = neuron_config.get_replica_groups(tp_degree)
 
     return dtype, replica_groups
 
@@ -82,11 +82,11 @@ def pad_interleaved(tensor, dim, size, source_len_per_group, pad_len_per_group):
     s_src = 0
     s_target = 0
     for _ in range(num_groups):
-        target_indices[dim] = slice(s_target, s_target+source_len_per_group)
-        src_indices[dim] = slice(s_src, s_src+source_len_per_group)
+        target_indices[dim] = slice(s_target, s_target + source_len_per_group)
+        src_indices[dim] = slice(s_src, s_src + source_len_per_group)
         padded_tensor[target_indices] = tensor[src_indices]
         s_src += source_len_per_group
-        s_target += (source_len_per_group + pad_len_per_group)
+        s_target += source_len_per_group + pad_len_per_group
 
     return padded_tensor
 
@@ -123,6 +123,7 @@ def interleave_qkv(q, k, v, tp_degree, dim=1):
     Returns:
         tensor: Concatenated QKV tensor with interleaved weights
     """
+
     def get_slice_params(tensor, dim, tp_degree):
         size = tensor.shape[dim]
         shard_size = size // tp_degree
@@ -131,7 +132,7 @@ def interleave_qkv(q, k, v, tp_degree, dim=1):
 
     def get_shard_tensors(tensors, size, shard_size, slices, dim):
         for idx, start in enumerate(range(0, size, shard_size)):
-            slices[dim] = slice(start, start+shard_size, 1)
+            slices[dim] = slice(start, start + shard_size, 1)
             shard_tensors = [t[tuple(slices)].contiguous() for t in tensors]
             yield idx, shard_tensors
 
@@ -142,27 +143,37 @@ def interleave_qkv(q, k, v, tp_degree, dim=1):
             tensor = torch.zeros((size * FUSED_QKV_TP_FACTOR), dtype=q.dtype)
         else:
             hidden_dim, interleave_dim = q.shape
-            tensor = torch.zeros((hidden_dim, interleave_dim * FUSED_QKV_TP_FACTOR), dtype=q.dtype)
-        for idx, shard_tensors in get_shard_tensors((q, k, v), size, shard_size, slices, dim):
+            tensor = torch.zeros(
+                (hidden_dim, interleave_dim * FUSED_QKV_TP_FACTOR), dtype=q.dtype
+            )
+        for idx, shard_tensors in get_shard_tensors(
+            (q, k, v), size, shard_size, slices, dim
+        ):
             shard = torch.cat(shard_tensors, dim=dim).contiguous()
             if is_single_dim:
-                tensor[(idx)*shard.shape[dim]:(idx+1)*shard.shape[dim]] = shard
+                tensor[(idx) * shard.shape[dim] : (idx + 1) * shard.shape[dim]] = shard
             else:
-                tensor[:, (idx)*shard.shape[dim]:(idx+1)*shard.shape[dim]] = shard
+                tensor[:, (idx) * shard.shape[dim] : (idx + 1) * shard.shape[dim]] = (
+                    shard
+                )
     else:
         q_hidden_dim, q_interleave_dim = q.shape
         _, kv_interleave_dim = k.shape
-        tensor = torch.zeros((q_hidden_dim, q_interleave_dim + kv_interleave_dim * 2), dtype=q.dtype)
+        tensor = torch.zeros(
+            (q_hidden_dim, q_interleave_dim + kv_interleave_dim * 2), dtype=q.dtype
+        )
         q_size, q_shard_size, q_slices = get_slice_params(q, dim, tp_degree)
         kv_size, kv_shard_size, kv_slices = get_slice_params(k, dim, tp_degree)
-        for idx, ((_, q_shard_tensors), (_, kv_shard_tensors)) in enumerate(zip(
-            get_shard_tensors((q,), q_size, q_shard_size, q_slices, dim),
-            get_shard_tensors((k,v), kv_size, kv_shard_size, kv_slices, dim)
-        )):
+        for idx, ((_, q_shard_tensors), (_, kv_shard_tensors)) in enumerate(
+            zip(
+                get_shard_tensors((q,), q_size, q_shard_size, q_slices, dim),
+                get_shard_tensors((k, v), kv_size, kv_shard_size, kv_slices, dim),
+            )
+        ):
             q_shard = q_shard_tensors[0]
             kv_shard = torch.concat(kv_shard_tensors, dim=dim).contiguous()
             shard = torch.cat((q_shard, kv_shard), dim=dim).contiguous()
-            tensor[:, (idx)*shard.shape[1]:(idx+1)*shard.shape[1]] = shard
+            tensor[:, (idx) * shard.shape[1] : (idx + 1) * shard.shape[1]] = shard
     return tensor
 
 
@@ -178,6 +189,7 @@ def interleave_mlp(mlp_gate, mlp_up, tp_degree, dim=0):
     Returns:
         tensor: Concatenated mlp tensor with interleaved weights
     """
+
     def get_slice_params(tensor, dim, tp_degree):
         size = tensor.shape[dim]
         shard_size = size // tp_degree
@@ -186,24 +198,28 @@ def interleave_mlp(mlp_gate, mlp_up, tp_degree, dim=0):
 
     def get_shard_tensors(tensors, size, shard_size, slices, dim):
         for idx, start in enumerate(range(0, size, shard_size)):
-            slices[dim] = slice(start, start+shard_size, 1)
+            slices[dim] = slice(start, start + shard_size, 1)
             shard_tensors = [t[tuple(slices)].contiguous() for t in tensors]
             yield idx, shard_tensors
 
-    assert mlp_up.shape[dim] == mlp_gate.shape[dim], "mlp up and gate proj should have same size in interleave dim"
+    assert mlp_up.shape[dim] == mlp_gate.shape[dim], (
+        "mlp up and gate proj should have same size in interleave dim"
+    )
     size, shard_size, slices = get_slice_params(mlp_up, dim, tp_degree)
     is_single_dim = len(mlp_up.shape) == 1
     if is_single_dim:
         tensor = torch.zeros((size * 2), dtype=mlp_up.dtype)
     else:
         interleave_dim, hidden_dim = mlp_up.shape
-        tensor = torch.zeros((interleave_dim * 2, hidden_dim ), dtype=mlp_up.dtype)
-    for idx, shard_tensors in get_shard_tensors((mlp_gate, mlp_up), size, shard_size, slices, dim):
+        tensor = torch.zeros((interleave_dim * 2, hidden_dim), dtype=mlp_up.dtype)
+    for idx, shard_tensors in get_shard_tensors(
+        (mlp_gate, mlp_up), size, shard_size, slices, dim
+    ):
         shard = torch.cat(shard_tensors, dim=dim).contiguous()
         if is_single_dim:
-            tensor[(idx)*shard.shape[dim]:(idx+1)*shard.shape[dim]] = shard
+            tensor[(idx) * shard.shape[dim] : (idx + 1) * shard.shape[dim]] = shard
         else:
-            tensor[(idx)*shard.shape[dim]:(idx+1)*shard.shape[dim], :] = shard
+            tensor[(idx) * shard.shape[dim] : (idx + 1) * shard.shape[dim], :] = shard
 
     return tensor
 
@@ -226,7 +242,7 @@ def build_replica_groups(num_groups, group_size, interleave=False):
 
     """
     if interleave:
-        limit = num_groups*group_size
+        limit = num_groups * group_size
         ncs = list(range(limit))
         slices = [slice(i, limit, num_groups) for i in range(num_groups)]
         replica_groups = [ncs[s] for s in slices]
@@ -239,11 +255,11 @@ def build_replica_groups(num_groups, group_size, interleave=False):
 
 
 def get_qkv_padding(
-        n_head: int,
-        n_kv_head: int,
-        tp_degree: int,
-        neuron_config: Optional[NeuronConfig] = None
-    ):
+    n_head: int,
+    n_kv_head: int,
+    tp_degree: int,
+    neuron_config: Optional[NeuronConfig] = None,
+):
     """
     Compute the number of Q & KV heads after required padding.
 
@@ -272,10 +288,7 @@ def get_qkv_padding(
         gqa = neuron_config.group_query_attention
 
     # When replicated, we need to check when we must fully/partially replicated
-    if (
-        n_head != n_kv_head
-        and gqa == GQA.REPLICATED_HEADS
-    ):
+    if n_head != n_kv_head and gqa == GQA.REPLICATED_HEADS:
         # Full Replication - Base case: replicate up to the number of Q heads
         ratio = int(n_head / n_kv_head)
 

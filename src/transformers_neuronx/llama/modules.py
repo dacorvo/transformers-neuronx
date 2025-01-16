@@ -17,12 +17,13 @@ from transformers_neuronx import module
 
 
 class LlamaForCausalLM(module.PretrainedModel):
-
     def __init__(self, config):
         super().__init__()
         dtype = dtypes.to_torch_dtype(config.amp)
         self.model = LlamaModel(config)
-        self.lm_head = module.LowMemoryLazyLinear(config.vocab_size, dtype=dtype, bias=False)
+        self.lm_head = module.LowMemoryLazyLinear(
+            config.vocab_size, dtype=dtype, bias=False
+        )
 
     def get_tied_parameters(self):
         return [(self.model.embed_tokens.weight, self.lm_head.weight)]
@@ -32,23 +33,24 @@ class LlamaForCausalLM(module.PretrainedModel):
 
 
 class LlamaModel(module.LowMemoryModule):
-
     def __init__(self, config):
         super().__init__()
-        self.embed_tokens = module.LowMemoryEmbedding(config.vocab_size, config.hidden_size)
-        self.layers = module.LowMemoryModuleList([LlamaDecoderLayer(config) for _ in range(config.num_hidden_layers)])
+        self.embed_tokens = module.LowMemoryEmbedding(
+            config.vocab_size, config.hidden_size
+        )
+        self.layers = module.LowMemoryModuleList(
+            [LlamaDecoderLayer(config) for _ in range(config.num_hidden_layers)]
+        )
         self.norm = LlamaRMSNorm(config)
 
 
 class LlamaRMSNorm(module.LowMemoryModule):
-
     def __init__(self, config) -> None:
         super().__init__()
         self.weight = module.UninitializedParameter()
 
 
 class LlamaDecoderLayer(module.LowMemoryModule):
-
     def __init__(self, config):
         super().__init__()
         self.self_attn = LlamaAttention(config)
@@ -58,24 +60,36 @@ class LlamaDecoderLayer(module.LowMemoryModule):
 
 
 class LlamaAttention(module.LowMemoryModule):
-
     def __init__(self, config):
         super().__init__()
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
         self.head_dim = self.hidden_size // self.num_heads
         dtype = dtypes.to_torch_dtype(config.amp)
-        self.q_proj = module.LowMemoryLazyLinear(self.num_heads * self.head_dim, bias=False, dtype=dtype)
-        self.k_proj = module.LowMemoryLazyLinear(self.num_heads * self.head_dim, bias=False, dtype=dtype)
-        self.v_proj = module.LowMemoryLazyLinear(self.num_heads * self.head_dim, bias=False, dtype=dtype)
-        self.o_proj = module.LowMemoryLazyLinear(self.hidden_size, bias=False, dtype=dtype)
+        self.q_proj = module.LowMemoryLazyLinear(
+            self.num_heads * self.head_dim, bias=False, dtype=dtype
+        )
+        self.k_proj = module.LowMemoryLazyLinear(
+            self.num_heads * self.head_dim, bias=False, dtype=dtype
+        )
+        self.v_proj = module.LowMemoryLazyLinear(
+            self.num_heads * self.head_dim, bias=False, dtype=dtype
+        )
+        self.o_proj = module.LowMemoryLazyLinear(
+            self.hidden_size, bias=False, dtype=dtype
+        )
 
 
 class LlamaMLP(module.LowMemoryModule):
-
     def __init__(self, config):
         super().__init__()
         dtype = dtypes.to_torch_dtype(config.amp)
-        self.gate_proj = module.LowMemoryLazyLinear(config.intermediate_size, bias=False, dtype=dtype)
-        self.up_proj = module.LowMemoryLazyLinear(config.intermediate_size, bias=False, dtype=dtype)
-        self.down_proj = module.LowMemoryLazyLinear(config.hidden_size, bias=False, dtype=dtype)
+        self.gate_proj = module.LowMemoryLazyLinear(
+            config.intermediate_size, bias=False, dtype=dtype
+        )
+        self.up_proj = module.LowMemoryLazyLinear(
+            config.intermediate_size, bias=False, dtype=dtype
+        )
+        self.down_proj = module.LowMemoryLazyLinear(
+            config.hidden_size, bias=False, dtype=dtype
+        )

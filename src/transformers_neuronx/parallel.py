@@ -37,7 +37,6 @@ def cpu(sharded_tensors):
 
 
 class Executor:
-
     def __init__(self, tp_degree):
         self.executor = ThreadPoolExecutor(tp_degree)
 
@@ -52,7 +51,6 @@ class Executor:
 
 
 class ParallelTensorManipulator:
-
     def __init__(self, tp_degree, rank_id=0, local_tp_degree=None):
         self.tp_degree = tp_degree
         self.rank_id = rank_id
@@ -64,18 +62,20 @@ class ParallelTensorManipulator:
         return [tensor for ordinal in range(self.local_tp_degree)]
 
     def duplicate(self, tensor):
-        return ops.parallel_to_nc([tensor.contiguous() for ordinal in range(self.local_tp_degree)])
+        return ops.parallel_to_nc(
+            [tensor.contiguous() for ordinal in range(self.local_tp_degree)]
+        )
 
     def shard_along_on_cpu(self, tensor, dim):
         size = tensor.shape[dim]
         shard_size = size // self.tp_degree
         slices = [slice(None) for _ in tensor.shape]
         tensors = []
-        if self.local_tp_degree != self.tp_degree: # for multi-instance tp
+        if self.local_tp_degree != self.tp_degree:  # for multi-instance tp
             slice_start = self.rank_id * self.local_tp_degree * shard_size
             slice_end = (self.rank_id + 1) * self.local_tp_degree * shard_size
             for start in range(slice_start, slice_end, shard_size):
-                slices[dim] = slice(start, start+shard_size, 1)
+                slices[dim] = slice(start, start + shard_size, 1)
                 shard = tensor[tuple(slices)].contiguous()
                 tensors.append(shard)
         else:
@@ -83,7 +83,7 @@ class ParallelTensorManipulator:
             slice_end = size
             slice_range = range(slice_start, slice_end, shard_size)
             for start in slice_range:
-                slices[dim] = slice(start, start+shard_size, 1)
+                slices[dim] = slice(start, start + shard_size, 1)
                 shard = tensor[tuple(slices)].contiguous()
                 if len(slice_range) == 1:
                     # edge case for save_presharded flow where something is "sharded"
@@ -93,9 +93,9 @@ class ParallelTensorManipulator:
                 tensors.append(shard)
         if len(tensors) != self.local_tp_degree:
             raise ValueError(
-                f'Weight with shape {tensor.shape} cannot be sharded along dimension {dim}. '
-                f'This results in {len(tensors)} weight partitions which cannot be distributed to {self.local_tp_degree} NeuronCores evenly. '
-                f'To fix this issue either the model parameters or the `tp_degree` must be changed to allow the weight to be evenly split'
+                f"Weight with shape {tensor.shape} cannot be sharded along dimension {dim}. "
+                f"This results in {len(tensors)} weight partitions which cannot be distributed to {self.local_tp_degree} NeuronCores evenly. "
+                f"To fix this issue either the model parameters or the `tp_degree` must be changed to allow the weight to be evenly split"
             )
         return tensors
 
@@ -118,8 +118,8 @@ class ParallelTensorManipulator:
     def slice_on_nc(self, tensors, dim, start, end, step):
         return ops.parallel_slice(tensors, dim, start, end, step)
 
-class CPUTensorManipulator(ParallelTensorManipulator):
 
+class CPUTensorManipulator(ParallelTensorManipulator):
     def duplicate(self, tensor):
         return [tensor.contiguous() for _ in range(self.local_tp_degree)]
 

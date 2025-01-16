@@ -37,7 +37,9 @@ def load(model, nc_id, nc_count):
 
 
 def load_collectives(model, nc_id, nc_count, g_nc_id, g_nc_count):
-    return torch.ops.neuron._load_collectives_neuron(model, nc_id, nc_count, g_nc_id, g_nc_count)
+    return torch.ops.neuron._load_collectives_neuron(
+        model, nc_id, nc_count, g_nc_id, g_nc_count
+    )
 
 
 def execute(model, inputs):
@@ -62,7 +64,8 @@ def parallel_slice(tensor, dim, start, end, step):
 
 def parallel_run(parallel_model, parallel_inputs, parallel_outputs):
     return torch.ops.neuron._parallel_run_neuron(
-        parallel_model, parallel_inputs, parallel_outputs)
+        parallel_model, parallel_inputs, parallel_outputs
+    )
 
 
 def profile_start(model, ntff):
@@ -74,7 +77,9 @@ def profile_stop(ntff):
 
 
 def parallel_profile_start(model, ntff_prefix, ntff_count_limit):
-    return torch.ops.neuron._parallel_profile_start_neuron(model, ntff_prefix, ntff_count_limit)
+    return torch.ops.neuron._parallel_profile_start_neuron(
+        model, ntff_prefix, ntff_count_limit
+    )
 
 
 def parallel_profile_stop(ntff_files):

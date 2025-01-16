@@ -25,36 +25,39 @@ from transformers.utils import hub
 from transformers_neuronx import constants
 
 # Disable lazy module warning since torch-neuronx version is pinned
-warnings.filterwarnings("ignore", category=UserWarning, module='torch.nn.modules.lazy')
+warnings.filterwarnings("ignore", category=UserWarning, module="torch.nn.modules.lazy")
 
 
-_SAFETENSORS_MODEL_INDEX_FILENAME_JSON = 'model.safetensors.index.json'
-_SAFETENSORS_MODEL_FILENAME = 'model.safetensors'
-_PYTORCH_MODEL_BIN_INDEX_FILENAME_JSON = 'pytorch_model.bin.index.json'
-_PYTORCH_MODEL_BIN_FILENAME = 'pytorch_model.bin'
-_KEY_TO_FILENAME_JSON = 'key_to_filename.json'
+_SAFETENSORS_MODEL_INDEX_FILENAME_JSON = "model.safetensors.index.json"
+_SAFETENSORS_MODEL_FILENAME = "model.safetensors"
+_PYTORCH_MODEL_BIN_INDEX_FILENAME_JSON = "pytorch_model.bin.index.json"
+_PYTORCH_MODEL_BIN_FILENAME = "pytorch_model.bin"
+_KEY_TO_FILENAME_JSON = "key_to_filename.json"
 
 
 class LowMemoryModule(torch.nn.Module):
-
     def materialize(self):
         with torch.no_grad():
             for param in self.parameters():
-                if not hasattr(param, '_file_path'):
+                if not hasattr(param, "_file_path"):
                     continue
-                if param._file_path.endswith('.empty_json'):
+                if param._file_path.endswith(".empty_json"):
                     with open(param._file_path) as fp:
                         empty_json = json.load(fp)
                     torch.manual_seed(0)
-                    input_param = empty_json.get('init_std', 1.0) * torch.randn(empty_json['shape'])
-                    dtype = getattr(torch, empty_json['torch_dtype'])
+                    input_param = empty_json.get("init_std", 1.0) * torch.randn(
+                        empty_json["shape"]
+                    )
+                    dtype = getattr(torch, empty_json["torch_dtype"])
                     input_param = input_param.to(dtype)
-                elif param._file_path.endswith('.safetensors'):
+                elif param._file_path.endswith(".safetensors"):
                     with safe_open(param._file_path, framework="pt") as f:
                         if param._global_key in f.keys():
                             input_param = f.get_tensor(param._global_key)
                         else:
-                            raise FileNotFoundError(f'Could not find a weight for {param._global_key} in {param._file_path}')
+                            raise FileNotFoundError(
+                                f"Could not find a weight for {param._global_key} in {param._file_path}"
+                            )
                 else:
                     input_param = torch.load(param._file_path)
                 if torch.nn.parameter.is_lazy(param):
@@ -62,13 +65,12 @@ class LowMemoryModule(torch.nn.Module):
                 param.copy_(input_param)
 
     def nullify(self):
-
         def _nullify(module):
             for name, param in module.named_parameters():
-                if '.' not in name and hasattr(module, name):
+                if "." not in name and hasattr(module, name):
                     blank = UninitializedParameter()
                     # Note: Allow the parameter to be reloaded
-                    if hasattr(param, '_file_path'):
+                    if hasattr(param, "_file_path"):
                         blank._file_path = param._file_path
                         blank._global_key = param._global_key
                     setattr(module, name, blank)
@@ -81,14 +83,13 @@ class LowMemoryModule(torch.nn.Module):
         _nullify(self)
 
     def load_state_dict_low_memory(self, state_dict):
-
-        def load(module, prefix=''):
+        def load(module, prefix=""):
             module._load_from_state_dict_low_memory(state_dict, prefix)
             for name, child in module.named_modules():
                 if child is module:
                     continue
                 if child is not None:
-                    load(child, prefix + name + '.')
+                    load(child, prefix + name + ".")
 
         load(self)
 
@@ -103,7 +104,7 @@ class LowMemoryModule(torch.nn.Module):
                         param.materialize(input_param.shape)
                     param.copy_(input_param)
 
-    def _load_state(self, state_dict_dir, key_to_filename, prefix=''):
+    def _load_state(self, state_dict_dir, key_to_filename, prefix=""):
         local_state = {k: v for k, v in self.named_parameters() if v is not None}
         complete = True
         for key, param in local_state.items():
@@ -118,11 +119,10 @@ class LowMemoryModule(torch.nn.Module):
 
     def _load_ties(self):
         for ties in self.get_tied_parameters():
-
             # Find if any tie has a weight
             src = None
             for tie in ties:
-                if hasattr(tie, '_file_path'):
+                if hasattr(tie, "_file_path"):
                     src = tie
                     break
 
@@ -131,11 +131,11 @@ class LowMemoryModule(torch.nn.Module):
 
             # Copy weight for remaining empty tied weights
             for dst in ties:
-                if not hasattr(dst, '_file_path'):
+                if not hasattr(dst, "_file_path"):
                     dst._file_path = src._file_path
                     dst._global_key = src._global_key
 
-    def _load_from_state_dict_dir(self, state_dict_dir, key_to_filename, prefix=''):
+    def _load_from_state_dict_dir(self, state_dict_dir, key_to_filename, prefix=""):
         state_dict_dir = os.path.realpath(state_dict_dir)
 
         # Load global weights
@@ -143,7 +143,6 @@ class LowMemoryModule(torch.nn.Module):
 
         # Check for ties and base model prefixes if initial weight load was incomplete
         if not complete:
-
             # Load base model weights
             base = self.get_base_model()
             if base:
@@ -165,7 +164,7 @@ class LowMemoryModule(torch.nn.Module):
         Eagerly load the the pytorch model binary shards.
         """
         index = os.path.join(state_dict_dir, _PYTORCH_MODEL_BIN_INDEX_FILENAME_JSON)
-        with open(index, 'r') as f:
+        with open(index, "r") as f:
             key_to_filename = json.load(f)["weight_map"]
         shard_filenames = set(key_to_filename.values())
         for shard_filename in shard_filenames:
@@ -188,7 +187,7 @@ class LowMemoryModule(torch.nn.Module):
         Lazily load the safetensors by associating each weight with a shard filename.
         """
         index = os.path.join(state_dict_dir, _SAFETENSORS_MODEL_INDEX_FILENAME_JSON)
-        with open(index, 'r') as f:
+        with open(index, "r") as f:
             key_to_filename = json.load(f)["weight_map"]
         self._load_from_state_dict_dir(state_dict_dir, key_to_filename)
 
@@ -221,7 +220,7 @@ class LowMemoryModule(torch.nn.Module):
         """
         return []
 
-    def get_base_model(self) -> Optional['LowMemoryModule']:
+    def get_base_model(self) -> Optional["LowMemoryModule"]:
         """
         Get the base pretrained transformer model.
 
@@ -255,13 +254,22 @@ class LowMemoryModule(torch.nn.Module):
         """
         return None
 
+
 class LowMemoryModuleList(torch.nn.ModuleList, LowMemoryModule): ...
+
+
 class LowMemoryLazyLinear(torch.nn.LazyLinear, LowMemoryModule): ...
 
-class LowMemoryLayerNorm(torch.nn.LayerNorm, LowMemoryModule):
 
-    def __init__(self, normalized_shape, eps: float = 1e-5, elementwise_affine: bool = True,
-                 device=None, dtype=None) -> None:
+class LowMemoryLayerNorm(torch.nn.LayerNorm, LowMemoryModule):
+    def __init__(
+        self,
+        normalized_shape,
+        eps: float = 1e-5,
+        elementwise_affine: bool = True,
+        device=None,
+        dtype=None,
+    ) -> None:
         super(LowMemoryLayerNorm, self).__init__(0)
         if isinstance(normalized_shape, int):
             normalized_shape = (normalized_shape,)
@@ -276,11 +284,19 @@ class LowMemoryLayerNorm(torch.nn.LayerNorm, LowMemoryModule):
 
 
 class LowMemoryEmbedding(torch.nn.Embedding, LowMemoryModule):
-
-    def __init__(self, num_embeddings: int, embedding_dim: int, padding_idx: Optional[int] = None,
-                 max_norm: Optional[float] = None, norm_type: float = 2., scale_grad_by_freq: bool = False,
-                 sparse: bool = False, _weight: Optional[torch.Tensor] = None,
-                 device=None, dtype=None) -> None:
+    def __init__(
+        self,
+        num_embeddings: int,
+        embedding_dim: int,
+        padding_idx: Optional[int] = None,
+        max_norm: Optional[float] = None,
+        norm_type: float = 2.0,
+        scale_grad_by_freq: bool = False,
+        sparse: bool = False,
+        _weight: Optional[torch.Tensor] = None,
+        device=None,
+        dtype=None,
+    ) -> None:
         super(LowMemoryEmbedding, self).__init__(0, 0)
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
@@ -344,15 +360,20 @@ def maybe_download_weights(path_or_repo_id, safe_serialization=True, **kwargs):
     checkpoint = None
     for checkpoint in checkpoints:
         # Ignore errors since only one format may exist
-        filename = hub.cached_file(path_or_repo_id, checkpoint, _raise_exceptions_for_missing_entries=False, **kwargs)
+        filename = hub.cached_file(
+            path_or_repo_id,
+            checkpoint,
+            _raise_exceptions_for_missing_entries=False,
+            **kwargs,
+        )
         if filename:
             break
 
     if not filename:
         # Note: Error type matches transformers `from_pretrained` convention
         raise EnvironmentError(
-            f'Could not find a checkpoint for {path_or_repo_id} in a '
-            f'supported format (safetensors model or pytorch binary model)'
+            f"Could not find a checkpoint for {path_or_repo_id} in a "
+            f"supported format (safetensors model or pytorch binary model)"
         )
 
     # Download shards if we originally found an index
@@ -368,35 +389,50 @@ def maybe_download_weights(path_or_repo_id, safe_serialization=True, **kwargs):
 
 
 class PretrainedModel(LowMemoryModule):
-
     @classmethod
     def from_pretrained(cls, pretrained_model_path, *model_args, **kwargs):
-
         def _sanity_check(**kwargs):
             context_length_estimate = kwargs.get("context_length_estimate", None)
             n_positions = kwargs.get("n_positions", 2048)
-            max_n_pos = max(n_positions) if isinstance(n_positions, list) else n_positions
-            max_cle = max(context_length_estimate) if isinstance(context_length_estimate, list) else context_length_estimate
+            max_n_pos = (
+                max(n_positions) if isinstance(n_positions, list) else n_positions
+            )
+            max_cle = (
+                max(context_length_estimate)
+                if isinstance(context_length_estimate, list)
+                else context_length_estimate
+            )
             # max_n_pos or max_cle could be None if customer intends to use defaults
             if isinstance(max_n_pos, int) and isinstance(max_cle, int):
-                assert max_n_pos >= max_cle, \
+                assert max_n_pos >= max_cle, (
                     f"Max context_length_estimate {max_cle} cannot be more than max n_positions {max_n_pos}."
+                )
             neuron_config = kwargs.get("neuron_config", None)
             bsh_cache_layout = False
             if neuron_config is not None:
                 bsh_cache_layout = neuron_config.cache_layout == constants.LAYOUT_BSH
             continuous_batching = neuron_config and neuron_config.continuous_batching
             if continuous_batching:
-                batch_size_for_shared_caches = neuron_config.continuous_batching.batch_size_for_shared_caches
+                batch_size_for_shared_caches = (
+                    neuron_config.continuous_batching.batch_size_for_shared_caches
+                )
                 expected_batch_size = kwargs.get("batch_size")
-                assert batch_size_for_shared_caches == expected_batch_size, \
+                assert batch_size_for_shared_caches == expected_batch_size, (
                     f"invalid batch_size_for_shared_caches ({batch_size_for_shared_caches}), {expected_batch_size} is expected"
-                if bsh_cache_layout and not neuron_config.continuous_batching.optimized_paged_attention:
+                )
+                if (
+                    bsh_cache_layout
+                    and not neuron_config.continuous_batching.optimized_paged_attention
+                ):
                     assert isinstance(n_positions, list) and len(n_positions) == 1
-                    assert isinstance(context_length_estimate, list) and len(context_length_estimate) == 1, \
-                    	"BSH cache layout does not support multi-bucketing"
+                    assert (
+                        isinstance(context_length_estimate, list)
+                        and len(context_length_estimate) == 1
+                    ), "BSH cache layout does not support multi-bucketing"
             else:
-                assert not bsh_cache_layout, "BSH cache layout can only be configured with continuous batching."
+                assert not bsh_cache_layout, (
+                    "BSH cache layout can only be configured with continuous batching."
+                )
 
         _sanity_check(**kwargs)
         config = AutoConfig.from_pretrained(pretrained_model_path)
@@ -406,12 +442,19 @@ class PretrainedModel(LowMemoryModule):
         return model
 
     def load_state_dict_dir(self, pretrained_model_path):
-
         # Standard checkpoint filenames
-        state_dict_path = os.path.join(pretrained_model_path, _PYTORCH_MODEL_BIN_FILENAME)
-        state_dict_safetensor_path = os.path.join(pretrained_model_path, _SAFETENSORS_MODEL_FILENAME)
-        safetensors_index_path = os.path.join(pretrained_model_path, _SAFETENSORS_MODEL_INDEX_FILENAME_JSON)
-        pytorch_model_bin_index_path = os.path.join(pretrained_model_path, _PYTORCH_MODEL_BIN_INDEX_FILENAME_JSON)
+        state_dict_path = os.path.join(
+            pretrained_model_path, _PYTORCH_MODEL_BIN_FILENAME
+        )
+        state_dict_safetensor_path = os.path.join(
+            pretrained_model_path, _SAFETENSORS_MODEL_FILENAME
+        )
+        safetensors_index_path = os.path.join(
+            pretrained_model_path, _SAFETENSORS_MODEL_INDEX_FILENAME_JSON
+        )
+        pytorch_model_bin_index_path = os.path.join(
+            pretrained_model_path, _PYTORCH_MODEL_BIN_INDEX_FILENAME_JSON
+        )
 
         # Loading is done in priority of fastest -> slowest (in case multiple variants exist)
 
@@ -431,4 +474,6 @@ class PretrainedModel(LowMemoryModule):
         elif os.path.isfile(pytorch_model_bin_index_path):
             self.load_pytorch_model_bin_sharded(pretrained_model_path)
         else:
-            raise FileNotFoundError(f"Can not find model.safetensors or pytorch_model.bin in {pretrained_model_path}")
+            raise FileNotFoundError(
+                f"Can not find model.safetensors or pytorch_model.bin in {pretrained_model_path}"
+            )

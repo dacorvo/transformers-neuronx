@@ -43,10 +43,11 @@ class PyTorchTracedKernel(FrameworkKernel):
         dtype = hloShape.shape_proto.element_type
         return shape, dtype
 
+
 def nki_call(func, *args, **kwargs):
-    """ 
+    """
     This function applies NKI kernel function (func) to inputs (*args) in PyHLO.
-    
+
     Args:
         func: NKI kernel function
         args: inputs of func
@@ -59,10 +60,10 @@ def nki_call(func, *args, **kwargs):
         def mixed_pyhlo_nki(x, y):
             h = x.dtype[x.sizes].Multiply(x, x)
             o = nki_call(add_kernel, h, y, grid=32, output_HloShapes=x.dtype[x.sizes])
-            return o        
+            return o
     """
-    
-    grid = kwargs.pop("grid", None)   
+
+    grid = kwargs.pop("grid", None)
     return NkiHloKernel(func, grid=grid)(*args, **kwargs)
 
 
@@ -120,12 +121,9 @@ class NkiHloKernel:
         self.func = func
         self.grid = ()
         if grid is not None:
-           self.set_grid(grid)
+            self.set_grid(grid)
         self._kernel = PyTorchTracedKernel(
-            func_name=func.__name__,
-            func=self.func,
-            grid=self.grid,
-            **kwargs
+            func_name=func.__name__, func=self.func, grid=self.grid, **kwargs
         )
 
     def set_grid(self, grid):
@@ -133,23 +131,27 @@ class NkiHloKernel:
             grid = [grid]
         self.grid = grid
 
-    def __call__(self, *args, output_HloShapes=None):        
-        if output_HloShapes is None: 
-           raise ValueError("output_shape should be set in NkiHloKernel !")
+    def __call__(self, *args, output_HloShapes=None):
+        if output_HloShapes is None:
+            raise ValueError("output_shape should be set in NkiHloKernel !")
 
         if not isinstance(output_HloShapes, (list, tuple)):
             output_HloShapes = [output_HloShapes]
-        
+
         input_output_HloShapes = (*args, *output_HloShapes)
-        config_str, input_names, output_names = self._kernel.dump_config(*input_output_HloShapes)
+        config_str, input_names, output_names = self._kernel.dump_config(
+            *input_output_HloShapes
+        )
 
-        if len(output_HloShapes) > 1: 
-            output_HloShapes = args[0].scribe.tuple(*output_HloShapes) 
+        if len(output_HloShapes) > 1:
+            output_HloShapes = args[0].scribe.tuple(*output_HloShapes)
         else:
-            output_HloShapes, = output_HloShapes
+            (output_HloShapes,) = output_HloShapes
 
-        output = output_HloShapes.CustomCall(*args, 
-                                             backend_config=str.encode(config_str), 
-                                             custom_call_target='AwsNeuronCustomNativeKernel')
+        output = output_HloShapes.CustomCall(
+            *args,
+            backend_config=str.encode(config_str),
+            custom_call_target="AwsNeuronCustomNativeKernel",
+        )
 
         return output

@@ -30,12 +30,30 @@ class ContinuousBatchingConfig:
     """
 
     def __init__(self, **kwargs):
-        self.max_num_seqs = kwargs.pop("max_num_seqs") if kwargs.get("max_num_seqs", None) is not None else kwargs.pop("batch_size_for_shared_caches")
-        self.max_model_len = kwargs.pop("max_model_len") if kwargs.get("max_model_len", None) is not None else None
-        self.optimized_paged_attention = kwargs.pop("optimized_paged_attention") if kwargs.get("optimized_paged_attention", None) is not None else False
-        self.enable_chunked_prefill = kwargs.pop("enable_chunked_prefill") if kwargs.get("enable_chunked_prefill", None) is not None else False
+        self.max_num_seqs = (
+            kwargs.pop("max_num_seqs")
+            if kwargs.get("max_num_seqs", None) is not None
+            else kwargs.pop("batch_size_for_shared_caches")
+        )
+        self.max_model_len = (
+            kwargs.pop("max_model_len")
+            if kwargs.get("max_model_len", None) is not None
+            else None
+        )
+        self.optimized_paged_attention = (
+            kwargs.pop("optimized_paged_attention")
+            if kwargs.get("optimized_paged_attention", None) is not None
+            else False
+        )
+        self.enable_chunked_prefill = (
+            kwargs.pop("enable_chunked_prefill")
+            if kwargs.get("enable_chunked_prefill", None) is not None
+            else False
+        )
         if self.enable_chunked_prefill:
-            assert self.optimized_paged_attention, "chunked prefill is only supported with optimized paged attention"
+            assert self.optimized_paged_attention, (
+                "chunked prefill is only supported with optimized paged attention"
+            )
         self.block_size = None
         self.num_blocks = None
         assert len(kwargs) == 0, f"unexpected key word arguments: {kwargs.keys()}"
@@ -59,7 +77,7 @@ valid_dtypes = [
 ]
 
 
-class NeuronConfig():
+class NeuronConfig:
     """
     Neuron configurations for extra features and performance optimizations.
 
@@ -81,7 +99,7 @@ class NeuronConfig():
             of query attention heads is not equal to the number of key/value
             heads. Neuron attempts to select the best configuration by default.
         sequence_parallel_norm: Enables sharding input sequences for rms_norm parallel
-	        execution. Supported for llama models.
+                execution. Supported for llama models.
         sequence_parallel_norm_threshold: Sets the minimum threshold to shard rms_norm
             sequences. Use with sequence_parallel_norm.
         bf16_rms_norm: Uses BF16 weights and hidden states input for RMS norm operations.
@@ -100,19 +118,22 @@ class NeuronConfig():
         attn_output_transposed: Transposes the attention output projection weight tensor.
         compilation_worker_count: Count of concurrent compilation workers.
     """
-    def __init__(self, *,
+
+    def __init__(
+        self,
+        *,
         continuous_batching: Optional[ContinuousBatchingConfig] = None,
         attention_layout: Layout = Layout.HSB,
         collectives_layout: Layout = Layout.HSB,
         cache_layout: Layout = Layout.SBH,
-        padding_side: str = 'left',
+        padding_side: str = "left",
         group_query_attention: Optional[GQA] = None,
         sequence_parallel_norm: bool = False,
         sequence_parallel_norm_threshold: int = 2048,
         bf16_rms_norm: bool = False,
         on_device_embedding: bool = False,
         all_reduce_dtype: Optional[str] = None,
-        cast_logits_dtype: str = 'float32',
+        cast_logits_dtype: str = "float32",
         fuse_qkv: bool = False,
         log_softmax_scores: bool = False,
         output_all_logits: bool = False,
@@ -134,23 +155,23 @@ class NeuronConfig():
         self.fuse_mlp = fuse_mlp
         self.continuous_batching = continuous_batching
         self.padding_side = padding_side
-        assert padding_side in ['left', 'right'], (
+        assert padding_side in ["left", "right"], (
             f"The `padding_side={padding_side}` argument must be either 'left' or 'right'"
         )
 
-        self.lhs_aligned = padding_side == 'right'
-        if 'use_2d_cache_ids' in kwargs:
+        self.lhs_aligned = padding_side == "right"
+        if "use_2d_cache_ids" in kwargs:
             warnings.warn(
                 "NeuronConfig `use_2d_cache_ids` argument is deprecated. "
                 "Please specify `padding_side = 'right'`."
             )
-            self.lhs_aligned = kwargs.pop('use_2d_cache_ids', False)
-        if 'lhs_aligned' in kwargs:
+            self.lhs_aligned = kwargs.pop("use_2d_cache_ids", False)
+        if "lhs_aligned" in kwargs:
             warnings.warn(
                 "NeuronConfig `lhs_aligned` argument is deprecated. "
                 "Please specify `padding_side = 'right'`."
             )
-            self.lhs_aligned = kwargs.pop('lhs_aligned', False)
+            self.lhs_aligned = kwargs.pop("lhs_aligned", False)
         if self.continuous_batching:
             # Force left alignment for continuous batching.
             self.lhs_aligned = True
@@ -171,9 +192,7 @@ class NeuronConfig():
         self.on_device_embedding = on_device_embedding
         self.output_all_logits = output_all_logits
 
-        assert len(kwargs) == 0, (
-            f"Unexpected NeuronConfig keyword arguments: {kwargs}"
-        )
+        assert len(kwargs) == 0, f"Unexpected NeuronConfig keyword arguments: {kwargs}"
 
         self.rank_id = int(os.getenv("NEURON_RANK_ID", "0"))
 
@@ -195,14 +214,22 @@ class NeuronConfig():
         self.fused_rmsnorm_qkv = fused_rmsnorm_qkv
         self.fused_rmsnorm_mlp = fused_rmsnorm_mlp
 
-        if any([not self.fuse_qkv,
+        if any(
+            [
+                not self.fuse_qkv,
                 self.attention_layout != Layout.BSH,
                 self.group_query_attention != GQA.REPLICATED_HEADS,
-                self.sequence_parallel_norm]):
+                self.sequence_parallel_norm,
+            ]
+        ):
             self.fused_rmsnorm_qkv = False
 
-        if any([self.attention_layout != Layout.BSH,
-                self.group_query_attention != GQA.REPLICATED_HEADS]):
+        if any(
+            [
+                self.attention_layout != Layout.BSH,
+                self.group_query_attention != GQA.REPLICATED_HEADS,
+            ]
+        ):
             self.fused_rmsnorm_mlp = False
 
         self.duplicate_q_weight_sos = duplicate_q_weight_sos
@@ -216,7 +243,7 @@ class NeuronConfig():
 
     @property
     def use_1d_query(self):
-        return self.cache_layout == Layout.BSH and self.padding_side == 'right'
+        return self.cache_layout == Layout.BSH and self.padding_side == "right"
 
     @property
     def paged_attention(self):
@@ -230,11 +257,14 @@ class NeuronConfig():
 
     @property
     def optimized_paged_attention(self):
-        return self.paged_attention and self.continuous_batching.optimized_paged_attention
+        return (
+            self.paged_attention and self.continuous_batching.optimized_paged_attention
+        )
 
     @property
     def bsh_cache_layout(self):
         from transformers_neuronx import constants
+
         return self.cache_layout == constants.Layout.BSH
 
     @property
@@ -259,10 +289,11 @@ class NeuronConfig():
         return self.local_tp
 
     def get_g_start_device_id(self, tp):
-        return self.rank_id*self.get_local_tp(tp)
+        return self.rank_id * self.get_local_tp(tp)
 
     def to_json(self):
         json_serializable_types = (str, int, float, bool)
+
         def _to_json(obj):
             if obj is None or isinstance(obj, json_serializable_types):
                 return obj
@@ -271,44 +302,47 @@ class NeuronConfig():
             elif isinstance(obj, torch.Tensor):
                 return obj.tolist()
             elif isinstance(obj, list):
-                return [ _to_json(e) for e in obj ]
+                return [_to_json(e) for e in obj]
             elif isinstance(obj, dict):
-                return { _to_json(k): _to_json(v) for k, v in obj.items() }
+                return {_to_json(k): _to_json(v) for k, v in obj.items()}
             elif isinstance(obj, tuple):
                 return str(tuple(_to_json(e) for e in obj))
             else:
                 as_dict = obj.__dict__
                 return _to_json(as_dict)
+
         return _to_json(self)
 
 
 @contextlib.contextmanager
 def maybe_dump_config(config, neuron_config):
     if "NEURONX_DUMP_TO" in os.environ and (neuron_config or config):
-        dump_to = os.environ.get('NEURONX_DUMP_TO', '/tmp')
+        dump_to = os.environ.get("NEURONX_DUMP_TO", "/tmp")
         os.makedirs(dump_to, exist_ok=True)
         config_to_dump = {}
         if neuron_config:
-            config_to_dump['neuron_config'] = neuron_config.to_json()
+            config_to_dump["neuron_config"] = neuron_config.to_json()
         if config:
             key_aliases = {
-                'attention_dropout': ['attn_pdrop'],
-                'hidden_act': ['activation_function'],
-                'max_position_embeddings': ['n_positions'],
-                'num_hidden_layers': ['n_layer'],
-                'num_attention_heads': ['n_head'],
-                'intermediate_size': ['ffn_dim', 'n_inner'],
-                'hidden_size': ['n_embd'],
-                'initializer_range': ['init_std']
+                "attention_dropout": ["attn_pdrop"],
+                "hidden_act": ["activation_function"],
+                "max_position_embeddings": ["n_positions"],
+                "num_hidden_layers": ["n_layer"],
+                "num_attention_heads": ["n_head"],
+                "intermediate_size": ["ffn_dim", "n_inner"],
+                "hidden_size": ["n_embd"],
+                "initializer_range": ["init_std"],
             }
             key_mapping = {}  # inverted and flattened key_aliases
             for key, aliases in key_aliases.items():
                 for alias in aliases:
                     key_mapping[alias] = key
-            model_config = { key_mapping.get(k, k): v for k, v in config.__dict__.items() }
-            config_to_dump['model_config'] = model_config
-        config_dump_path = os.path.join(dump_to, 'neuron_model_config.json')
-        with open(config_dump_path, 'w') as fp:
+            model_config = {
+                key_mapping.get(k, k): v for k, v in config.__dict__.items()
+            }
+            config_to_dump["model_config"] = model_config
+        config_dump_path = os.path.join(dump_to, "neuron_model_config.json")
+        with open(config_dump_path, "w") as fp:
             json.dump(config_to_dump, fp)
         yield
         # by now, the config has been copied into the sub-directories, so we can clean this one up

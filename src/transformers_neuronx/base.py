@@ -31,7 +31,6 @@ from .utils import maybe_pad_tensor
 
 # Mainly used to expose top level APIs to the model object for serialization
 class NeuronModelBase(PretrainedModel):
-
     def __init__(self, chkpt_model_cls, *args, **kwargs):
         super().__init__()
         self.chkpt_model = chkpt_model_cls(*args, **kwargs)
@@ -41,12 +40,16 @@ class NeuronModelBase(PretrainedModel):
 
     # top level api
     def save(self, directory):
-        assert self.serialization_enabled(), 'serialization is not enabled for this model'
+        assert self.serialization_enabled(), (
+            "serialization is not enabled for this model"
+        )
         self._save_compiled_artifacts(directory)
 
     # top level api
     def load(self, directory):
-        assert self.serialization_enabled(), 'serialization is not enabled for this model'
+        assert self.serialization_enabled(), (
+            "serialization is not enabled for this model"
+        )
         self._compiled_artifacts_directory = directory
 
     # top level api
@@ -57,9 +60,13 @@ class NeuronModelBase(PretrainedModel):
             parallel_degree = len(kernels)
         with ProcessPoolExecutor(parallel_degree) as executor:
             for kernel in kernels:
-                neff_bytes_futures[hash_hlo(kernel.hlo_module)] = executor.submit(kernel.compile, kernel.num_exec_repetition)
+                neff_bytes_futures[hash_hlo(kernel.hlo_module)] = executor.submit(
+                    kernel.compile, kernel.num_exec_repetition
+                )
             for kernel in kernels:
-                kernel.neff_bytes = neff_bytes_futures[hash_hlo(kernel.hlo_module)].result()
+                kernel.neff_bytes = neff_bytes_futures[
+                    hash_hlo(kernel.hlo_module)
+                ].result()
 
     # top level api
     def setup(self):
@@ -68,14 +75,16 @@ class NeuronModelBase(PretrainedModel):
 
     # TODO: decouple hlo_generation from load weights so compile can be called before it
     def to_neuron(self):
-        self.decoder_lm_head._cpu_compile=False
+        self.decoder_lm_head._cpu_compile = False
         with maybe_dump_config(self.config, self.neuron_config):
             init_neuron()
             self.load_weights()
             if hasattr(self, "_compiled_artifacts_directory"):
                 self._load_compiled_artifacts(self._compiled_artifacts_directory)
             else:
-                self.compile(parallel_degree=self.neuron_config.compilation_worker_count)
+                self.compile(
+                    parallel_degree=self.neuron_config.compilation_worker_count
+                )
             self.setup()
 
     def cpu_compile(self):
@@ -84,19 +93,34 @@ class NeuronModelBase(PretrainedModel):
             self.load_weights()
             self.compile(parallel_degree=self.neuron_config.compilation_worker_count)
 
-    def enable_window_context_decoder(self, window_context_length:Optional[Union[List[int], int]], unroll: Optional[int] = None):
+    def enable_window_context_decoder(
+        self,
+        window_context_length: Optional[Union[List[int], int]],
+        unroll: Optional[int] = None,
+    ):
         if isinstance(window_context_length, int):
-            window_context_length=[window_context_length]
-        self.window_context_buckets = context_sizes(window_context_length, self.token_buckets)
+            window_context_length = [window_context_length]
+        self.window_context_buckets = context_sizes(
+            window_context_length, self.token_buckets
+        )
         if unroll is None:
             unroll = self.decoder_param_set.num_layers
         for k in self.window_context_buckets:
-            self.decoder_lm_head_for_window_context[k]=self.decoder_param_set.init_window_context_decoder(unroll=unroll, buckets=self.token_buckets, model_obj=self, n_active_tokens=k)
+            self.decoder_lm_head_for_window_context[k] = (
+                self.decoder_param_set.init_window_context_decoder(
+                    unroll=unroll,
+                    buckets=self.token_buckets,
+                    model_obj=self,
+                    n_active_tokens=k,
+                )
+            )
 
     def is_compiled(self):
         # First check if the kernels have neffs already
         try:
-            if all([kernel.neff_bytes is not None for kernel in self._get_all_kernels()]):
+            if all(
+                [kernel.neff_bytes is not None for kernel in self._get_all_kernels()]
+            ):
                 return True
         # AttributeError means kernels don't even exist yet.
         except AttributeError:
@@ -106,8 +130,8 @@ class NeuronModelBase(PretrainedModel):
     def _save_compiled_artifacts(self, directory):
         if os.path.isfile(directory):
             raise FileExistsError(
-                f'Artifacts should be saved to a directory. '
-                f'Found existing file: {directory}'
+                f"Artifacts should be saved to a directory. "
+                f"Found existing file: {directory}"
             )
         os.makedirs(directory, exist_ok=True)
         for i, nbs_obj in enumerate(self.nbs_objs):
@@ -115,7 +139,7 @@ class NeuronModelBase(PretrainedModel):
 
     def _load_compiled_artifacts(self, directory):
         if not os.path.isdir(directory):
-            raise FileNotFoundError(f'Did not find directory: {directory}.')
+            raise FileNotFoundError(f"Did not find directory: {directory}.")
 
         for nbs_obj in self.nbs_objs:
             nbs_obj.set_neff_bytes(directory)
@@ -127,7 +151,6 @@ class NeuronModelBase(PretrainedModel):
                 all_kernels.append(kernel)
         return all_kernels
 
-
     # To enable serialization, have the model call this
     # function to register all nbs_obj of your model.
     # The nbs_obj must follow 2 rules:
@@ -136,8 +159,10 @@ class NeuronModelBase(PretrainedModel):
     #      method should be implemented by the child class, which returns a
     #      list of all kernels which have NEFFs for that serialized object.
     def register_for_serialization(self, nbs_obj):
-        assert issubclass(type(nbs_obj), NeuronBaseSerializer), 'The nbs_obj must inherit from NeuronBaseSerializer.'
-        temp = getattr(self, 'nbs_objs', [])
+        assert issubclass(type(nbs_obj), NeuronBaseSerializer), (
+            "The nbs_obj must inherit from NeuronBaseSerializer."
+        )
+        temp = getattr(self, "nbs_objs", [])
         nbs_obj.compiler_artifacts_path = None
         temp.append(nbs_obj)
         self.nbs_objs = temp
@@ -169,7 +194,7 @@ class NeuronModelBase(PretrainedModel):
         context_length = hidden.shape[1]
         batch_size = 1 if self.neuron_config.use_1d_query else start_ids.shape[0]
 
-        all_logits = [] # Collect all logits if neuron_config.output_all_logits is True
+        all_logits = []  # Collect all logits if neuron_config.output_all_logits is True
 
         current = 0
 
@@ -189,7 +214,9 @@ class NeuronModelBase(PretrainedModel):
             # is because the caller must be aware of the cache-ids/start-ids
             # used.
             elif context_length < estimate:
-                raise ValueError(f"context_length ({context_length}) shouldn't be smaller than estimate ({estimate})")
+                raise ValueError(
+                    f"context_length ({context_length}) shouldn't be smaller than estimate ({estimate})"
+                )
 
             # Directly pass input to the context network when exactly sized
             else:
@@ -201,45 +228,65 @@ class NeuronModelBase(PretrainedModel):
                     _, context_lens = rest[0], rest[1]
                     block_size = self.neuron_config.continuous_batching.block_size
                     seq_lens = context_lens + last_token_id
-                    n_active_blocks = ((seq_lens+block_size-1) // block_size).sum().item()
-                    active_block_bucket = find_bucket(self.context_batch_sizes, n_active_blocks)
+                    n_active_blocks = (
+                        ((seq_lens + block_size - 1) // block_size).sum().item()
+                    )
+                    active_block_bucket = find_bucket(
+                        self.context_batch_sizes, n_active_blocks
+                    )
                     # we use the model indexed by estimate (i.e., number of queries) and
                     # active_block_bucket (i.e., number of active KV cache blocks)
-                    model = self.decoder_lm_head_for_context[estimate, active_block_bucket]
+                    model = self.decoder_lm_head_for_context[
+                        estimate, active_block_bucket
+                    ]
                 else:
                     model = self.decoder_lm_head_for_context[estimate, batch_size]
                 if self.neuron_config.log_softmax_scores:
-                    logits, scores = model(hidden_context, cache_context, start_ids, last_token_id, *rest)
+                    logits, scores = model(
+                        hidden_context, cache_context, start_ids, last_token_id, *rest
+                    )
                 else:
-                    logits = model(hidden_context, cache_context, start_ids, last_token_id, *rest)
+                    logits = model(
+                        hidden_context, cache_context, start_ids, last_token_id, *rest
+                    )
                 if self.neuron_config.output_all_logits:
-                    all_logits.append(logits[:, :last_token_id + 1, :])
+                    all_logits.append(logits[:, : last_token_id + 1, :])
 
         # process the leftovers context
         while current < context_length:
             # find the optimal "window"
             estimate = None
             if hasattr(self, "window_context_buckets"):
-                estimate = find_bucket(self.window_context_buckets, context_length - current)
+                estimate = find_bucket(
+                    self.window_context_buckets, context_length - current
+                )
 
             # when the leftovers is smaller than estimate, fall back to single token generation
             # TODO: can we pad?
             if estimate is None or context_length - current < estimate:
                 for i in range(current, context_length):
                     cache_ids = torch.as_tensor([i], dtype=torch.int32)
-                    hidden_slice = hidden[:, i:i+1].contiguous()
-                    logits = self.decoder_lm_head(hidden_slice, cache_ids, start_ids, last_token_id, *rest)
+                    hidden_slice = hidden[:, i : i + 1].contiguous()
+                    logits = self.decoder_lm_head(
+                        hidden_slice, cache_ids, start_ids, last_token_id, *rest
+                    )
                     if self.neuron_config.output_all_logits:
                         all_logits.append(logits)
                 break
 
-            hidden_slice = hidden[:, current:current+estimate].contiguous()
-            cache_ids = torch.as_tensor([i for i in range(current, current+estimate)], dtype=torch.int32)
+            hidden_slice = hidden[:, current : current + estimate].contiguous()
+            cache_ids = torch.as_tensor(
+                [i for i in range(current, current + estimate)], dtype=torch.int32
+            )
             last_token_id = torch.as_tensor([estimate - 1])
             if self.neuron_config.log_softmax_scores:
-                logits, scores = self.decoder_lm_head_for_window_context[estimate](hidden_slice, cache_ids, start_ids, last_token_id, *rest)
+                logits, scores = self.decoder_lm_head_for_window_context[estimate](
+                    hidden_slice, cache_ids, start_ids, last_token_id, *rest
+                )
             else:
-                logits = self.decoder_lm_head_for_window_context[estimate](hidden_slice, cache_ids, start_ids, last_token_id, *rest)
+                logits = self.decoder_lm_head_for_window_context[estimate](
+                    hidden_slice, cache_ids, start_ids, last_token_id, *rest
+                )
             if self.neuron_config.output_all_logits:
                 all_logits.append(logits)
 
@@ -252,7 +299,9 @@ class NeuronModelBase(PretrainedModel):
             return logits, scores
         return logits
 
-    def _prepare_for_par_ctx_rhs_padding(self, input_ids, cache_ids, start_ids=None, **kwargs):
+    def _prepare_for_par_ctx_rhs_padding(
+        self, input_ids, cache_ids, start_ids=None, **kwargs
+    ):
         """A helper to do rhs padding on prompt for parallel context encoding model
         i.e.
             input_ids = [[111, 222, 333]]
@@ -279,8 +328,17 @@ class NeuronModelBase(PretrainedModel):
             last_token_id = torch.zeros(batch_size, dtype=torch.int32)
         else:
             last_token_id = torch.as_tensor([0], dtype=torch.int32)
-        if context_length == 1 and not self.neuron_config.enable_chunked_prefill \
-                and not ((cache_ids is None or (cache_ids.flatten()[0].item() == 0)) and (self.neuron_config.is_eagle_draft or self.neuron_config.is_eagle_target)):
+        if (
+            context_length == 1
+            and not self.neuron_config.enable_chunked_prefill
+            and not (
+                (cache_ids is None or (cache_ids.flatten()[0].item() == 0))
+                and (
+                    self.neuron_config.is_eagle_draft
+                    or self.neuron_config.is_eagle_target
+                )
+            )
+        ):
             # token generation
             if self.neuron_config.paged_attention:
                 max_num_seqs = self.neuron_config.continuous_batching.max_num_seqs
@@ -290,8 +348,12 @@ class NeuronModelBase(PretrainedModel):
 
                 input_metadata = kwargs.get("input_metadata")
                 last_token_id = input_metadata.block_tables
-                last_token_id = maybe_pad_tensor(last_token_id, 0, max_num_seqs, left=False)
-                last_token_id = maybe_pad_tensor(last_token_id, 1, max_num_blocks_per_seq, left=False)
+                last_token_id = maybe_pad_tensor(
+                    last_token_id, 0, max_num_seqs, left=False
+                )
+                last_token_id = maybe_pad_tensor(
+                    last_token_id, 1, max_num_blocks_per_seq, left=False
+                )
             return input_ids, cache_ids, last_token_id, block_tables, context_lens
 
         if hasattr(self, "context_buckets"):
@@ -307,22 +369,36 @@ class NeuronModelBase(PretrainedModel):
                     if self.neuron_config.enable_chunked_prefill:
                         # define useful variables
                         input_metadata = kwargs.get("input_metadata")
-                        max_num_seqs = self.neuron_config.continuous_batching.max_num_seqs
-                        max_model_len = self.neuron_config.continuous_batching.max_model_len
+                        max_num_seqs = (
+                            self.neuron_config.continuous_batching.max_num_seqs
+                        )
+                        max_model_len = (
+                            self.neuron_config.continuous_batching.max_model_len
+                        )
                         block_size = self.neuron_config.continuous_batching.block_size
-                        max_num_blocks_per_seq = (max_model_len + block_size - 1) // block_size
+                        max_num_blocks_per_seq = (
+                            max_model_len + block_size - 1
+                        ) // block_size
                         # set block_tables based on input_metadata and pad appropriately
                         input_metadata = kwargs.get("input_metadata")
                         block_tables = input_metadata.block_tables
-                        block_tables = maybe_pad_tensor(block_tables, 0, max_num_seqs, left=False)
-                        block_tables = maybe_pad_tensor(block_tables, 1, max_num_blocks_per_seq, left=False)
+                        block_tables = maybe_pad_tensor(
+                            block_tables, 0, max_num_seqs, left=False
+                        )
+                        block_tables = maybe_pad_tensor(
+                            block_tables, 1, max_num_blocks_per_seq, left=False
+                        )
                         # get context_lens and seq_lens from input_metadata
                         context_lens = input_metadata.context_lens
                         seq_lens = input_metadata.seq_lens_tensor
                         query_lens = seq_lens - context_lens
-                        context_lens = maybe_pad_tensor(context_lens, 0, max_num_seqs, left=False) # padding
+                        context_lens = maybe_pad_tensor(
+                            context_lens, 0, max_num_seqs, left=False
+                        )  # padding
                         # last_token_id is used for dynamic slicing logits
-                        last_token_id = maybe_pad_tensor(query_lens, 0, max_num_seqs, left=False)
+                        last_token_id = maybe_pad_tensor(
+                            query_lens, 0, max_num_seqs, left=False
+                        )
 
                         # finally we set "context_length" to the total length of queries. We use the context
                         # encoding model with the queries being the active tokens and hence context_length
@@ -340,8 +416,12 @@ class NeuronModelBase(PretrainedModel):
                         # 1) build block diagonal causal mask
                         # 2) dynamic slice logits for concatenated prompt encoding
                         # It should be safe to pad zeros, for both use cases.
-                        max_num_seqs = self.neuron_config.continuous_batching.max_num_seqs
-                        last_token_id = maybe_pad_tensor(prompt_lens, 0, max_num_seqs, left=False)
+                        max_num_seqs = (
+                            self.neuron_config.continuous_batching.max_num_seqs
+                        )
+                        last_token_id = maybe_pad_tensor(
+                            prompt_lens, 0, max_num_seqs, left=False
+                        )
                     else:
                         prompt_lens = cache_ids.max(dim=1).values + 1
                         context_length = prompt_lens.sum().item()
@@ -350,8 +430,12 @@ class NeuronModelBase(PretrainedModel):
                         new_input_ids = torch.tensor([], dtype=input_ids.dtype)
                         new_cache_ids = torch.tensor([], dtype=cache_ids.dtype)
                         for idx, prompt_len in enumerate(prompt_lens):
-                            new_input_ids = torch.concat([new_input_ids, input_ids[idx, :prompt_len]])
-                            new_cache_ids = torch.concat([new_cache_ids, cache_ids[idx, :prompt_len]])
+                            new_input_ids = torch.concat(
+                                [new_input_ids, input_ids[idx, :prompt_len]]
+                            )
+                            new_cache_ids = torch.concat(
+                                [new_cache_ids, cache_ids[idx, :prompt_len]]
+                            )
                         input_ids = new_input_ids.unsqueeze(0)
                         cache_ids = new_cache_ids.unsqueeze(0)
 
@@ -359,33 +443,44 @@ class NeuronModelBase(PretrainedModel):
                         # Note: With 1D query, last_token_id actually takes prompt lengths as input,
                         #       and it's converted from prompt_lens to actual last_token_id in HLO.
                         last_token_id = prompt_lens
-                        last_token_id_pad = torch.zeros(max_num_seqs, dtype=last_token_id.dtype)
+                        last_token_id_pad = torch.zeros(
+                            max_num_seqs, dtype=last_token_id.dtype
+                        )
                         last_token_id_pad[start_ids] = last_token_id
                         last_token_id = last_token_id_pad
                 else:
                     last_token_id = cache_ids.max(dim=1).values
             else:
-                last_token_id = torch.as_tensor([min(context_length - 1, estimate-1)], dtype=torch.int32)
+                last_token_id = torch.as_tensor(
+                    [min(context_length - 1, estimate - 1)], dtype=torch.int32
+                )
             if context_length < estimate:
                 input_ids = maybe_pad_tensor(input_ids, 1, estimate, left=False)
-                cache_ids = self._pad_cache_ids(cache_ids, batch_size, context_length, estimate)
+                cache_ids = self._pad_cache_ids(
+                    cache_ids, batch_size, context_length, estimate
+                )
 
         return input_ids, cache_ids, last_token_id, block_tables, context_lens
 
     def _pad_cache_ids(self, cache_ids, batch_size, context_length, estimate):
         if self.neuron_config.use_2d_cache_ids:
             if self.neuron_config.use_1d_query:
-                assert (cache_ids.ndim == 2) and (cache_ids.shape[0] == 1), \
+                assert (cache_ids.ndim == 2) and (cache_ids.shape[0] == 1), (
                     f"cache_ids is expected to be a 1xN matrix, but its shape is {cache_ids.shape}"
+                )
                 if self.neuron_config.enable_chunked_prefill:
                     # in this case, just pad with 0s
                     cache_ids = maybe_pad_tensor(cache_ids, 1, estimate, left=False)
                     return cache_ids
                 start_idx = cache_ids[0, -1].item() + 1
                 end_idx = estimate + start_idx - context_length
-                pad_elements = torch.arange(start_idx, end_idx, dtype=torch.long).unsqueeze(0)
+                pad_elements = torch.arange(
+                    start_idx, end_idx, dtype=torch.long
+                ).unsqueeze(0)
                 cache_ids_pad = torch.concat([cache_ids, pad_elements], dim=1)
-                cache_ids = torch.minimum(cache_ids_pad, torch.tensor(estimate-1, dtype=torch.long))
+                cache_ids = torch.minimum(
+                    cache_ids_pad, torch.tensor(estimate - 1, dtype=torch.long)
+                )
             else:
                 cache_ids = torch.arange(estimate, dtype=torch.int32)
                 cache_ids = cache_ids.unsqueeze(0).expand(batch_size, estimate)
@@ -404,12 +499,16 @@ class NeuronModelBase(PretrainedModel):
                 end_idx = estimate + start_idx - context_length
                 pad_elements = torch.arange(start_idx, end_idx, dtype=torch.int32)
                 cache_ids_pad = torch.concat([cache_ids, pad_elements], dim=0)
-                cache_ids = torch.minimum(cache_ids_pad, torch.tensor(estimate-1, dtype=torch.int32))
+                cache_ids = torch.minimum(
+                    cache_ids_pad, torch.tensor(estimate - 1, dtype=torch.int32)
+                )
         return cache_ids
 
     def _prepare_for_continuous_batching(self, input_ids, cache_ids=None, seq_ids=None):
         n_seqs, n_active_tokens = input_ids.shape
-        continuous_batching = self.neuron_config and self.neuron_config.continuous_batching
+        continuous_batching = (
+            self.neuron_config and self.neuron_config.continuous_batching
+        )
 
         if seq_ids is None or not continuous_batching:
             # static batching
@@ -417,40 +516,70 @@ class NeuronModelBase(PretrainedModel):
 
         batch_size = self.neuron_config.continuous_batching.batch_size_for_shared_caches
 
-        if ((n_active_tokens > 1) and cache_ids.flatten()[0].item() == 0) or self.neuron_config.enable_chunked_prefill:
+        if (
+            (n_active_tokens > 1) and cache_ids.flatten()[0].item() == 0
+        ) or self.neuron_config.enable_chunked_prefill:
             # context encoding
             n_active_seqs, n_active_tokens = input_ids.shape
-            continuous_batching_n_positions = find_bucket(self.context_buckets, n_active_tokens)
-            assert n_active_seqs == cache_ids.shape[0], f"invalid n_active_seqs ({n_active_seqs} vs {cache_ids.shape[0]})"
-            assert n_active_tokens <= continuous_batching_n_positions, \
+            continuous_batching_n_positions = find_bucket(
+                self.context_buckets, n_active_tokens
+            )
+            assert n_active_seqs == cache_ids.shape[0], (
+                f"invalid n_active_seqs ({n_active_seqs} vs {cache_ids.shape[0]})"
+            )
+            assert n_active_tokens <= continuous_batching_n_positions, (
                 f"invalid input prompt length ({n_active_tokens} <= {continuous_batching_n_positions})"
-            cache_ids_pad = torch.zeros(n_active_seqs, continuous_batching_n_positions, dtype=cache_ids.dtype, device='cpu')
+            )
+            cache_ids_pad = torch.zeros(
+                n_active_seqs,
+                continuous_batching_n_positions,
+                dtype=cache_ids.dtype,
+                device="cpu",
+            )
             for seq_id in range(n_active_seqs):
-                cache_ids_pad[seq_id, :n_active_tokens] = cache_ids[seq_id, :n_active_tokens]
+                cache_ids_pad[seq_id, :n_active_tokens] = cache_ids[
+                    seq_id, :n_active_tokens
+                ]
             if self.neuron_config.use_1d_query:
                 # For concatenated prompt encoding, we rely on slot_mapping for KV cache placement.
                 if self.neuron_config.paged_attention:
                     n_active_tokens = len(seq_ids)
-                    assert input_ids.shape[-1] == n_active_tokens, \
+                    assert input_ids.shape[-1] == n_active_tokens, (
                         f"slot_mapping length ({n_active_tokens}) is expected to match length of input_ids ({input_ids.shape[-1]})."
-                    continuous_batching_n_positions = find_bucket(self.context_buckets, n_active_tokens)
-                    seq_ids = maybe_pad_tensor(seq_ids, 0, continuous_batching_n_positions, left=False)
+                    )
+                    continuous_batching_n_positions = find_bucket(
+                        self.context_buckets, n_active_tokens
+                    )
+                    seq_ids = maybe_pad_tensor(
+                        seq_ids, 0, continuous_batching_n_positions, left=False
+                    )
                 else:
                     prompt_lens = cache_ids_pad.max(dim=1).values + 1
                     new_seq_ids = torch.tensor([], dtype=seq_ids.dtype)
-                    for idx, (prompt_len, seq_id) in enumerate(zip(prompt_lens, seq_ids)):
+                    for idx, (prompt_len, seq_id) in enumerate(
+                        zip(prompt_lens, seq_ids)
+                    ):
                         offset = continuous_batching_n_positions * seq_id
-                        new_seq_ids = torch.concat([new_seq_ids, cache_ids[idx, :prompt_len] + offset], dim=0)
+                        new_seq_ids = torch.concat(
+                            [new_seq_ids, cache_ids[idx, :prompt_len] + offset], dim=0
+                        )
                     n_active_tokens = len(new_seq_ids)
-                    continuous_batching_n_positions = find_bucket(self.context_buckets, n_active_tokens)
-                    assert continuous_batching_n_positions >= n_active_tokens, \
-                        f"n_active_tokens ({n_active_tokens}) is expected to be less than n_positions " \
+                    continuous_batching_n_positions = find_bucket(
+                        self.context_buckets, n_active_tokens
+                    )
+                    assert continuous_batching_n_positions >= n_active_tokens, (
+                        f"n_active_tokens ({n_active_tokens}) is expected to be less than n_positions "
                         f"({continuous_batching_n_positions}) for concatenated prompt encoding"
+                    )
 
                     # Pad seq_ids to context bucket size
                     start_idx = new_seq_ids[-1].item() + 1
-                    end_idx = (continuous_batching_n_positions - n_active_tokens) + start_idx
-                    seq_ids = torch.concat([new_seq_ids, torch.arange(start_idx, end_idx)])
+                    end_idx = (
+                        continuous_batching_n_positions - n_active_tokens
+                    ) + start_idx
+                    seq_ids = torch.concat(
+                        [new_seq_ids, torch.arange(start_idx, end_idx)]
+                    )
             return input_ids, cache_ids_pad, seq_ids
 
         # token generation
@@ -480,10 +609,16 @@ class NeuronModelBase(PretrainedModel):
 
     def _preprocess(self, input_ids, start_ids=None, cache_ids=None, **kwargs):
         # enable dynamic batch size feature for continuous batching
-        input_ids, cache_ids, new_start_ids = self._prepare_for_continuous_batching(input_ids, cache_ids, start_ids)
+        input_ids, cache_ids, new_start_ids = self._prepare_for_continuous_batching(
+            input_ids, cache_ids, start_ids
+        )
 
         # right pad the input_ids if neccessary
-        input_ids, cache_ids, last_token_id, block_tables, context_lens = self._prepare_for_par_ctx_rhs_padding(input_ids, cache_ids, start_ids, **kwargs)
+        input_ids, cache_ids, last_token_id, block_tables, context_lens = (
+            self._prepare_for_par_ctx_rhs_padding(
+                input_ids, cache_ids, start_ids, **kwargs
+            )
+        )
         start_ids = new_start_ids
 
         # note: this context_length is after right padded
@@ -500,13 +635,25 @@ class NeuronModelBase(PretrainedModel):
         if hasattr(self, "prefixed_length") and self.prefixed_length:
             cache_ids += self.prefixed_length
 
-        return input_ids, cache_ids, start_ids, last_token_id, block_tables, context_lens
+        return (
+            input_ids,
+            cache_ids,
+            start_ids,
+            last_token_id,
+            block_tables,
+            context_lens,
+        )
 
     def _postprocess(self, input_ids, logits, start_ids=None, **kwargs):
-        if start_ids is None or (self.neuron_config.output_all_logits and logits.shape[1] > 1):
+        if start_ids is None or (
+            self.neuron_config.output_all_logits and logits.shape[1] > 1
+        ):
             return logits
 
-        if self.neuron_config.paged_attention and not self.neuron_config.enable_chunked_prefill:
+        if (
+            self.neuron_config.paged_attention
+            and not self.neuron_config.enable_chunked_prefill
+        ):
             input_metadata = kwargs.get("input_metadata")
             is_prompt = input_metadata.is_prompt
             if is_prompt:
@@ -514,7 +661,7 @@ class NeuronModelBase(PretrainedModel):
                 return logits[:num_prefills, :]
             else:
                 context_lens = input_metadata.context_lens
-                return logits[:len(context_lens), :]
+                return logits[: len(context_lens), :]
 
         if not self.neuron_config.lhs_aligned or input_ids.shape[-1] > 1:
             return logits
@@ -539,21 +686,34 @@ class NeuronModelBase(PretrainedModel):
         return logits.to(logits_dtype)
 
     def _context_dynamic_batching(self, hidden, *args):
-        is_bsh = self.neuron_config and self.neuron_config.attention_layout == LAYOUT_BSH
-        input_batch_size = hidden.shape[0] if is_bsh or self.neuron_config.on_device_embedding else hidden.shape[2]
-        assert hasattr(self, "context_batch_sizes"), f"{type(self)} doesn't support dynamic batching."
+        is_bsh = (
+            self.neuron_config and self.neuron_config.attention_layout == LAYOUT_BSH
+        )
+        input_batch_size = (
+            hidden.shape[0]
+            if is_bsh or self.neuron_config.on_device_embedding
+            else hidden.shape[2]
+        )
+        assert hasattr(self, "context_batch_sizes"), (
+            f"{type(self)} doesn't support dynamic batching."
+        )
 
         # set running batch size to 1 for enable_chunked_prefill because context_batch_sizes is used for block bucketing
-        running_batch_size = 1 if self.neuron_config.enable_chunked_prefill else self.context_batch_sizes[-1]
+        running_batch_size = (
+            1
+            if self.neuron_config.enable_chunked_prefill
+            else self.context_batch_sizes[-1]
+        )
         if input_batch_size > running_batch_size:
-            assert input_batch_size % running_batch_size == 0, \
+            assert input_batch_size % running_batch_size == 0, (
                 "input batch size ({input_batch_size}) not divisible by running batch size ({running_batch_size})"
+            )
             n_iters = input_batch_size // running_batch_size
             all_logits = []
             cache_ids, start_ids, last_token_id = args[0], args[1], args[2]
             for iter_id in range(n_iters):
-                start_idx = iter_id*running_batch_size
-                end_idx = (iter_id+1)*running_batch_size
+                start_idx = iter_id * running_batch_size
+                end_idx = (iter_id + 1) * running_batch_size
                 if is_bsh or self.neuron_config.on_device_embedding:
                     hidden_per_batch = hidden[start_idx:end_idx, ...]
                 else:
@@ -561,13 +721,18 @@ class NeuronModelBase(PretrainedModel):
                 cache_ids_per_batch = cache_ids[start_idx:end_idx, :]
                 start_ids_per_batch = start_ids[start_idx:end_idx]
                 last_token_id_per_batch = last_token_id[start_idx:end_idx]
-                logits_per_batch = self.context(hidden_per_batch, cache_ids_per_batch,
-                                            start_ids_per_batch, last_token_id_per_batch)
+                logits_per_batch = self.context(
+                    hidden_per_batch,
+                    cache_ids_per_batch,
+                    start_ids_per_batch,
+                    last_token_id_per_batch,
+                )
                 all_logits.append(logits_per_batch)
             logits = torch.cat(all_logits, dim=-1)
         else:
-            assert input_batch_size == running_batch_size, \
+            assert input_batch_size == running_batch_size, (
                 "input batch size ({input_batch_size}) not equal to running batch size ({running_batch_size})"
+            )
             logits = self.context(hidden, *args)
         return logits
 
@@ -575,7 +740,9 @@ class NeuronModelBase(PretrainedModel):
         _, context_length, *_ = hidden.shape
 
         if context_length > 1:
-            continuous_batching = self.neuron_config and self.neuron_config.continuous_batching
+            continuous_batching = (
+                self.neuron_config and self.neuron_config.continuous_batching
+            )
             if continuous_batching:
                 logits = self._context_dynamic_batching(hidden, *args)
             else:
@@ -587,20 +754,22 @@ class NeuronModelBase(PretrainedModel):
         if self.neuron_config.output_all_logits and context_length > 1:
             logits = logits.permute(2, 1, 0)
         else:
-            logits = logits[:self.config.vocab_size, -1, :]
+            logits = logits[: self.config.vocab_size, -1, :]
             logits = logits.transpose(0, 1)
         return logits
-
 
     def pp_forward(self, *args, **kwargs):
         """
         forward wrapper for pipeline parallel
         """
         import torch.distributed as dist
+
         # if host, run normal forward
         if self.neuron_config.rank_id == 0:
             broad_cast_objects = [args, kwargs]
-            dist.broadcast_object_list(broad_cast_objects, src=0, device=torch.device("cpu"))
+            dist.broadcast_object_list(
+                broad_cast_objects, src=0, device=torch.device("cpu")
+            )
             res = self(*args, **kwargs)
             return res
         else:
@@ -615,12 +784,14 @@ class NeuronModelBase(PretrainedModel):
                 # i.e. run token generation with some batch_size and bucket_id
                 #
                 # it is now naturally handled in forward call
-                dist.broadcast_object_list(broad_cast_objects, src=0, device=torch.device("cpu"))
+                dist.broadcast_object_list(
+                    broad_cast_objects, src=0, device=torch.device("cpu")
+                )
                 args, kwargs = broad_cast_objects
                 self(*args, **kwargs)
 
     def serialization_enabled(self):
-        return getattr(self, 'nbs_objs', None) is not None
+        return getattr(self, "nbs_objs", None) is not None
 
     def profile(self, profile_dir, ntff_count_limit):
         kernels = self._get_all_kernels()
@@ -632,30 +803,35 @@ class NeuronModelBase(PretrainedModel):
 
 # Base class for all "Serializable Objects"
 class NeuronBaseSerializer(ABC):
-
     def save_compiler_artifacts(self, path):
         for kernel in self.get_all_kernels():
             hlo_hash = hash_hlo(kernel.hlo_module)
-            with open(os.path.join(path, hlo_hash), 'wb') as f:
-                assert kernel.neff_bytes is not None, "cannot save a model which has not been successfully compiled"
+            with open(os.path.join(path, hlo_hash), "wb") as f:
+                assert kernel.neff_bytes is not None, (
+                    "cannot save a model which has not been successfully compiled"
+                )
                 f.write(kernel.neff_bytes)
 
     def set_neff_bytes(self, directory):
         for kernel in self.get_all_kernels():
             hlo_hash = hash_hlo(kernel.hlo_module)
             try:
-                with open(os.path.join(directory, hlo_hash), 'rb') as f:
+                with open(os.path.join(directory, hlo_hash), "rb") as f:
                     kernel.neff_bytes = f.read()
             except FileNotFoundError:
-                raise FileNotFoundError(('Could not find a matching NEFF for your HLO in this directory. '
-                                          'Ensure that the model you are trying to load is the same type and '
-                                          'has the same parameters as the one you saved or call "save" on '
-                                          'this model to reserialize it.'))
+                raise FileNotFoundError(
+                    (
+                        "Could not find a matching NEFF for your HLO in this directory. "
+                        "Ensure that the model you are trying to load is the same type and "
+                        'has the same parameters as the one you saved or call "save" on '
+                        "this model to reserialize it."
+                    )
+                )
 
     @abstractmethod
     def get_all_kernels(self):
         raise NotImplementedError(
-            f'Class {type(self)} deriving from NeuronBaseSerializer must implement get_all_kernels'
+            f"Class {type(self)} deriving from NeuronBaseSerializer must implement get_all_kernels"
         )
 
 
@@ -664,5 +840,4 @@ def hash_hlo(hlo_module):
     message = hlo_module.SerializeToString()
     hash_gen.update(message)
     hash = str(hash_gen.hexdigest())[:20]
-    return hash + '.neff'
-
+    return hash + ".neff"
