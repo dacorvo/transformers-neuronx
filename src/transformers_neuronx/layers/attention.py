@@ -205,13 +205,9 @@ def fused_kv_update_cache(
     # Check K/V cache layout
     bsh_cache_layout = False
     use_1d_query = False
-    paged_attention = False
-    chunked_prefill = False
     if neuron_config is not None:
         bsh_cache_layout = neuron_config.cache_layout == constants.LAYOUT_BSH
         use_1d_query = neuron_config and neuron_config.use_1d_query
-        paged_attention = neuron_config and neuron_config.paged_attention
-        chunked_prefill = neuron_config and neuron_config.enable_chunked_prefill
 
     dtype = cached_keys.dtype
     use_2d_cache_ids = len(cache_ids.sizes) > 1
@@ -242,9 +238,7 @@ def fused_kv_update_cache(
     cached_keys_r = hlo.reshape(cached_keys, [n_positions * n_seqs, kv_hidden_size])
     cached_vals_r = hlo.reshape(cached_vals, [n_positions * n_seqs, kv_hidden_size])
 
-    if n_active_tokens == 1 and (
-        (n_seqs == n_active_seqs) or (n_seqs >= n_active_seqs and paged_attention)
-    ):
+    if n_active_tokens == 1 and (n_seqs == n_active_seqs):
         # cache (2D): [n_positions * n_seqs, n_kv_heads * d_head]
         #        +---------3-4-----6-7------9-10-----------------
         # seq 0  |                [A,B]
@@ -259,13 +253,10 @@ def fused_kv_update_cache(
         keys_r = hlo.reshape(keys, [n_active_seqs, kv_hidden_size])
         vals_r = hlo.reshape(vals, [n_active_seqs, kv_hidden_size])
 
-        if paged_attention:
-            indices = start_ids
-        else:
-            indices = attention_utils.update_indices_decode(
-                cached_keys, cache_ids, neuron_config
-            )
-            indices = hlo.transpose(indices, 0, 1)
+        indices = attention_utils.update_indices_decode(
+            cached_keys, cache_ids, neuron_config
+        )
+        indices = hlo.transpose(indices, 0, 1)
 
         scatter_dims = dict(
             update_window_dims=[1],
@@ -303,11 +294,7 @@ def fused_kv_update_cache(
                 updated_vals, [n_positions, n_seqs, n_kv_heads, d_head]
             )
 
-    elif (
-        (n_active_tokens == n_positions)
-        or (paged_attention and (n_active_tokens >= n_positions))
-        or chunked_prefill
-    ) and n_seqs > n_active_seqs:
+    elif (n_active_tokens == n_positions) and (n_seqs > n_active_seqs):
         # cache (2D): [n_positions * n_seqs, n_kv_heads * d_head]
         #        +-0-1-2-3-4-5-----------------------------------
         # seq 0  |[x,x,x,x,x,x,x,x,x,x,x,x,x,x,x,x]
@@ -443,16 +430,7 @@ def score(
         rhs_batch_dimensions=batch_dimensions,
     )
 
-    n_active_q_tokens = query.sizes[1 if bsh_cache_layout else 0]
-    n_active_k_tokens = keys.sizes[1 if bsh_cache_layout else 0]
-    if (
-        (neuron_config and neuron_config.optimized_paged_attention)
-        and (n_active_q_tokens < n_active_k_tokens)
-        and (n_active_q_tokens == 1)
-    ):
-        result_dot = attention_utils.blockwise_qk_matmul(query, keys, block_to_seq)
-    else:
-        result_dot = hlo.dot_general(query, keys, dimension_numbers=dot_dims)
+    result_dot = hlo.dot_general(query, keys, dimension_numbers=dot_dims)
 
     return result_dot
 
@@ -570,18 +548,6 @@ def context(
     reduce_max = hlo.reduce_max(past_scores, dim=3)
     active_reduce_max = hlo.reduce_max(active_score, dim=3)
 
-    if neuron_config and neuron_config.optimized_paged_attention:
-        num_seqs = neuron_config.continuous_batching.max_num_seqs
-        block_size = neuron_config.continuous_batching.block_size
-        reduce_max = attention_utils.blockwise_reduce_max(
-            reduce_max, block_to_seq, num_seqs
-        )
-        active_reduce_max = hlo.unsqueeze(active_reduce_max, -1)
-        active_reduce_max = attention_utils.gather_blocks_active(
-            active_reduce_max, block_to_seq
-        )
-        active_reduce_max = hlo.squeeze(active_reduce_max, -1)
-
     reduce_max = hlo.maximum(reduce_max, active_reduce_max)
     reduce_max_br = hlo.broadcast(
         reduce_max, past_scores.sizes, broadcast_dimensions=[0, 1, 2]
@@ -606,13 +572,7 @@ def context(
         list(reduce_max.sizes) + [n_active_tokens],
         broadcast_dimensions=[0, 1, 2],
     )
-    if neuron_config and neuron_config.optimized_paged_attention:
-        active_score_bw = attention_utils.gather_blocks_active(
-            active_score, block_to_seq
-        )
-        active_score_shifted = hlo.subtract(active_score_bw, reduce_max_bra)
-    else:
-        active_score_shifted = hlo.subtract(active_score, reduce_max_bra)
+    active_score_shifted = hlo.subtract(active_score, reduce_max_bra)
     active_prob = hlo.exp(active_score_shifted)
     if active_mask is not None:
         active_prob = attention.mask(
@@ -623,8 +583,6 @@ def context(
             constant_value=0,
         )
     active_denom = hlo.reduce_sum(active_prob, dim=3)
-    if neuron_config and neuron_config.optimized_paged_attention:
-        denom = attention_utils.blockwise_reduce_sum(denom, block_to_seq, num_seqs)
 
     denom = hlo.add(denom, active_denom)
     active_prob = hlo.cast(active_prob, dtype)
@@ -667,18 +625,6 @@ def context(
     )
 
     output_dot = hlo.dot_general(past_prob, past_values, dimension_numbers=dot_dims)
-    if neuron_config and neuron_config.optimized_paged_attention:
-        block_size = neuron_config.continuous_batching.block_size
-        selected_block_indices = attention_utils.sample_block_indices(
-            context_lens, num_active_blocks, block_size
-        )
-        output_dot = attention_utils.blockwise_tensor_contraction(
-            output_dot, selected_block_indices
-        )
-        active_prob = attention_utils.gather_blocks_active(
-            active_prob, selected_block_indices
-        )
-        denom = hlo.index_select(denom, dim=0, index=selected_block_indices)
     active_output_dot = hlo.dot_general(
         active_prob, active_values, dimension_numbers=dot_dims
     )

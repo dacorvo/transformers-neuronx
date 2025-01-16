@@ -112,16 +112,6 @@ class LlamaForSamplingNoEmbeddingHlo:
         *weights,
         position_ids=None,
     ):
-        # TODO: move this fallback calculation to decoder.py
-        if (
-            self.num_active_blocks is None
-            and self.neuron_config.optimized_paged_attention
-        ):
-            max_model_len = self.neuron_config.continuous_batching.max_model_len
-            max_num_seqs = self.neuron_config.continuous_batching.max_num_seqs
-            block_size = self.neuron_config.continuous_batching.block_size
-            self.num_active_blocks = (max_model_len * max_num_seqs // block_size) - 2
-
         block_to_seq = None
         cached_mask = None
         cached_to_contexted = None
@@ -132,51 +122,6 @@ class LlamaForSamplingNoEmbeddingHlo:
             and self.neuron_config.on_device_embedding
         ):
             core_id, *rst = weights
-        if (
-            self.neuron_config.optimized_paged_attention
-            and len(last_token_id.sizes) == 2
-        ):
-            # For decoding with multiple KV cache blocks:
-            # - cache_ids are used as context_lens
-            # - start_ids are used as slot_mapping
-            # - last_token_id is used as block_tables
-            # The function below transforms 2D block_tables into 1D active block table
-            last_token_id = attention_utils.active_block_tables(
-                block_tables=last_token_id,
-                context_lens=cache_ids,
-                num_active_blocks=self.num_active_blocks,
-                neuron_config=self.neuron_config,
-            )
-            max_num_seqs = self.neuron_config.continuous_batching.max_num_seqs
-            block_size = self.neuron_config.continuous_batching.block_size
-            block_to_seq = attention_utils.block_to_seq_indexing(
-                context_lens=cache_ids,
-                num_seqs=max_num_seqs,
-                num_blocks=self.num_active_blocks,
-                block_size=block_size,
-            )
-        elif self.neuron_config.enable_chunked_prefill:
-            # - cache_ids are used as position_ids of each token
-            # - start_ids are used as slot_mapping
-            # - last_token_id is used as new token length for each sequence
-            context_lens_2d = hlo.unsqueeze(context_lens, 1)
-            seq_lens = hlo.add(context_lens, last_token_id)
-            block_size = self.neuron_config.continuous_batching.block_size
-            block_tables = attention_utils.active_block_tables(
-                block_tables=block_tables,
-                context_lens=context_lens_2d,
-                num_active_blocks=self.num_active_blocks,
-                neuron_config=self.neuron_config,
-            )
-            max_num_keys = self.num_active_blocks * block_size + self.n_positions
-            cached_mask, cached_to_contexted, active_to_contexted = (
-                attention_utils.contexted_kv_indexing(
-                    query_lens=last_token_id,
-                    key_lens=seq_lens,
-                    max_num_keys=max_num_keys,
-                    block_size=block_size,
-                )
-            )
 
         head_dim = self.config.attention_head_size
         position_ids = cache_ids if position_ids is None else position_ids
@@ -962,18 +907,6 @@ class LlamaForSamplingNoEmbeddingHlo:
                     cached_values_s = hlo.index_select(
                         cached_values, batch_dim, start_ids
                     )
-            elif self.neuron_config and self.neuron_config.paged_attention:
-                # For decoding with multiple KV cache blocks, start_ids are used as block_tables
-                cached_keys_s = attention_utils.gather_blocks(
-                    cached_keys,
-                    block_tables=last_token_id,
-                    neuron_config=self.neuron_config,
-                )
-                cached_values_s = attention_utils.gather_blocks(
-                    cached_values,
-                    block_tables=last_token_id,
-                    neuron_config=self.neuron_config,
-                )
             else:
                 cached_keys_s = cached_keys
                 cached_values_s = cached_values

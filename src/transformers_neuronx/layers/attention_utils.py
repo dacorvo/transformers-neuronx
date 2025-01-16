@@ -91,10 +91,7 @@ def update_indices_context(cached_keys, cache_ids, start_ids, neuron_config=None
 
 
 def gather_blocks(key_cache, block_tables, neuron_config=None):
-    if neuron_config and neuron_config.optimized_paged_attention:
-        return gather_blocks_active(key_cache, block_tables)
-    else:
-        return gather_blocks_all(key_cache, block_tables)
+    return gather_blocks_all(key_cache, block_tables)
 
 
 def active_block_tables(block_tables, context_lens, num_active_blocks, neuron_config):

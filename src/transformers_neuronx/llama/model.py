@@ -300,4 +300,3 @@ class LlamaForSampling(NeuronModelBase):
                     share_caches=True, new=self.decoder_lm_head_for_window_context[k]
                 )
                 self.decoder_lm_head_for_window_context[k] = model
-

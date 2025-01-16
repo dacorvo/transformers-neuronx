@@ -328,32 +328,8 @@ class NeuronModelBase(PretrainedModel):
             last_token_id = torch.zeros(batch_size, dtype=torch.int32)
         else:
             last_token_id = torch.as_tensor([0], dtype=torch.int32)
-        if (
-            context_length == 1
-            and not self.neuron_config.enable_chunked_prefill
-            and not (
-                (cache_ids is None or (cache_ids.flatten()[0].item() == 0))
-                and (
-                    self.neuron_config.is_eagle_draft
-                    or self.neuron_config.is_eagle_target
-                )
-            )
-        ):
+        if context_length == 1 and not self.neuron_config.enable_chunked_prefill:
             # token generation
-            if self.neuron_config.paged_attention:
-                max_num_seqs = self.neuron_config.continuous_batching.max_num_seqs
-                max_model_len = self.neuron_config.continuous_batching.max_model_len
-                block_size = self.neuron_config.continuous_batching.block_size
-                max_num_blocks_per_seq = (max_model_len + block_size - 1) // block_size
-
-                input_metadata = kwargs.get("input_metadata")
-                last_token_id = input_metadata.block_tables
-                last_token_id = maybe_pad_tensor(
-                    last_token_id, 0, max_num_seqs, left=False
-                )
-                last_token_id = maybe_pad_tensor(
-                    last_token_id, 1, max_num_blocks_per_seq, left=False
-                )
             return input_ids, cache_ids, last_token_id, block_tables, context_lens
 
         if hasattr(self, "context_buckets"):
@@ -405,23 +381,6 @@ class NeuronModelBase(PretrainedModel):
                         # refers to the active tokens (number of queries). This is not to be confused with
                         # context_lens from input_metadata which refers to the past tokens for each request.
                         context_length = query_lens.sum().item()
-                    elif self.neuron_config.paged_attention:
-                        # For context encoding phase of paged attention, we get prompt_lens from input_metadata.
-                        input_metadata = kwargs.get("input_metadata")
-                        prompt_lens = input_metadata.prompt_lens_tensor
-                        context_length = prompt_lens.sum().item()
-
-                        # last_token_id
-                        # Note: last_token_id would be used in two places for paged attention support
-                        # 1) build block diagonal causal mask
-                        # 2) dynamic slice logits for concatenated prompt encoding
-                        # It should be safe to pad zeros, for both use cases.
-                        max_num_seqs = (
-                            self.neuron_config.continuous_batching.max_num_seqs
-                        )
-                        last_token_id = maybe_pad_tensor(
-                            prompt_lens, 0, max_num_seqs, left=False
-                        )
                     else:
                         prompt_lens = cache_ids.max(dim=1).values + 1
                         context_length = prompt_lens.sum().item()
@@ -541,57 +500,29 @@ class NeuronModelBase(PretrainedModel):
                     seq_id, :n_active_tokens
                 ]
             if self.neuron_config.use_1d_query:
-                # For concatenated prompt encoding, we rely on slot_mapping for KV cache placement.
-                if self.neuron_config.paged_attention:
-                    n_active_tokens = len(seq_ids)
-                    assert input_ids.shape[-1] == n_active_tokens, (
-                        f"slot_mapping length ({n_active_tokens}) is expected to match length of input_ids ({input_ids.shape[-1]})."
+                prompt_lens = cache_ids_pad.max(dim=1).values + 1
+                new_seq_ids = torch.tensor([], dtype=seq_ids.dtype)
+                for idx, (prompt_len, seq_id) in enumerate(zip(prompt_lens, seq_ids)):
+                    offset = continuous_batching_n_positions * seq_id
+                    new_seq_ids = torch.concat(
+                        [new_seq_ids, cache_ids[idx, :prompt_len] + offset], dim=0
                     )
-                    continuous_batching_n_positions = find_bucket(
-                        self.context_buckets, n_active_tokens
-                    )
-                    seq_ids = maybe_pad_tensor(
-                        seq_ids, 0, continuous_batching_n_positions, left=False
-                    )
-                else:
-                    prompt_lens = cache_ids_pad.max(dim=1).values + 1
-                    new_seq_ids = torch.tensor([], dtype=seq_ids.dtype)
-                    for idx, (prompt_len, seq_id) in enumerate(
-                        zip(prompt_lens, seq_ids)
-                    ):
-                        offset = continuous_batching_n_positions * seq_id
-                        new_seq_ids = torch.concat(
-                            [new_seq_ids, cache_ids[idx, :prompt_len] + offset], dim=0
-                        )
-                    n_active_tokens = len(new_seq_ids)
-                    continuous_batching_n_positions = find_bucket(
-                        self.context_buckets, n_active_tokens
-                    )
-                    assert continuous_batching_n_positions >= n_active_tokens, (
-                        f"n_active_tokens ({n_active_tokens}) is expected to be less than n_positions "
-                        f"({continuous_batching_n_positions}) for concatenated prompt encoding"
-                    )
+                n_active_tokens = len(new_seq_ids)
+                continuous_batching_n_positions = find_bucket(
+                    self.context_buckets, n_active_tokens
+                )
+                assert continuous_batching_n_positions >= n_active_tokens, (
+                    f"n_active_tokens ({n_active_tokens}) is expected to be less than n_positions "
+                    f"({continuous_batching_n_positions}) for concatenated prompt encoding"
+                )
 
-                    # Pad seq_ids to context bucket size
-                    start_idx = new_seq_ids[-1].item() + 1
-                    end_idx = (
-                        continuous_batching_n_positions - n_active_tokens
-                    ) + start_idx
-                    seq_ids = torch.concat(
-                        [new_seq_ids, torch.arange(start_idx, end_idx)]
-                    )
+                # Pad seq_ids to context bucket size
+                start_idx = new_seq_ids[-1].item() + 1
+                end_idx = (
+                    continuous_batching_n_positions - n_active_tokens
+                ) + start_idx
+                seq_ids = torch.concat([new_seq_ids, torch.arange(start_idx, end_idx)])
             return input_ids, cache_ids_pad, seq_ids
-
-        # token generation
-        if self.neuron_config.paged_attention:
-            # For decoding with multiple KV cache blocks:
-            # - cache_ids are used as context_lens
-            # - start_ids are used as slot_mapping
-            # - last_token_id is used as block_tables
-            full_input_ids = maybe_pad_tensor(input_ids, 0, batch_size, left=False)
-            full_cache_ids = maybe_pad_tensor(cache_ids, 0, batch_size, left=False)
-            full_seq_ids = maybe_pad_tensor(seq_ids, 0, batch_size, left=False)
-            return full_input_ids, full_cache_ids, full_seq_ids
 
         # token generation - padding for naive continuous batching
         full_input_ids = torch.zeros(batch_size, 1, dtype=input_ids.dtype)
@@ -649,19 +580,6 @@ class NeuronModelBase(PretrainedModel):
             self.neuron_config.output_all_logits and logits.shape[1] > 1
         ):
             return logits
-
-        if (
-            self.neuron_config.paged_attention
-            and not self.neuron_config.enable_chunked_prefill
-        ):
-            input_metadata = kwargs.get("input_metadata")
-            is_prompt = input_metadata.is_prompt
-            if is_prompt:
-                num_prefills = input_metadata.num_prefills
-                return logits[:num_prefills, :]
-            else:
-                context_lens = input_metadata.context_lens
-                return logits[: len(context_lens), :]
 
         if not self.neuron_config.lhs_aligned or input_ids.shape[-1] > 1:
             return logits
@@ -782,9 +700,7 @@ class NeuronModelBase(PretrainedModel):
         if self.neuron_config.attention_layout == LAYOUT_HSB:
             input_embeddings = input_embeddings.transpose(0, -1).contiguous()
         logits = self._forward(input_embeddings, *rst)
-        return self._postprocess(
-            original_input_ids, logits, start_ids=start_ids
-        )
+        return self._postprocess(original_input_ids, logits, start_ids=start_ids)
 
 
 # Base class for all "Serializable Objects"

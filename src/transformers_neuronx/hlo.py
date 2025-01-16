@@ -2056,11 +2056,9 @@ def decoder_attention_mask_lhs_aligned(
             return decoder_attention_mask_lhs_aligned_context(cache_ids, n_positions)
     else:
         # Token generation
-        return decoder_attention_mask_lhs_aligned_token(
+        return decoder_attention_mask_lhs_aligned_token_padded(
             cache_ids,
             n_positions,
-            num_active_blocks=num_active_blocks,
-            neuron_config=neuron_config,
         )
 
 
@@ -2267,120 +2265,6 @@ def decoder_attention_block_diagonal_causal_from_bottomright_mask(
     # [n_positions, n_positions] -> [1, n_positions, n_positions]
     prior_mask = unsqueeze(prior_mask, dim=0)
     active_mask = None
-    return prior_mask, active_mask
-
-
-def decoder_attention_mask_lhs_aligned_token(
-    cache_ids, n_positions, num_active_blocks=None, neuron_config=None
-):
-    if neuron_config and neuron_config.optimized_paged_attention:
-        block_size = neuron_config.continuous_batching.block_size
-        assert isinstance(num_active_blocks, int) and (num_active_blocks is not None), (
-            f"num_active_blocks is expected to be an int, but got {num_active_blocks}"
-        )
-        return decoder_attention_mask_lhs_aligned_token_blockwise(
-            cache_ids, block_size=block_size, num_blocks=num_active_blocks
-        )
-    else:
-        return decoder_attention_mask_lhs_aligned_token_padded(cache_ids, n_positions)
-
-
-def decoder_attention_mask_lhs_aligned_token_blockwise(
-    context_lens, block_size, num_blocks
-):
-    """
-    Creates the block-wise attention mask for decoding with multiple KV cache blocks.
-
-    Example:
-
-    # INPUTS:
-    context_lens: tensor([ 3, 10, 5, 0])
-    block_size: 4
-    num_blocks: 8
-
-    # EXPECTED OUTPUT:
-    # attention mask with 8 blocks total (w/ block_size=4, total elements=32)
-    # 24 active blocks are padded to 32 blocks
-    attention_mask
-    [
-    # seq0 - 3 elements (pad to 4)
-    1,1,1,0,
-
-    # seq1 - 10 elements (pad to 12)
-    1,1,1,1,
-    1,1,1,1,
-    1,1,0,0,
-
-    # seq2 - 5 elements (pad to 8)
-    1,1,1,1,
-    1,0,0,0,
-
-    # pad 8 elements to 32 total elements
-    0,0,0,0,
-    0,0,0,0
-    ]
-
-    Algorithm for implementing block-wise attention mask:
-
-    >>> # plan the output space for the active blocks
-    >>> blocks_cumsum = lax.cumsum((context_lens+block_size-1)//block_size, axis=0)
-    >>>
-    >>> prior_mask = jnp.zeros(num_tokens, dtype=context_lens.dtype)
-    >>> mask_iota = jnp.arange(start=0, stop=num_tokens, dtype=context_lens.dtype)
-    >>> for seq_id in range(max_num_seqs):
-    >>>     start_idx = 0 if seq_id == 0 else blocks_cumsum[seq_id-1] * block_size
-    >>>     end_idx = start_idx + context_lens[seq_id]
-    >>>     mask = jnp.int32(jnp.logical_and(mask_iota >= start_idx, mask_iota < end_idx))
-    >>>     prior_mask = prior_mask + mask
-    """
-    assert len(context_lens.sizes) == 2, "context_lens is expected to be a 2D vector."
-
-    s32 = context_lens.scribe.s32
-    f32 = context_lens.scribe.f32
-    pred = context_lens.scribe.pred
-    max_num_seqs = context_lens.sizes[0]
-    num_tokens = block_size * num_blocks
-
-    # reshape from 2D to 1D vector
-    context_lens = reshape(context_lens, (max_num_seqs,))
-
-    # blocks_cumsum = cumsum((context_lens+block_size-1)//block_size, axis=0)
-    blocks_add = add(context_lens, block_size - 1)
-    blocks_div = cast(floor(divide(cast(blocks_add, f32), block_size)), s32)
-    blocks_cumsum = cumsum(blocks_div, dim=0)
-
-    blocks_mul = multiply(blocks_cumsum, block_size)
-    prior_mask = full(0, dtype=pred, sizes=(num_tokens,))
-    mask_iota = iota(s32, (num_tokens,), [0])
-    for seq_id in range(max_num_seqs):
-        zero, prev_seq_id, curr_seq_id = (
-            s32.Constant(constant_value=0),
-            s32.Constant(constant_value=seq_id - 1),
-            s32.Constant(constant_value=seq_id),
-        )
-        start_idx = (
-            zero
-            if seq_id == 0
-            else dynamic_slice_along(blocks_mul, dim=0, start=prev_seq_id, size=1)
-        )
-        br_dims = [] if seq_id == 0 else [0]
-        start_idx_br = broadcast(
-            start_idx, out_dim_size=(num_tokens,), broadcast_dimensions=br_dims
-        )
-        end_idx = add(
-            dynamic_slice_along(context_lens, dim=0, start=curr_seq_id, size=1),
-            start_idx,
-        )
-        end_idx_br = broadcast(
-            end_idx, out_dim_size=(num_tokens,), broadcast_dimensions=[0]
-        )
-        mask = logical_and(
-            greater_equal(mask_iota, start_idx_br), less(mask_iota, end_idx_br)
-        )
-        # start_idx is loaded from cumsum of block placement location, therefore the mask update location should never overlap.
-        prior_mask = add(prior_mask, cast(mask, pred))
-    prior_mask = reshape(prior_mask, (num_blocks, 1, block_size))
-    active_mask = full(1, dtype=pred, sizes=(max_num_seqs, 1, 1))
     return prior_mask, active_mask
 
 
