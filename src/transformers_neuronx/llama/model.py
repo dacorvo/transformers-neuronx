@@ -35,8 +35,6 @@ class LlamaForSampling(NeuronModelBase):
         amp="f32",
         tp_degree=2,
         context_length_estimate=None,
-        context_unroll=None,
-        unroll=None,
         neuron_config=None,
         prefixed_length=0,
         **kwargs,
@@ -48,14 +46,6 @@ class LlamaForSampling(NeuronModelBase):
         self.config = config
         self.neuron_config = neuron_config if neuron_config else NeuronConfig()
         self.prefixed_length = prefixed_length
-
-        if context_unroll is None:
-            context_unroll = config.num_hidden_layers
-        self.context_unroll = context_unroll
-
-        if unroll is None:
-            unroll = config.num_hidden_layers
-        self.unroll = unroll
 
         self.token_buckets = token_sizes(n_positions)
         self.context_buckets = context_sizes(
@@ -96,16 +86,14 @@ class LlamaForSampling(NeuronModelBase):
             num_layers=config.num_hidden_layers,
             n_head=config.num_attention_heads,
             n_kv_head=config.num_key_value_heads,
-            unroll=unroll,
             neuron_config=self.neuron_config,
             allow_pad=True,
             builder=hlo_builder,
         )
         self.decoder_lm_head = self.decoder_param_set.init_token_decoder(
-            unroll=self.unroll, buckets=self.token_buckets, model_obj=self
+            buckets=self.token_buckets, model_obj=self
         )
         self.decoder_lm_head_for_context = self.decoder_param_set.init_context_decoder(
-            unroll=self.context_unroll,
             buckets=self.context_buckets,
             model_obj=self,
             context_batch_sizes=self.context_batch_sizes,
@@ -270,10 +258,7 @@ class LlamaForSampling(NeuronModelBase):
                             context_length_estimate, batch_size
                         ],
                     )
-                    # PERF: No latency improvement seen in multi-layer models from executor
-                    # Pipeline parallel deosn't support executor right now
-                    if self.context_unroll == self.config.num_hidden_layers:
-                        model.use_executor = True
+                    model.use_executor = True
                     self.decoder_lm_head_for_context[
                         context_length_estimate, batch_size
                     ] = model

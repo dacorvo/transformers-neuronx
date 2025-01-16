@@ -96,19 +96,15 @@ class NeuronModelBase(PretrainedModel):
     def enable_window_context_decoder(
         self,
         window_context_length: Optional[Union[List[int], int]],
-        unroll: Optional[int] = None,
     ):
         if isinstance(window_context_length, int):
             window_context_length = [window_context_length]
         self.window_context_buckets = context_sizes(
             window_context_length, self.token_buckets
         )
-        if unroll is None:
-            unroll = self.decoder_param_set.num_layers
         for k in self.window_context_buckets:
             self.decoder_lm_head_for_window_context[k] = (
                 self.decoder_param_set.init_window_context_decoder(
-                    unroll=unroll,
                     buckets=self.token_buckets,
                     model_obj=self,
                     n_active_tokens=k,
@@ -412,9 +408,7 @@ class NeuronModelBase(PretrainedModel):
 
         batch_size = self.neuron_config.continuous_batching.batch_size_for_shared_caches
 
-        if (
-            (n_active_tokens > 1) and cache_ids.flatten()[0].item() == 0
-        ):
+        if (n_active_tokens > 1) and cache_ids.flatten()[0].item() == 0:
             # context encoding
             n_active_seqs, n_active_tokens = input_ids.shape
             continuous_batching_n_positions = find_bucket(
@@ -512,7 +506,7 @@ class NeuronModelBase(PretrainedModel):
             context_lens,
         )
 
-    def _postprocess(self, input_ids, logits, start_ids=None, **kwargs):
+    def _postprocess(self, input_ids, logits, start_ids):
         if start_ids is None or (
             self.neuron_config.output_all_logits and logits.shape[1] > 1
         ):
@@ -619,8 +613,8 @@ class NeuronModelBase(PretrainedModel):
     def forward(
         self,
         input_ids,
-        cache_ids=None,
-        start_ids=None,
+        cache_ids,
+        start_ids,
     ):
         original_input_ids = input_ids
         padded_inputs, *rst = self._preprocess(

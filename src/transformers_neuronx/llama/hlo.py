@@ -971,9 +971,8 @@ class LlamaForSamplingNoEmbeddingHlo:
         else:
             batch_size = query.sizes[batch_dim]
             if (
-                (self.neuron_config.lhs_aligned or batch_size == 1)
-                and not self.neuron_config.bsh_cache_layout
-            ):
+                self.neuron_config.lhs_aligned or batch_size == 1
+            ) and not self.neuron_config.bsh_cache_layout:
                 context = attention.flash_attention(query, key, value)
             else:
                 # do not use flash attention for lhs padded (right aligned) batch > 1 case
