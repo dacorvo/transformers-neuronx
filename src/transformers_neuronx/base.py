@@ -22,7 +22,7 @@ from concurrent.futures import ProcessPoolExecutor
 
 from .bucket import context_sizes, find_bucket
 from .compiler import ParallelKernel
-from .constants import LAYOUT_BSH
+from .constants import LAYOUT_BSH, LAYOUT_HSB
 from .config import maybe_dump_config
 from .module import PretrainedModel
 from .ops import init_neuron
@@ -799,6 +799,24 @@ class NeuronModelBase(PretrainedModel):
         for kernel in kernels:
             if isinstance(kernel, ParallelKernel):
                 kernel.profile(profile_dir, ntff_count_limit)
+
+    def forward(
+        self,
+        input_ids,
+        cache_ids=None,
+        start_ids=None,
+    ):
+        original_input_ids = input_ids
+        padded_inputs, *rst = self._preprocess(
+            input_ids, start_ids=start_ids, cache_ids=cache_ids
+        )
+        input_embeddings = self.chkpt_model.model.embed_tokens(padded_inputs)
+        if self.neuron_config.attention_layout == LAYOUT_HSB:
+            input_embeddings = input_embeddings.transpose(0, -1).contiguous()
+        logits = self._forward(input_embeddings, *rst)
+        return self._postprocess(
+            original_input_ids, logits, start_ids=start_ids
+        )
 
 
 # Base class for all "Serializable Objects"
