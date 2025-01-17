@@ -253,30 +253,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             decoder_lm_head.add_embedding_builder(self.builder.embedding)
         return decoder_lm_head
 
-    def init_window_context_decoder(self, buckets, model_obj, n_active_tokens):
-        cls = type(self)
-        return_all_outputs = False
-        if self.neuron_config and self.neuron_config.output_all_logits:
-            return_all_outputs = True
-        decoder_lm_head = cls(
-            tp_degree=self.tp_degree,
-            n_positions_list=buckets,
-            n_active_tokens=n_active_tokens,
-            batch_size=self.batch_size,
-            attention_head_size=self.attention_head_size,
-            amp=self.amp,
-            num_layers=self.num_layers,
-            n_head=self.n_head,
-            n_kv_head=self.n_kv_head,
-            neuron_config=self.neuron_config,
-            allow_pad=True,
-            return_all_outputs=return_all_outputs,
-            builder=self.builder,
-            tag=f"window-width{n_active_tokens}",
-        )
-        model_obj.register_for_serialization(decoder_lm_head)
-        return decoder_lm_head
-
     def enable_executor(self, return_ranks=-1):
         self.return_ranks = return_ranks
         self.program.enable_executor()

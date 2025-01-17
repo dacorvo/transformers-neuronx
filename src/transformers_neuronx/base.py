@@ -17,10 +17,9 @@ import os
 import torch
 import hashlib
 from abc import ABC, abstractmethod
-from typing import Optional, Union, List
 from concurrent.futures import ProcessPoolExecutor
 
-from .bucket import context_sizes, find_bucket
+from .bucket import find_bucket
 from .compiler import ParallelKernel
 from .constants import LAYOUT_BSH, LAYOUT_HSB
 from .config import maybe_dump_config
@@ -92,24 +91,6 @@ class NeuronModelBase(PretrainedModel):
         with maybe_dump_config(self.config, self.neuron_config):
             self.load_weights()
             self.compile(parallel_degree=self.neuron_config.compilation_worker_count)
-
-    def enable_window_context_decoder(
-        self,
-        window_context_length: Optional[Union[List[int], int]],
-    ):
-        if isinstance(window_context_length, int):
-            window_context_length = [window_context_length]
-        self.window_context_buckets = context_sizes(
-            window_context_length, self.token_buckets
-        )
-        for k in self.window_context_buckets:
-            self.decoder_lm_head_for_window_context[k] = (
-                self.decoder_param_set.init_window_context_decoder(
-                    buckets=self.token_buckets,
-                    model_obj=self,
-                    n_active_tokens=k,
-                )
-            )
 
     def is_compiled(self):
         # First check if the kernels have neffs already
@@ -235,10 +216,6 @@ class NeuronModelBase(PretrainedModel):
         while current < context_length:
             # find the optimal "window"
             estimate = None
-            if hasattr(self, "window_context_buckets"):
-                estimate = find_bucket(
-                    self.window_context_buckets, context_length - current
-                )
 
             # when the leftovers is smaller than estimate, fall back to single token generation
             # TODO: can we pad?

@@ -51,7 +51,6 @@ class LlamaForSampling(NeuronModelBase):
         self.context_buckets = context_sizes(
             context_length_estimate, self.token_buckets
         )
-        self.window_context_buckets = []
         if prefixed_length:
             if prefixed_length not in self.context_buckets:
                 self.context_buckets.append(prefixed_length)
@@ -88,7 +87,6 @@ class LlamaForSampling(NeuronModelBase):
             model_obj=self,
             context_batch_sizes=self.context_batch_sizes,
         )
-        self.decoder_lm_head_for_window_context = {}
 
     def load_weights(self):
         self.materialize_embeddings()
@@ -231,10 +229,3 @@ class LlamaForSampling(NeuronModelBase):
                     self.decoder_lm_head_for_context[
                         context_length_estimate, batch_size
                     ] = model
-
-        if self.decoder_lm_head_for_window_context:
-            for i, k in enumerate(self.decoder_lm_head_for_window_context):
-                model = self.decoder_lm_head.build_weight_shared(
-                    share_caches=True, new=self.decoder_lm_head_for_window_context[k]
-                )
-                self.decoder_lm_head_for_window_context[k] = model
