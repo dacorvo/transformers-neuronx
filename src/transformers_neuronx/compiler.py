@@ -75,19 +75,6 @@ def compile_py_func(py_func):
         return HloScribe(serialize_torch)(py_func).module_proto
 
 
-def build_kernel(py_func, tp_degree):
-    hlo_module = compile_py_func(py_func)
-    neff_bytes = compile_hlo_module(hlo_module)
-    metaneff = hlo2metaneff(hlo_module)
-    return Kernel(hlo_module, neff_bytes, metaneff, tp_degree)
-
-
-def build_parallel_kernel(hlo_module, tp_degree):
-    kernel = ParallelKernel(hlo_module, tp_degree)
-    kernel.build()
-    return kernel
-
-
 def get_compiler_flags() -> str:
     user_flags = os.environ.get("NEURON_CC_FLAGS", "").strip()
 
@@ -192,11 +179,6 @@ def dump_proto(proto, path):
         f.write(proto.SerializeToString())
 
 
-def dump_proto_str(proto, path):
-    with open(path, "w") as f:
-        f.write(str(proto))
-
-
 def hlo2metaneff(hlo_module):
     prog_shape = hlo_module.host_program_shape
     dtype_converter = DataTypeConverter()
@@ -287,10 +269,6 @@ class DataTypeConverter:
 
     def torch2hlo(self, torch_dtype):
         return self.torch2hlo_mapping[torch_dtype]
-
-
-def primitive2name(element_type):
-    return xla_data_pb2.PrimitiveType.Name(element_type).lower()
 
 
 class Kernel:
@@ -704,44 +682,10 @@ def gen_zero_output(hlo_module, index=None):
     return torch.zeros(shape, dtype=dtype)
 
 
-def gen_zero_inputs(hlo_module):
-    return gen_randn_inputs(hlo_module, std=0)
-
-
-def gen_randn_inputs(hlo_module, std=0.01, int_func=torch.zeros, treat_as_int=None):
-    if treat_as_int is None:
-        treat_as_int = []
-    dtype_converter = DataTypeConverter()
-    inputs = []
-    for idx, param in enumerate(hlo_module.host_program_shape.parameters):
-        shape = list(param.dimensions)
-        dtype = dtype_converter.hlo2torch(param.element_type)
-        if std and dtype.is_floating_point and idx not in treat_as_int:
-            tensor = std * torch.randn(shape, dtype=dtype)
-        else:
-            tensor = int_func(shape, dtype=dtype)
-        inputs.append(tensor)
-    return inputs
-
-
-def gen_zero_output_from_shape(input):
-    shape_proto = input.shape_proto
-    shape = tuple(shape_proto.dimensions)
-    dtype = DataTypeConverter().hlo2torch(shape_proto.element_type)
-    return torch.zeros(shape, dtype=dtype)
-
-
 def gen_zero_output_from_shape_proto(input):
     shape = tuple(input.dimensions)
     dtype = DataTypeConverter().hlo2torch(input.element_type)
     return torch.zeros(shape, dtype=dtype)
-
-
-def get_debug_outputs(program, bucket_id=0):
-    debug_tensors = program.memories[bucket_id].get_debug_tensors()
-    debug_tensors = [ops.parallel_cpu(x) for x in debug_tensors]
-    debug_names = program.debugger.get_names() if hasattr(program, "debugger") else []
-    return debug_tensors, debug_names
 
 
 def get_total_input_tensors_size(hlo_module):
@@ -755,59 +699,3 @@ def get_total_input_tensors_size(hlo_module):
             num_bytes = math.prod(param.dimensions) * torch.iinfo(dtype).bits / 8
         total_bytes += num_bytes
     return total_bytes
-
-
-class HLOKernel:
-    def __init__(self, hlo_program, tp, start_g_nc_id=0, g_nc_count=None, tag=None):
-        self.hlo_program = hlo_program
-        self.tp = tp
-        self.start_g_nc_id = start_g_nc_id
-        if g_nc_count is None:
-            g_nc_count = tp
-        self.g_nc_count = g_nc_count
-        self.manipulator = parallel.ParallelTensorManipulator(tp_degree=self.tp)
-        self.hlo_module = compile_py_func(self.hlo_program)
-        self.kernel = ParallelKernel(
-            self.hlo_module,
-            tp_degree=self.tp,
-            g_start_device_id=self.start_g_nc_id,
-            g_device_count=self.g_nc_count,
-            tag=tag,
-        )
-
-    def build(self):
-        # wrap HLO with kernel and compile{
-        logging.debug(
-            f"Build hlo module with tp {self.tp} g_start_device_id {self.start_g_nc_id} g_device_count {self.g_nc_count}"
-        )
-        # load NEFF
-        self.kernel.build()
-
-    def load(self):
-        logging.debug(f"loading {self.hlo_module.name}")
-        self.kernel.load()
-
-    def setup(self, nc_input_buffers, nc_output_buffers, output_count=None):
-        self.memories = self.kernel.build_memory()
-        if len(nc_output_buffers) == 0:
-            if output_count is None:
-                cpu_output_buffers = [
-                    gen_zero_output(self.hlo_module, None)
-                ]  # index is only needed when indexing output tuple
-            else:
-                cpu_output_buffers = [
-                    gen_zero_output(self.hlo_module, i) for i in range(output_count)
-                ]
-            nc_output_buffers = []
-            for o in cpu_output_buffers:
-                nc_output_buffers.append(self.manipulator.duplicate(o))
-        if len(nc_input_buffers) == 0:
-            cpu_input_buffers = gen_zero_inputs(self.hlo_module)
-            for i in cpu_input_buffers:
-                nc_input_buffers.append(self.manipulator.duplicate(i))
-        self.memories.setup(
-            nc_input_buffers, nc_output_buffers
-        )  # Segmentation fault (core dumped)
-
-    def run(self):
-        self.kernel(self.memories)

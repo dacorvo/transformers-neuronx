@@ -265,13 +265,6 @@ def dot_general(lhs, rhs, dimension_numbers, dtype=None):
     return output_dot
 
 
-def blockwise_qk_matmul(query, keys, neuron_config):
-    output_dot = full(
-        0,
-    )
-    return output_dot
-
-
 def dot00(lhs, rhs):
     dtype = lhs.dtype
     _, lhs_size = lhs.sizes
@@ -1726,10 +1719,6 @@ def cos(tensor):
     return dtype[sizes].Cos(tensor)
 
 
-def floor(tensor):
-    return tensor.dtype[tensor.sizes].Floor(tensor)
-
-
 def transpose210(tensor):
     dtype = tensor.dtype
     size0, size1, size2 = tensor.sizes
@@ -1822,10 +1811,6 @@ def less(lhs, rhs):
     return compare(lhs, rhs, "LT")
 
 
-def less_equal(lhs, rhs):
-    return compare(lhs, rhs, "LE")
-
-
 def greater(lhs, rhs):
     return compare(lhs, rhs, "GT")
 
@@ -1839,13 +1824,6 @@ def logical_and(lhs, rhs):
     pred = lhs.scribe.pred
     _check_binary_arguments(lhs, rhs, dtype=pred)
     return pred[lhs.sizes].And(lhs, rhs)
-
-
-def logical_or(lhs, rhs):
-    lhs, rhs = _binary_primitive_broadcast(lhs, rhs)
-    pred = lhs.scribe.pred
-    _check_binary_arguments(lhs, rhs, dtype=pred)
-    return pred[lhs.sizes].Or(lhs, rhs)
 
 
 def logical_not(lhs):
@@ -2148,111 +2126,6 @@ def decoder_attention_block_diagonal_causal_mask(prompt_lens, n_positions):
     return prior_mask, active_mask
 
 
-def decoder_attention_block_diagonal_causal_from_bottomright_mask(
-    num_queries, num_keys, max_num_queries, max_num_keys, max_num_seqs
-):
-    """
-    Creates block diagonal causal masks for multiple prompts.
-
-    This mask is dynamic and depends on the input prompt lengths.
-
-    Example:
-        num_queries = [2, 3, 1, 0], num_keys = [4, 5, 4, 0], max_num_queries = 8, max_num_keys = 16, max_num_seqs = 4
-
-        prior_mask = [
-            [1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], # At position 3 attend to 1st sequence
-            [1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], # At position 4 attend to 1st sequence
-            [0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0], # At position 3 attend to 2nd sequence
-            [0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0], # At position 4 attend to 2nd sequence
-            [0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0], # At position 5 attend to 2nd sequence
-            [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0], # At position 3 attend to 3rd sequence
-            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], # padding
-            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], # padding
-        ]
-        active_mask = None
-
-    Args:
-        prompt_lens: The list of prompt lengths.
-        n_positions: The total size of the KV cache to consider. This is
-            equal to the current bucket size.
-
-    Returns:
-        prior_mask: The attention mask to apply to the KV cache.
-        active_mask: The attention mask to apply to the active tokens (None).
-
-    For each sequence, we start from building a triangle mask with an offset.
-    As shown in the following figure, with
-
-      ri = q_cumsum[seq_id]
-      ci = k_cumsum[seq_id]
-      nr = num_queries[seq_id]
-      nc = num_keys[seq_id]
-
-    we can trim the triangle mask from different directions, in order to get the desired shape.
-
-                 (0, ci+nc-ri-nr)
-    +--------------------+----------------------------------+
-    |                      \                                |
-    |                        \   (ri, ci+nc-nr)             |
-    |                          \   |                        |
-    |   (ri, ci)                 \       (ri, ci+nc)        |
-    |       +----------------------+ - - - +                |
-    |       | xxxxxxxxxxxxxxxxxxxxxx \     |                |
-    |       | xxxxxxxxxxxxxxxxxxxxxxxx \   |                |
-    |       | xxxxxxxxxxxxxxxxxxxxxxxxxx \ |                |
-    |       +------------------------------+                |
-    |   (ri+nr, ci)                      (ri+nr, ci+nc)     |
-    |                                                       |
-    +-------------------------------------------------------+
-    """
-
-    s32 = num_queries.scribe.s32
-    pred = num_queries.scribe.pred
-    sizes = max_num_queries, max_num_keys
-    num_queries = cast(num_queries, s32)
-    num_keys = cast(num_keys, s32)
-
-    # Constants to be used in the loop
-    a = iota(s32, sizes, [0])
-    b = iota(s32, sizes, [1])
-    q_cumsum = concatenate([full(0, s32, [1]), cumsum(num_queries, dim=0)], dimension=0)
-    k_cumsum = concatenate([full(0, s32, [1]), cumsum(num_keys, dim=0)], dimension=0)
-
-    # broadcast to size
-    def _br(x):
-        return broadcast(x, sizes, [0])
-
-    prior_mask = full(0, dtype=pred, sizes=sizes)
-    for idx in range(max_num_seqs):
-        seq_id = s32.Constant(constant_value=idx)
-        ri = dynamic_slice_along(q_cumsum, dim=0, start=seq_id, size=1)
-        ci = dynamic_slice_along(k_cumsum, dim=0, start=seq_id, size=1)
-        nr = dynamic_slice_along(num_queries, dim=0, start=seq_id, size=1)
-        nc = dynamic_slice_along(num_keys, dim=0, start=seq_id, size=1)
-
-        # a_offset = ci+nc-ri-nr
-        # new_mask = (a + a_offset) >= b
-        a_offset = subtract(add(ci, nc), add(ri, nr))
-        new_mask = compare(add(a, _br(a_offset)), b, "GE")
-
-        # left_mask = b >= ci
-        # top_mask = a >= ri
-        # bottom_mask = a < (ri+nr)
-        left_mask = compare(b, _br(ci), "GE")
-        top_mask = compare(a, _br(ri), "GE")
-        bottom_mask = compare(a, _br(add(ri, nr)), "LT")
-        new_mask = logical_and(
-            logical_and(logical_and(new_mask, left_mask), top_mask), bottom_mask
-        )
-
-        prior_mask = logical_or(prior_mask, new_mask)
-
-    # [n_positions, n_positions] -> [1, n_positions, n_positions]
-    prior_mask = unsqueeze(prior_mask, dim=0)
-    active_mask = None
-    return prior_mask, active_mask
-
-
 def decoder_attention_mask_lhs_aligned_token_padded(cache_ids, n_positions):
     """
     Creates decomposed prior/active masks for LHS-aligned token generation.
@@ -2419,22 +2292,3 @@ def reshape_and_cache(key, value, key_cache, value_cache, slot_mapping):
     updated_values = reshape(updated_values, [n_blocks, block_size, n_head, d_head])
 
     return updated_keys, updated_values
-
-
-def diff(tensor, dim):
-    """
-    Computes the n-th forward difference along the given dimension, where n=1.
-
-    Example:
-    >>> c = tensor([[1, 2, 3], [3, 4, 5]])
-    >>> diff(c, dim=0)
-    tensor([[2, 2, 2]])
-    >>> diff(c, dim=1)
-    tensor([[1, 1],
-            [1, 1]])
-    """
-    o_sizes = tensor.sizes
-    a = slice_along(tensor, dim, limit=o_sizes[dim] - 1, start=0)
-    b = slice_along(tensor, dim, limit=o_sizes[dim], start=1)
-    output = subtract(b, a)
-    return output
