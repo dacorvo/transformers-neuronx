@@ -495,11 +495,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
                 self._hlo_fully_unrolled(npos, batch_size)
             )
         num_inputs = len(self.inputs_sdim)
-        batch_size_for_shared_caches = (
-            self.neuron_config.continuous_batching.batch_size_for_shared_caches
-            if self.neuron_config.continuous_batching
-            else None
-        )
         return DecoderProgramFullyUnrolled(
             self.neuron_config,
             self.layers,
@@ -510,7 +505,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             self.n_positions_list,
             self.batch_size,
             self.prefixed_length,
-            batch_size_for_shared_caches=batch_size_for_shared_caches,
             tag=self.tag,
             on_cpu=self._cpu_compile,
         )
@@ -1576,7 +1570,6 @@ class DecoderProgram:
         n_positions_list,
         batch_sizes,
         prefixed_length=0,
-        batch_size_for_shared_caches=False,
         tag=None,
         num_exec_repetition=1,
         on_cpu=False,
@@ -1586,7 +1579,6 @@ class DecoderProgram:
         self.neuron_config = neuron_config
         self.layers = layers
         self.batch_sizes = batch_sizes
-        self.batch_size_for_shared_caches = batch_size_for_shared_caches
         self.n_positions_list = n_positions_list
         self.prefixed_length = prefixed_length
         first_hlo = hlo_modules[self.n_positions_list[0], self.batch_sizes[0]]
@@ -1754,14 +1746,14 @@ class DecoderProgram:
                 tensor = self.manipulator.unshard_along(debug_buffer, dim=unshard_dim)
             global_debugger.debug_tensors[debug_tensor_name] = tensor
 
-    def _fill_io_tensors(self, input_tensors, output_tensors, layers, npos, batch_size):
-        end = npos
-        if self.prefixed_length > 0:
-            end = npos + self.prefixed_length
-        if self.batch_size_for_shared_caches:
-            batch_size = self.batch_size_for_shared_caches
+    def _fill_io_tensors(self, input_tensors, output_tensors, layers):
+        end = self.n_positions_list[-1]
         for layer in layers:
-            for cache in layer.attn_k_cache[batch_size], layer.attn_v_cache[batch_size]:
+            # There is only ever one single cache for batch_size, sequence_length
+            for cache in (
+                next(iter(layer.attn_k_cache.values())),
+                next(iter(layer.attn_v_cache.values())),
+            ):
                 cache_slice = self.manipulator.slice_on_nc(
                     cache, 0, start=0, end=end, step=1
                 )
@@ -1802,7 +1794,6 @@ class DecoderProgramFullyUnrolled(DecoderProgram):
         n_positions_list,
         batch_sizes,
         prefixed_length=0,
-        batch_size_for_shared_caches=None,
         tag=None,
         on_cpu=False,
     ):
@@ -1816,7 +1807,6 @@ class DecoderProgramFullyUnrolled(DecoderProgram):
             n_positions_list,
             batch_sizes,
             prefixed_length,
-            batch_size_for_shared_caches,
             tag=tag,
             on_cpu=on_cpu,
         )
@@ -1856,9 +1846,7 @@ class DecoderProgramFullyUnrolled(DecoderProgram):
                     output_tensors = [*self.logits_buffer[bs_idx]]
                 else:
                     output_tensors = [self.logits_buffer[bs_idx]]
-                self._fill_io_tensors(
-                    input_tensors, output_tensors, layers, npos, batch_size
-                )
+                self._fill_io_tensors(input_tensors, output_tensors, layers)
                 self._fill_debug_tensors(output_tensors, npos, batch_size)
                 input_tensors.extend(pre_layer_params)
                 input_tensors.extend(ln_lm_head_params)
