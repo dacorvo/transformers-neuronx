@@ -77,10 +77,6 @@ class NeuronConfig:
         group_query_attention: The sharding configuration to use when the number
             of query attention heads is not equal to the number of key/value
             heads. Neuron attempts to select the best configuration by default.
-        sequence_parallel_norm: Enables sharding input sequences for rms_norm parallel
-                execution. Supported for llama models.
-        sequence_parallel_norm_threshold: Sets the minimum threshold to shard rms_norm
-            sequences. Use with sequence_parallel_norm.
         bf16_rms_norm: Uses BF16 weights and hidden states input for RMS norm operations.
             By default, the RMS norm operates on FP32 dtype of inputs.
         on_device_embedding: Enables the input embedding to be performed on
@@ -107,8 +103,6 @@ class NeuronConfig:
         cache_layout: Layout = Layout.SBH,
         padding_side: str = "left",
         group_query_attention: Optional[GQA] = None,
-        sequence_parallel_norm: bool = False,
-        sequence_parallel_norm_threshold: int = 2048,
         bf16_rms_norm: bool = False,
         on_device_embedding: bool = False,
         all_reduce_dtype: Optional[str] = None,
@@ -162,11 +156,6 @@ class NeuronConfig:
         self.group_query_attention = group_query_attention
         if self.group_query_attention is not None:
             self.group_query_attention = GQA(self.group_query_attention)
-        self.sequence_parallel_norm = sequence_parallel_norm
-        self.sequence_parallel_norm_threshold = sequence_parallel_norm_threshold
-        assert sequence_parallel_norm_threshold > 0, (
-            f"sequence_parallel_norm_threshold={sequence_parallel_norm_threshold} must be greater than zero"
-        )
         self.bf16_rms_norm = bf16_rms_norm
         self.on_device_embedding = on_device_embedding
         self.output_all_logits = output_all_logits
@@ -198,7 +187,6 @@ class NeuronConfig:
                 not self.fuse_qkv,
                 self.attention_layout != Layout.BSH,
                 self.group_query_attention != GQA.REPLICATED_HEADS,
-                self.sequence_parallel_norm,
             ]
         ):
             self.fused_rmsnorm_qkv = False

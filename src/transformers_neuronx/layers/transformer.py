@@ -60,14 +60,7 @@ def inputs(
     """
     s32 = scribe.s32
 
-    if (
-        neuron_config
-        and neuron_config.sequence_parallel_norm
-        and n_active_tokens > neuron_config.sequence_parallel_norm_threshold
-    ):
-        neuron_config.is_sequence_parallel = True
-    else:
-        neuron_config.is_sequence_parallel = False
+    neuron_config.is_sequence_parallel = False
 
     # Multilayer on device embedding will use the already-embedded inputs for the layers NEFF
     # because there is a separate neff for embedding.

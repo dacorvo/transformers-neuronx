@@ -481,9 +481,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             max_id = cache_ids.max().item()
             bucket_id = self.program.find_bucket_id(max_id)
             if self.use_executor:
-                if self.neuron_config and self.neuron_config.sequence_parallel_norm:
-                    self.program.inputs_host_to_device(input_tensors, batch_size)
-                    input_tensors = []
                 outputs = self.program.execute(
                     bucket_id,
                     batch_size,
@@ -1726,35 +1723,13 @@ class DecoderProgram:
         return active_block
 
     def inputs_host_to_device(self, input_tensors, batch_size):
-        def process_input_tensors(tensor, idx):
-            # process input_ids
-            if (
-                idx == 0
-                and self.neuron_config.sequence_parallel_norm
-                and not self.neuron_config.on_device_embedding
-            ):
-                n_active_tokens = tensor.shape[1]
-                if (
-                    n_active_tokens
-                    > self.neuron_config.sequence_parallel_norm_threshold
-                ):
-                    return self.manipulator.shard_along_on_cpu(tensor, 1)
-            # handle the rest of the inputs
-            return self.manipulator.duplicate_on_cpu(tensor)
-
-        # This means there is a separate neff for embedding so the inputs will be the input_ids
-        if self.neuron_config.on_device_embedding and isinstance(
-            self, DecoderProgramMultiLayer
-        ):
-            input_buffers = self.input_ids_buffer[self.batch_sizes.index(batch_size)]
-        else:
-            input_buffers = self.input_buffers[self.batch_sizes.index(batch_size)]
+        input_buffers = self.input_buffers[self.batch_sizes.index(batch_size)]
         # TODO: Check how to handle this corner condition.
         if len(input_tensors) == 5 and len(input_buffers) == 6:
             input_buffers.pop(3)
         for idx, (buf, tensor) in enumerate(zip(input_buffers, input_tensors)):
             tensor = tensor.to(buf.dtype)
-            tensor = process_input_tensors(tensor, idx)
+            tensor = self.manipulator.duplicate_on_cpu(tensor)
             assert buf.shape == tensor[0].shape, (
                 f"Copying tensor from host to device: buffer ({buf.shape}) and tensor ({tensor[0].shape}) have different shapes!"
             )

@@ -67,32 +67,11 @@ class LlamaForSamplingNoEmbeddingHlo:
         context_lens,
         *weights,
     ):
-        core_id = None
-        if (
-            self.neuron_config.sequence_parallel_norm
-            and self.neuron_config.on_device_embedding
-        ):
-            core_id, embed_weight, *rst = weights
-        else:
-            embed_weight, *rst = weights
+        embed_weight, *rst = weights
         dtype = getattr(input_ids.scribe, self.config.amp)
-        if (
-            self.neuron_config.on_device_embedding
-            and self.neuron_config.sequence_parallel_norm
-        ):
-            hidden = hlo.embedding(
-                embed_weight,
-                input_ids,
-                tp_degree=self.config.tp_degree,
-                dim=0,
-                dtype=dtype,
-                core_id=core_id,
-                sequence_parallel=self.neuron_config.is_sequence_parallel,
-            )
-        else:
-            hidden = hlo.embedding(
-                embed_weight, input_ids, tp_degree=self.config.tp_degree, dtype=dtype
-            )
+        hidden = hlo.embedding(
+            embed_weight, input_ids, tp_degree=self.config.tp_degree, dtype=dtype
+        )
         if self.config.hidden_size % self.config.tp_degree != 0:
             hidden = hlo.slice_along(
                 hidden, dim=-1, limit=self.config.hidden_size, start=0
@@ -117,11 +96,6 @@ class LlamaForSamplingNoEmbeddingHlo:
         cached_to_contexted = None
         active_to_contexted = None
         core_id = None
-        if (
-            self.neuron_config.sequence_parallel_norm
-            and self.neuron_config.on_device_embedding
-        ):
-            core_id, *rst = weights
 
         head_dim = self.config.attention_head_size
         position_ids = cache_ids if position_ids is None else position_ids
