@@ -147,34 +147,12 @@ class NeuronModelBase(PretrainedModel):
         self.decoder_lm_head.reset()
 
     def decode(self, hidden, *args):
-        """A helper function for decoding (token-generation)
-        This function simply called decoder_lm_head.
-        It is defined as a function to enable wrapping with a decorator and measuring its runtime.
-        """
         return self.decoder_lm_head.forward(hidden, *args)
 
     def context(self, hidden, cache_ids, start_ids, last_token_id, *rest):
-        """A helper to process context (prompt)"""
-        all_logits = []  # Collect all logits if neuron_config.output_all_logits is True
-
-        assert len(self.decoder_lm_head_for_context) == 1
-        model = next(iter(self.decoder_lm_head_for_context.values()))
-
-        if self.neuron_config.log_softmax_scores:
-            logits, scores = model.forward(
-                hidden, cache_ids, start_ids, last_token_id, *rest
-            )
-        else:
-            logits = model.forward(hidden, cache_ids, start_ids, last_token_id, *rest)
-        if self.neuron_config.output_all_logits:
-            all_logits.append(logits[:, : last_token_id + 1, :])
-
-        if all_logits:
-            logits = torch.cat(all_logits, dim=1)
-
-        if self.neuron_config.log_softmax_scores:
-            return logits, scores
-        return logits
+        return self.decoder_lm_head_for_context.forward(
+            hidden, cache_ids, start_ids, last_token_id, *rest
+        )
 
     def _prepare_for_par_ctx_rhs_padding(
         self, input_ids, cache_ids, start_ids=None, **kwargs
@@ -366,11 +344,8 @@ class NeuronModelBase(PretrainedModel):
             if is_bsh or self.neuron_config.on_device_embedding
             else hidden.shape[2]
         )
-        assert hasattr(self, "context_batch_sizes"), (
-            f"{type(self)} doesn't support dynamic batching."
-        )
 
-        running_batch_size = self.context_batch_sizes[-1]
+        running_batch_size = 1
         if input_batch_size > running_batch_size:
             assert input_batch_size % running_batch_size == 0, (
                 "input batch size ({input_batch_size}) not divisible by running batch size ({running_batch_size})"

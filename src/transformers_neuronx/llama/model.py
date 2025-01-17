@@ -16,7 +16,6 @@ import torch
 
 
 from ..base import NeuronModelBase
-from ..bucket import batch_sizes, token_sizes
 from ..config import NeuronConfig
 from ..decoder import DecoderLmHeadForSamplingNoEmbedding
 from ..utils import interleave_mlp
@@ -43,24 +42,16 @@ class LlamaForSampling(NeuronModelBase):
         self.context_hook = None
         self.config = config
         self.neuron_config = neuron_config if neuron_config else NeuronConfig()
-
-        self.token_buckets = token_sizes(n_positions)
-        self.context_buckets = self.token_buckets
-
-        self.batch_sizes = batch_sizes(batch_size)
-        self.context_batch_sizes = (
-            [1]
-            if self.neuron_config and self.neuron_config.continuous_batching
-            else self.batch_sizes
-        )
+        self.n_positions = n_positions
+        self.batch_size = batch_size
         hlo_builder = LlamaForSamplingNoEmbeddingHlo(
             config, neuron_config=self.neuron_config
         )
         self.decoder_param_set = DecoderLmHeadForSamplingNoEmbedding(
             tp_degree=tp_degree,
-            n_positions_list=self.token_buckets,
+            n_positions=self.n_positions,
             n_active_tokens=1,
-            batch_size=self.batch_sizes,
+            batch_size=self.batch_size,
             attention_head_size=config.attention_head_size,
             amp=amp,
             num_layers=config.num_hidden_layers,
@@ -70,13 +61,9 @@ class LlamaForSampling(NeuronModelBase):
             allow_pad=True,
             builder=hlo_builder,
         )
-        self.decoder_lm_head = self.decoder_param_set.init_token_decoder(
-            buckets=self.token_buckets, model_obj=self
-        )
+        self.decoder_lm_head = self.decoder_param_set.init_token_decoder(model_obj=self)
         self.decoder_lm_head_for_context = self.decoder_param_set.init_context_decoder(
-            buckets=self.context_buckets,
-            model_obj=self,
-            context_batch_sizes=self.context_batch_sizes,
+            model_obj=self
         )
 
     def load_weights(self):
@@ -207,16 +194,8 @@ class LlamaForSampling(NeuronModelBase):
     def init_rest_of_model(self):
         self.decoder_lm_head.use_executor = True
 
-        if self.context_buckets:
-            for context_length_estimate in self.context_buckets:
-                for batch_size in self.context_batch_sizes:
-                    model = self.decoder_lm_head.build_weight_shared(
-                        share_caches=True,
-                        new=self.decoder_lm_head_for_context[
-                            context_length_estimate, batch_size
-                        ],
-                    )
-                    model.use_executor = True
-                    self.decoder_lm_head_for_context[
-                        context_length_estimate, batch_size
-                    ] = model
+        model = self.decoder_lm_head.build_weight_shared(
+            share_caches=True, new=self.decoder_lm_head_for_context
+        )
+        model.use_executor = True
+        self.decoder_lm_head_for_context = model

@@ -15,7 +15,6 @@
 import os
 import itertools
 import warnings
-from typing import List
 
 import torch
 from transformers_neuronx import compiler
@@ -30,7 +29,6 @@ from transformers_neuronx.llama.hlo import LlamaForSamplingNoEmbeddingHlo
 
 
 from .base import NeuronModelBase, NeuronBaseSerializer
-from .bucket import batch_sizes
 from .utils import (
     maybe_pad_tensor,
     round_up_to_divisor,
@@ -45,7 +43,7 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
     def __init__(
         self,
         tp_degree,
-        n_positions_list,
+        n_positions,
         n_active_tokens,
         batch_size,
         attention_head_size,
@@ -63,9 +61,13 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
     ):
         super().__init__()
         self.tp_degree = tp_degree
-        self.n_positions_list = n_positions_list
+        if isinstance(n_positions, (list, tuple)):
+            # Legacy Tnx encoding for continuous batching
+            assert len(n_positions) == 1 and neuron_config.continuous_batching
+            n_positions = n_positions[0]
+        self.n_positions = n_positions
         self.n_active_tokens = n_active_tokens
-        self.batch_size = batch_sizes(batch_size)
+        self.batch_size = batch_size
         self.prompt_batch_size = prompt_batch_size
         self.attention_head_size = attention_head_size  # TODO: rename to size_per_head
         self.n_head = n_head
@@ -178,49 +180,35 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
 
     def init_context_decoder(
         self,
-        buckets: List[int],
         model_obj: NeuronModelBase,
-        context_batch_sizes: List[int] = None,
     ):
         cls = type(self)
         decoder_lm_head = {}
-        if context_batch_sizes:
-            # if context_batch_sizes is passed we directly use it.
-            self.context_batch_sizes = context_batch_sizes
-        elif self.prompt_batch_size:
-            self.context_batch_sizes = [self.prompt_batch_size]
-        elif self.neuron_config and self.neuron_config.continuous_batching:
-            self.context_batch_sizes = [1]
-        else:
-            self.context_batch_sizes = self.batch_size
-        for context_length_estimate in buckets:
-            for batch_size in self.context_batch_sizes:
-                decoder_lm_head[context_length_estimate, batch_size] = cls(
-                    tp_degree=self.tp_degree,
-                    n_positions_list=[context_length_estimate],
-                    n_active_tokens=context_length_estimate,
-                    batch_size=batch_size,
-                    attention_head_size=self.attention_head_size,
-                    amp=self.amp,
-                    num_layers=self.num_layers,
-                    n_head=self.n_head,
-                    n_kv_head=self.n_kv_head,
-                    neuron_config=self.neuron_config,
-                    allow_pad=self.allow_pad,
-                    is_prefill=True,
-                    builder=self.builder,
-                    tag="context",
-                )
-                model_obj.register_for_serialization(
-                    decoder_lm_head[context_length_estimate, batch_size]
-                )
+        assert self.batch_size == 1 or self.neuron_config.continuous_batching
+        decoder_lm_head = cls(
+            tp_degree=self.tp_degree,
+            n_positions=self.n_positions,
+            n_active_tokens=self.n_positions,
+            batch_size=1,
+            attention_head_size=self.attention_head_size,
+            amp=self.amp,
+            num_layers=self.num_layers,
+            n_head=self.n_head,
+            n_kv_head=self.n_kv_head,
+            neuron_config=self.neuron_config,
+            allow_pad=self.allow_pad,
+            is_prefill=True,
+            builder=self.builder,
+            tag="context",
+        )
+        model_obj.register_for_serialization(decoder_lm_head)
         return decoder_lm_head
 
-    def init_token_decoder(self, buckets: List[int], model_obj: NeuronModelBase):
+    def init_token_decoder(self, model_obj: NeuronModelBase):
         cls = type(self)
         decoder_lm_head = cls(
             tp_degree=self.tp_degree,
-            n_positions_list=buckets,
+            n_positions=self.n_positions,
             n_active_tokens=1,
             batch_size=self.batch_size,
             attention_head_size=self.attention_head_size,
@@ -267,18 +255,17 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         self.ln_lm_head_builder = ln_lm_head_builder
 
     def new_layer(self, is_unit_scale=False):
-        *_, n_positions = self.n_positions_list
         layer = DecoderLayer(
             self.tp_degree,
-            n_positions,
+            self.n_positions,
             self.batch_size,
             self.attention_head_size,
+            n_head=self.n_head,
             amp=self.amp,
+            n_kv_head=self.n_kv_head,
             neuron_config=self.neuron_config,
             allow_pad=self.allow_pad,
             n_active_tokens=self.n_active_tokens,
-            n_head=self.n_head,
-            n_kv_head=self.n_kv_head,
             layer_num=len(self.layers),
             is_unit_scale=is_unit_scale,
         )
@@ -333,7 +320,7 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             cls = type(self)
             new = cls(
                 self.tp_degree,
-                self.n_positions_list,
+                self.n_positions,
                 self.n_active_tokens,
                 self.batch_size,
                 self.attention_head_size,
@@ -355,10 +342,7 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             new_layer = new.new_layer()
             new_layer.assign_parameters(layer)
             if share_caches:
-                buckets_from_src = (
-                    self.neuron_config and self.neuron_config.continuous_batching
-                )
-                new_layer.assign_caches(layer, buckets_from_src=buckets_from_src)
+                new_layer.assign_caches(layer)
             else:
                 new_layer.init_caches()
             new_layer.extra_parameters = layer.extra_parameters
@@ -448,11 +432,7 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         return extras
 
     def _build_program(self):
-        assert len(self.n_positions_list) == 1
-        assert len(self.batch_size) == 1
-        n_positions = self.n_positions_list[0]
-        batch_size = self.batch_size[0]
-        hlo_module = self._hlo_fully_unrolled(n_positions, batch_size)
+        hlo_module = self._hlo_fully_unrolled(self.n_positions, self.batch_size)
         num_inputs = len(self.inputs_sdim)
         return DecoderProgramFullyUnrolled(
             self.neuron_config,
@@ -460,15 +440,14 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             hlo_module,
             num_inputs,
             self.tp_degree,
-            self.n_positions_list,
+            self.n_positions,
             self.batch_size,
             tag=self.tag,
             on_cpu=self._cpu_compile,
         )
 
     def _hlo_embedding_layer(self, batch_size):
-        *_, n_positions = self.n_positions_list
-        self.builder.n_positions = n_positions
+        self.builder.n_positions = self.n_positions
 
         def _embedding(scribe):
             dtype = getattr(scribe, self.amp)
@@ -779,7 +758,7 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
     # Mainly used for serialization purposes.
     # Defines how to access all the kernels.
     def get_all_kernels(self):
-        return self.program.get_kernels()
+        return [self.program.kernel]
 
 
 def read_n_active_tokens(hlo_module):
@@ -899,9 +878,7 @@ class DecoderLayer:
         self.n_head = n_head
         self.n_head_padded = None
         self.n_kv_head = n_kv_head
-        self.batch_sizes = batch_size
-        assert len(self.batch_sizes) == 1
-        self.batch_size = self.batch_sizes[0]
+        self.batch_size = batch_size
         self.attention_head_size = (
             attention_head_size  # TODO: rename this to size_per_head
         )
@@ -1270,7 +1247,7 @@ class DecoderLayer:
             manipulator = parallel.CPUTensorManipulator(self.tp_degree)
         else:
             manipulator = parallel.ParallelTensorManipulator(self.tp_degree)
-        cache_shape = [
+        cpu_cache_shape = [
             self.n_positions,
             self.batch_size,
             n_heads_kv_cache,
@@ -1282,7 +1259,7 @@ class DecoderLayer:
             n_heads_kv_cache // self.tp_degree,
             self.attention_head_size,
         ]
-        cpu_cache = torch.zeros(cache_shape, dtype=self.cache_dtype)
+        cpu_cache = torch.zeros(cpu_cache_shape, dtype=self.cache_dtype)
         assert (n_heads_kv_cache >= self.tp_degree) and (
             n_heads_kv_cache % self.tp_degree == 0
         ), (
@@ -1291,7 +1268,7 @@ class DecoderLayer:
         self.attn_k_cache = manipulator.shard_along(cpu_cache, dim=2)
         self.attn_v_cache = manipulator.shard_along(cpu_cache, dim=2)
 
-    def assign_caches(self, layer, buckets_from_src=False):
+    def assign_caches(self, layer):
         self.attn_k_cache = layer.attn_k_cache
         self.attn_v_cache = layer.attn_v_cache
         self.cache_shape = layer.cache_shape
@@ -1497,7 +1474,7 @@ class DecoderProgram:
             if not self._cpu_compile:
                 ops.parallel_write(buf, tensor)
 
-    def run(self, bucket_id):
+    def run(self):
         raise NotImplementedError(DecoderProgram)
 
     def maybe_logits_device_to_host(self, return_ranks):
@@ -1525,9 +1502,6 @@ class DecoderProgram:
         for layer in layers:
             input_tensors.extend(layer.valid_parameters())
 
-    def get_kernels(self):
-        return [self.kernel]
-
 
 class DecoderProgramFullyUnrolled(DecoderProgram):
     def __init__(
@@ -1537,21 +1511,19 @@ class DecoderProgramFullyUnrolled(DecoderProgram):
         hlo_module,
         num_inputs,
         tp_degree,
-        n_positions_list,
-        batch_sizes,
+        n_positions,
+        batch_size,
         tag=None,
         on_cpu=False,
     ):
-        assert len(n_positions_list) == 1
-        assert len(batch_sizes) == 1
         super().__init__(
             neuron_config,
             layers,
             hlo_module,
             num_inputs,
             tp_degree,
-            n_positions_list[0],
-            batch_sizes[0],
+            n_positions,
+            batch_size,
             tag=tag,
             on_cpu=on_cpu,
         )
@@ -1572,9 +1544,8 @@ class DecoderProgramFullyUnrolled(DecoderProgram):
         input_tensors.extend(ln_lm_head_params)
         self.memory.setup(input_tensors, output_tensors)
 
-        # Warmup kernels to avoid unexpected initialization at runtime
-        for kernel in self.get_kernels():
-            kernel.warmup()
+        # Warmup kernel to avoid unexpected initialization at runtime
+        self.kernel.warmup()
 
     def run(self):
         self.kernel(self.memory)
@@ -1590,11 +1561,7 @@ class DecoderProgramFullyUnrolled(DecoderProgram):
         """
         Execute a kernel with using the optimized ParallelExecutor.
 
-        This is an alternative to the `run` method which requires that an
-        executor has been constructed for each of the underlying kernels.
-
         Arguments:
-            bucket_id: The kernel bucket to execute
             inputs: The set of CPU tensors to copy to each model
             return_ranks: The number of ranks to copy back to CPU
         """
