@@ -658,7 +658,7 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
 
         # Layer caches
         for layer in self.layers:
-            for cache in layer.attn_k_cache[batch_size], layer.attn_v_cache[batch_size]:
+            for cache in layer.attn_k_cache, layer.attn_v_cache:
                 parameters.append(cache)
 
         # Layer weights
@@ -711,7 +711,7 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             batch_size = self.neuron_config.continuous_batching.max_num_seqs
         for layer in layers:
             layer_caches = []
-            for cache in layer.attn_k_cache[batch_size], layer.attn_v_cache[batch_size]:
+            for cache in layer.attn_k_cache, layer.attn_v_cache:
                 par = param_builder.from_tensor(cache, dim_size=dim_size)
                 layer_caches.append(par)
             layers_caches.append(layer_caches)
@@ -939,15 +939,17 @@ class DecoderLayer:
         self.mlp_out_min = None
         self.mlp_out_max = None
         # Create KV caches for each batch_size
-        self.attn_k_cache = dict()
-        self.attn_v_cache = dict()
-        self.cache_shape = dict()
+        self.attn_k_cache = None
+        self.attn_v_cache = None
+        self.cache_shape = None
         self.tp_degree = tp_degree
         self.n_positions = n_positions
         self.n_head = n_head
         self.n_head_padded = None
         self.n_kv_head = n_kv_head
         self.batch_sizes = batch_size
+        assert len(self.batch_sizes) == 1
+        self.batch_size = self.batch_sizes[0]
         self.attention_head_size = (
             attention_head_size  # TODO: rename this to size_per_head
         )
@@ -1317,7 +1319,6 @@ class DecoderLayer:
         # NeuronCores.
         if self.allow_pad and not self.shard_over_batch:
             n_heads_kv_cache = round_up_to_divisor(self.n_kv_head, self.tp_degree)
-        block_size = self.n_positions
         # Select manipulator based on device
         if self._cpu_compile:
             manipulator = parallel.CPUTensorManipulator(
@@ -1331,84 +1332,45 @@ class DecoderLayer:
                 rank_id=self.neuron_config.rank_id,
                 local_tp_degree=self.neuron_config.get_local_tp(self.tp_degree),
             )
-        # Separate KV cache for each batch size
-        for batch_size in self.batch_sizes:
-            num_blocks = batch_size
-            if self.bsh_cache_layout:
-                cache_shape = [
-                    num_blocks,
-                    block_size,
-                    n_heads_kv_cache,
-                    self.attention_head_size,
-                ]
-                self.cache_shape[batch_size] = [
-                    num_blocks,
-                    block_size,
-                    n_heads_kv_cache // self.tp_degree,
-                    self.attention_head_size,
-                ]
-            else:
-                cache_shape = [
-                    block_size,
-                    num_blocks,
-                    n_heads_kv_cache,
-                    self.attention_head_size,
-                ]
-                self.cache_shape[batch_size] = [
-                    block_size,
-                    num_blocks,
-                    n_heads_kv_cache // self.tp_degree,
-                    self.attention_head_size,
-                ]
-            if (
-                hasattr(torch, "float8_e4m3fn")
-                and self.cache_dtype == torch.float8_e4m3fn
-            ):
-                int8_cpu_cache = torch.zeros(
-                    cache_shape, dtype=torch.uint8
-                )  # Cannot directly use fp8: *** RuntimeError: "fill_cpu" not implemented for 'Float8_e4m3fn'
-                cpu_cache = int8_cpu_cache.to(torch.float8_e4m3fn)
-            else:
-                cpu_cache = torch.zeros(cache_shape, dtype=self.cache_dtype)
-            if self.shard_over_batch:
-                assert not self.bsh_cache_layout, (
-                    "shard-over-batch for GQA with BSH cache layout is not supported."
-                )
-                self.cache_shape[batch_size] = [
-                    block_size,
-                    num_blocks // self.tp_degree,
-                    n_heads_kv_cache,
-                    self.attention_head_size,
-                ]
-                self.attn_k_cache[batch_size] = manipulator.shard_along(
-                    cpu_cache, dim=1
-                )
-                self.attn_v_cache[batch_size] = manipulator.shard_along(
-                    cpu_cache, dim=1
-                )
-            else:
-                assert (n_heads_kv_cache >= self.tp_degree) and (
-                    n_heads_kv_cache % self.tp_degree == 0
-                ), (
-                    f"cannot shard along kv_heads dimension: n_kv_head={n_heads_kv_cache}, tp_degree={self.tp_degree}"
-                )
-                self.attn_k_cache[batch_size] = manipulator.shard_along(
-                    cpu_cache, dim=2
-                )
-                self.attn_v_cache[batch_size] = manipulator.shard_along(
-                    cpu_cache, dim=2
-                )
+        if self.bsh_cache_layout:
+            cache_shape = [
+                self.batch_size,
+                self.n_positions,
+                n_heads_kv_cache,
+                self.attention_head_size,
+            ]
+            self.cache_shape = [
+                self.batch_size,
+                self.n_positions,
+                n_heads_kv_cache // self.tp_degree,
+                self.attention_head_size,
+            ]
+        else:
+            cache_shape = [
+                self.n_positions,
+                self.batch_size,
+                n_heads_kv_cache,
+                self.attention_head_size,
+            ]
+            self.cache_shape = [
+                self.n_positions,
+                self.batch_size,
+                n_heads_kv_cache // self.tp_degree,
+                self.attention_head_size,
+            ]
+        cpu_cache = torch.zeros(cache_shape, dtype=self.cache_dtype)
+        assert (n_heads_kv_cache >= self.tp_degree) and (
+            n_heads_kv_cache % self.tp_degree == 0
+        ), (
+            f"cannot shard along kv_heads dimension: n_kv_head={n_heads_kv_cache}, tp_degree={self.tp_degree}"
+        )
+        self.attn_k_cache = manipulator.shard_along(cpu_cache, dim=2)
+        self.attn_v_cache = manipulator.shard_along(cpu_cache, dim=2)
 
     def assign_caches(self, layer, buckets_from_src=False):
-        batch_sizes = self.batch_sizes
-        if buckets_from_src:
-            # In continuous batching, we exclusively use batch_size=1 for parallel context encoding.
-            # But still use all batch_sizes for decoding.
-            batch_sizes = layer.batch_sizes
-        for batch_size in batch_sizes:
-            self.attn_k_cache[batch_size] = layer.attn_k_cache[batch_size]
-            self.attn_v_cache[batch_size] = layer.attn_v_cache[batch_size]
-            self.cache_shape[batch_size] = layer.cache_shape[batch_size]
+        self.attn_k_cache = layer.attn_k_cache
+        self.attn_v_cache = layer.attn_v_cache
+        self.cache_shape = layer.cache_shape
 
     def all_parameters(self):
         return [
@@ -1441,22 +1403,22 @@ class DecoderLayer:
     def reset(self):
         for batch_size in self.batch_sizes:
             # CPU compilation sometimes returns tensors in a list, eg. [tensor(...), tensor(...)]
-            if isinstance(self.attn_k_cache[batch_size], list):
-                self.attn_k_cache[batch_size] = torch.cat(self.attn_k_cache[batch_size])
+            if isinstance(self.attn_k_cache, list):
+                self.attn_k_cache = torch.cat(self.attn_k_cache)
             zero_cache = torch.zeros(
-                self.attn_k_cache[batch_size].shape,
-                dtype=self.attn_k_cache[batch_size].dtype,
+                self.attn_k_cache.shape,
+                dtype=self.attn_k_cache.dtype,
             )
             zero_cache = [
                 zero_cache
                 for _ in range(self.neuron_config.get_local_tp(self.tp_degree))
             ]
             if not self._cpu_compile:
-                ops.parallel_write(self.attn_k_cache[batch_size], zero_cache)
-                ops.parallel_write(self.attn_v_cache[batch_size], zero_cache)
+                ops.parallel_write(self.attn_k_cache, zero_cache)
+                ops.parallel_write(self.attn_v_cache, zero_cache)
             else:
-                self.attn_k_cache[batch_size] = zero_cache
-                self.attn_v_cache[batch_size] = zero_cache
+                self.attn_k_cache = zero_cache
+                self.attn_v_cache = zero_cache
 
     def assign_parameters(self, layer):
         self.pre_attn_ln_weight = layer.pre_attn_ln_weight
@@ -1749,11 +1711,7 @@ class DecoderProgram:
     def _fill_io_tensors(self, input_tensors, output_tensors, layers):
         end = self.n_positions_list[-1]
         for layer in layers:
-            # There is only ever one single cache for batch_size, sequence_length
-            for cache in (
-                next(iter(layer.attn_k_cache.values())),
-                next(iter(layer.attn_v_cache.values())),
-            ):
+            for cache in layer.attn_k_cache, layer.attn_v_cache:
                 cache_slice = self.manipulator.slice_on_nc(
                     cache, 0, start=0, end=end, step=1
                 )
