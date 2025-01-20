@@ -22,7 +22,6 @@ from safetensors import safe_open
 from torch.nn.parameter import UninitializedParameter
 from transformers import AutoConfig
 from transformers.utils import hub
-from transformers_neuronx import constants
 
 # Disable lazy module warning since torch-neuronx version is pinned
 warnings.filterwarnings("ignore", category=UserWarning, module="torch.nn.modules.lazy")
@@ -408,9 +407,6 @@ class PretrainedModel(LowMemoryModule):
                     f"Max context_length_estimate {max_cle} cannot be more than max n_positions {max_n_pos}."
                 )
             neuron_config = kwargs.get("neuron_config", None)
-            bsh_cache_layout = False
-            if neuron_config is not None:
-                bsh_cache_layout = neuron_config.cache_layout == constants.LAYOUT_BSH
             continuous_batching = neuron_config and neuron_config.continuous_batching
             if continuous_batching:
                 batch_size_for_shared_caches = (
@@ -419,16 +415,6 @@ class PretrainedModel(LowMemoryModule):
                 expected_batch_size = kwargs.get("batch_size")
                 assert batch_size_for_shared_caches == expected_batch_size, (
                     f"invalid batch_size_for_shared_caches ({batch_size_for_shared_caches}), {expected_batch_size} is expected"
-                )
-                if bsh_cache_layout:
-                    assert isinstance(n_positions, list) and len(n_positions) == 1
-                    assert (
-                        isinstance(context_length_estimate, list)
-                        and len(context_length_estimate) == 1
-                    ), "BSH cache layout does not support multi-bucketing"
-            else:
-                assert not bsh_cache_layout, (
-                    "BSH cache layout can only be configured with continuous batching."
                 )
 
         _sanity_check(**kwargs)

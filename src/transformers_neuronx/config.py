@@ -67,8 +67,6 @@ class NeuronConfig:
             To be selected from `["HSB", "BSH"]`.
         collectives_layout: Layout to be used for collectives within attention.
             To be selected from `["HSB", "BSH"]`.
-        cache_layout: Layout to be used for storing the KV cache.
-            To be selected from `["SBH", "BSH"]`.
         padding_side: The expected tokenizer batch padding side. See:
             https://huggingface.co/docs/transformers/v4.39.0/en/main_classes/tokenizer#transformers.PreTrainedTokenizer.padding_side
             The default padding side is "left", however using "right"
@@ -100,7 +98,6 @@ class NeuronConfig:
         continuous_batching: Optional[ContinuousBatchingConfig] = None,
         attention_layout: Layout = Layout.HSB,
         collectives_layout: Layout = Layout.HSB,
-        cache_layout: Layout = Layout.SBH,
         padding_side: str = "left",
         group_query_attention: Optional[GQA] = None,
         bf16_rms_norm: bool = False,
@@ -151,7 +148,6 @@ class NeuronConfig:
             self.padding_side = "right"
         self.attention_layout = attention_layout
         self.collectives_layout = collectives_layout
-        self.cache_layout = cache_layout
         self.log_softmax_scores = log_softmax_scores
         self.group_query_attention = group_query_attention
         if self.group_query_attention is not None:
@@ -207,12 +203,6 @@ class NeuronConfig:
     @property
     def use_2d_cache_ids(self):
         return self.lhs_aligned
-
-    @property
-    def bsh_cache_layout(self):
-        from transformers_neuronx import constants
-
-        return self.cache_layout == constants.Layout.BSH
 
     @property
     def vectorize_last_token_id(self):

@@ -100,10 +100,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         self.tag = tag
         self._cpu_compile = False
 
-    @property
-    def bsh_cache_layout(self):
-        return self.neuron_config.cache_layout == constants.LAYOUT_BSH
-
     def check_gqa_fallback(self):
         """
         Check if a fallback mechanism is needed for a user-provided GQA config.
@@ -676,7 +672,7 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
 
     def _hlo_layers_params(self, param_builder, layers, n_positions):
         layers_caches = []
-        dim_size = {1: n_positions} if self.bsh_cache_layout else {0: n_positions}
+        dim_size = {0: n_positions}
         for layer in layers:
             layer_caches = []
             for cache in layer.attn_k_cache, layer.attn_v_cache:
@@ -1275,10 +1271,6 @@ class DecoderLayer:
             self.neuron_config.group_query_attention == constants.GQA.SHARD_OVER_BATCH
         )
 
-    @property
-    def bsh_cache_layout(self):
-        return self.neuron_config.cache_layout == constants.LAYOUT_BSH
-
     def init_caches(self):
         n_heads_kv_cache = self.n_kv_head
 
@@ -1300,32 +1292,18 @@ class DecoderLayer:
                 rank_id=self.neuron_config.rank_id,
                 local_tp_degree=self.neuron_config.get_local_tp(self.tp_degree),
             )
-        if self.bsh_cache_layout:
-            cache_shape = [
-                self.batch_size,
-                self.n_positions,
-                n_heads_kv_cache,
-                self.attention_head_size,
-            ]
-            self.cache_shape = [
-                self.batch_size,
-                self.n_positions,
-                n_heads_kv_cache // self.tp_degree,
-                self.attention_head_size,
-            ]
-        else:
-            cache_shape = [
-                self.n_positions,
-                self.batch_size,
-                n_heads_kv_cache,
-                self.attention_head_size,
-            ]
-            self.cache_shape = [
-                self.n_positions,
-                self.batch_size,
-                n_heads_kv_cache // self.tp_degree,
-                self.attention_head_size,
-            ]
+        cache_shape = [
+            self.n_positions,
+            self.batch_size,
+            n_heads_kv_cache,
+            self.attention_head_size,
+        ]
+        self.cache_shape = [
+            self.n_positions,
+            self.batch_size,
+            n_heads_kv_cache // self.tp_degree,
+            self.attention_head_size,
+        ]
         cpu_cache = torch.zeros(cache_shape, dtype=self.cache_dtype)
         assert (n_heads_kv_cache >= self.tp_degree) and (
             n_heads_kv_cache % self.tp_degree == 0

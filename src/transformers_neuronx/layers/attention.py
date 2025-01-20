@@ -202,11 +202,6 @@ def fused_kv_update_cache(
     KeyCache[I], ValueCache[I] = Keys, Values
     """
 
-    # Check K/V cache layout
-    bsh_cache_layout = False
-    if neuron_config is not None:
-        bsh_cache_layout = neuron_config.cache_layout == constants.LAYOUT_BSH
-
     dtype = cached_keys.dtype
     use_2d_cache_ids = len(cache_ids.sizes) > 1
     if not use_2d_cache_ids:
@@ -217,12 +212,9 @@ def fused_kv_update_cache(
     # 2D cache_ids
     cache_ids = hlo.transpose(cache_ids, 0, 1)
     assign_func = hlo.gen_assign_func(dtype)
-    if bsh_cache_layout:
-        n_seqs, n_positions, n_kv_heads, d_head = cached_keys.sizes
-        n_active_seqs, n_active_tokens, _, _ = keys.sizes
-    else:
-        n_positions, n_seqs, n_kv_heads, d_head = cached_keys.sizes
-        n_active_tokens, n_active_seqs, _, _ = keys.sizes
+    # K/V cache layout is always SBH
+    n_positions, n_seqs, n_kv_heads, d_head = cached_keys.sizes
+    n_active_tokens, n_active_seqs, _, _ = keys.sizes
     assert cache_ids.sizes[0] == n_active_tokens, (
         f"inconsistent sizes between cache_ids ({cache_ids.sizes}) and values ({keys.sizes})"
     )
@@ -277,20 +269,12 @@ def fused_kv_update_cache(
             to_apply=assign_func,
         )
 
-        if bsh_cache_layout:
-            updated_keys = hlo.reshape(
-                updated_keys, [n_seqs, n_positions, n_kv_heads, d_head]
-            )
-            updated_vals = hlo.reshape(
-                updated_vals, [n_seqs, n_positions, n_kv_heads, d_head]
-            )
-        else:
-            updated_keys = hlo.reshape(
-                updated_keys, [n_positions, n_seqs, n_kv_heads, d_head]
-            )
-            updated_vals = hlo.reshape(
-                updated_vals, [n_positions, n_seqs, n_kv_heads, d_head]
-            )
+        updated_keys = hlo.reshape(
+            updated_keys, [n_positions, n_seqs, n_kv_heads, d_head]
+        )
+        updated_vals = hlo.reshape(
+            updated_vals, [n_positions, n_seqs, n_kv_heads, d_head]
+        )
 
     elif (n_active_tokens == n_positions) and (n_seqs > n_active_seqs):
         # cache (2D): [n_positions * n_seqs, n_kv_heads * d_head]
@@ -332,20 +316,12 @@ def fused_kv_update_cache(
             to_apply=assign_func,
         )
 
-        if bsh_cache_layout:
-            updated_keys = hlo.reshape(
-                updated_keys, [n_seqs, n_positions, n_kv_heads, d_head]
-            )
-            updated_vals = hlo.reshape(
-                updated_vals, [n_seqs, n_positions, n_kv_heads, d_head]
-            )
-        else:
-            updated_keys = hlo.reshape(
-                updated_keys, [n_positions, n_seqs, n_kv_heads, d_head]
-            )
-            updated_vals = hlo.reshape(
-                updated_vals, [n_positions, n_seqs, n_kv_heads, d_head]
-            )
+        updated_keys = hlo.reshape(
+            updated_keys, [n_positions, n_seqs, n_kv_heads, d_head]
+        )
+        updated_vals = hlo.reshape(
+            updated_vals, [n_positions, n_seqs, n_kv_heads, d_head]
+        )
 
     else:
         raise NotImplementedError(
@@ -400,11 +376,6 @@ def score(
     NOTE: Since we may pad along head dimension,
           tp_degree argument is required to be an integer for grouped-query attention models.
     """
-    # Check K/V cache layout
-    bsh_cache_layout = False
-    if neuron_config is not None:
-        bsh_cache_layout = neuron_config.cache_layout == constants.LAYOUT_BSH
-
     # Check for MQA/GQA attention
     if n_kv_heads != 0:
         _, _, n_kv_heads_tp, _ = keys.sizes
@@ -413,7 +384,7 @@ def score(
         keys = hlo.repeat_kv(keys, n_repeats=n_repeats, repeat_dim=2)
 
     # Q @ K
-    batch_dimensions = [0, 2] if bsh_cache_layout else [1, 2]
+    batch_dimensions = [1, 2]
     dot_dims = dict(
         lhs_contracting_dimensions=[3],
         lhs_batch_dimensions=batch_dimensions,
@@ -509,12 +480,10 @@ def context(
     f32 = scribe.f32
 
     shard_over_batch = False
-    bsh_cache_layout = False
     if neuron_config is not None:
         shard_over_batch = (
             neuron_config.group_query_attention == constants.GQA.SHARD_OVER_BATCH
         )
-        bsh_cache_layout = neuron_config.cache_layout == constants.LAYOUT_BSH
 
     n_seqs, n_heads, n_active_tokens, n_active_tokens = active_score.sizes
     _, _, _, n_positions = past_scores.sizes
@@ -523,12 +492,8 @@ def context(
         n_seqs = n_seqs_per_nc * tp_degree
         n_heads_tp = n_heads // tp_degree
     else:
-        if bsh_cache_layout:
-            _, n_positions, n_kv_heads_tp, d_head = past_values.sizes
-            n_seqs = active_values.sizes[0]
-        else:
-            n_positions, _, n_kv_heads_tp, d_head = past_values.sizes
-            n_seqs = active_values.sizes[1]
+        n_positions, _, n_kv_heads_tp, d_head = past_values.sizes
+        n_seqs = active_values.sizes[1]
         _, n_heads_tp, _, _ = active_score.sizes
 
     # Upcast to f32 before computation
@@ -605,9 +570,8 @@ def context(
     # lhs (past_prob): (n_seqs, n_heads, n_active_tokens, n_positions)
     # rhs (value):
     # - SBH cache layout: (n_positions, n_seqs, n_heads, d_head)
-    # - BSH cache layout: (n_seqs, n_positions, n_heads, d_head)
-    rhs_contracting_dimensions = [1] if bsh_cache_layout else [0]
-    rhs_batch_dimensions = [0, 2] if bsh_cache_layout else [1, 2]
+    rhs_contracting_dimensions = [0]
+    rhs_batch_dimensions = [1, 2]
     dot_dims = dict(
         lhs_contracting_dimensions=[3],
         lhs_batch_dimensions=[0, 1],
@@ -659,12 +623,10 @@ def context_combined(
     If dtype is None, uses values datatype.
     """
     shard_over_batch = False
-    bsh_cache_layout = False
     if neuron_config is not None:
         shard_over_batch = (
             neuron_config.group_query_attention == constants.GQA.SHARD_OVER_BATCH
         )
-        bsh_cache_layout = neuron_config.cache_layout == constants.LAYOUT_BSH
 
     if skip_softmax:
         probs = score
@@ -689,15 +651,12 @@ def context_combined(
             _, n_heads, _, _ = probs.sizes
             n_heads_tp = n_heads // tp_degree
         else:
-            if bsh_cache_layout:
-                n_seqs, _, n_kv_heads_tp, d_head = values.sizes
-            else:
-                _, n_seqs, n_kv_heads_tp, d_head = values.sizes
+            _, n_seqs, n_kv_heads_tp, d_head = values.sizes
             n_repeats = n_heads_tp // n_kv_heads_tp
         values = hlo.repeat_kv(values, n_repeats=n_repeats, repeat_dim=2)
 
-    rhs_contracting_dimensions = [1] if bsh_cache_layout else [0]
-    rhs_batch_dimensions = [0, 2] if bsh_cache_layout else [1, 2]
+    rhs_contracting_dimensions = [0]
+    rhs_batch_dimensions = [1, 2]
     dot_dims = dict(
         lhs_contracting_dimensions=[3],
         lhs_batch_dimensions=[0, 1],

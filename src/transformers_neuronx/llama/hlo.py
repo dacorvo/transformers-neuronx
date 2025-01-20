@@ -16,7 +16,7 @@ from typing import Optional
 
 from transformers_neuronx import hlo, utils
 from transformers_neuronx import constants
-from transformers_neuronx.layers import transformer, rotary, attention, attention_utils
+from transformers_neuronx.layers import transformer, rotary, attention
 from transformers_neuronx.llama.config import LlamaConfig
 from transformers_neuronx.config import NeuronConfig
 from transformers_neuronx.constants import LAYOUT_BSH, LAYOUT_HSB
@@ -835,18 +835,11 @@ class LlamaForSamplingNoEmbeddingHlo:
         # Q = Q / sqrt(d_head)
         query = attention.scale(query, d_head)
 
-        # In BSH cache layout, the output of QKV linear projection is still kept as SBH for all QKV.
-        bsh_cache_layout = False
+        # The output of QKV linear projection is always SBH.
         batch_dim = 1
-        if self.neuron_config is not None:
-            bsh_cache_layout = self.neuron_config.cache_layout == constants.LAYOUT_BSH
-        if bsh_cache_layout:
-            query, key, value = attention_utils.transpose_qkv(query, key, value)
-            batch_dim = 0
-
         # Single Token Generation ("Prefetch"-style)
         if active_mask is not None:
-            n_active_tokens = key.sizes[1] if bsh_cache_layout else key.sizes[0]
+            n_active_tokens = key.sizes[0]
             if (
                 n_active_tokens > 1
                 and self.neuron_config
@@ -944,9 +937,7 @@ class LlamaForSamplingNoEmbeddingHlo:
         # Multi-Token Context Encoding
         else:
             batch_size = query.sizes[batch_dim]
-            if (
-                self.neuron_config.lhs_aligned or batch_size == 1
-            ) and not self.neuron_config.bsh_cache_layout:
+            if self.neuron_config.lhs_aligned or batch_size == 1:
                 context = attention.flash_attention(query, key, value)
             else:
                 # do not use flash attention for lhs padded (right aligned) batch > 1 case
