@@ -463,19 +463,16 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         return extras
 
     def _build_program(self):
-        hlo_modules = dict()
-        debug_tensors = dict()
-        for npos, batch_size in itertools.product(
-            self.n_positions_list, self.batch_size
-        ):
-            hlo_modules[npos, batch_size], debug_tensors[npos, batch_size] = (
-                self._hlo_fully_unrolled(npos, batch_size)
-            )
+        assert len(self.n_positions_list) == 1
+        assert len(self.batch_size) == 1
+        n_positions = self.n_positions_list[0]
+        batch_size = self.batch_size[0]
+        hlo_module = self._hlo_fully_unrolled(n_positions, batch_size)
         num_inputs = len(self.inputs_sdim)
         return DecoderProgramFullyUnrolled(
             self.neuron_config,
             self.layers,
-            next(iter(hlo_modules.values())),
+            hlo_module,
             num_inputs,
             self.tp_degree,
             self.n_positions_list,
@@ -567,13 +564,10 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
 
             # Filter out the None's in outputs
             outputs = [o for o in outputs if o is not None]
-            return outputs
+            root_shapes = [shape.dtype[shape.sizes] for shape in outputs]
+            return scribe.tuple(*root_shapes).Tuple(*outputs)
 
-        debug_tensors = {}
-        patched_func = global_debugger.populate_debug_tensors(debug_tensors)(
-            fully_unrolled
-        )
-        return compiler.compile_py_func(patched_func), debug_tensors
+        return compiler.compile_py_func(fully_unrolled)
 
     def _hlo_multi_layer(self, n_positions, batch_size):
         self.builder.n_positions = n_positions
