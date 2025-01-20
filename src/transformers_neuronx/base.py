@@ -155,98 +155,20 @@ class NeuronModelBase(PretrainedModel):
         return self.decoder_lm_head.forward(hidden, *args)
 
     def context(self, hidden, cache_ids, start_ids, last_token_id, *rest):
-        """A helper to process context (prompt)
-        1) if there is available context encoding model (infered from self.context_buckets)
-            - when context_length >= estimate, slice the context up to estimate,
-                and call context encoding model
-            - when context_length < estimate, skip and fall back to serial token generation model
-
-            and mark `current` accrodingly
-
-        2) process the left over tokens accroding to `current`
-            - if there is no context encoding model, simply do serial token generation for context
-
-        Other arguments that are required by the model are contained in `rest`.
-        """
-        context_length = hidden.shape[1]
-        batch_size = start_ids.shape[0]
-
+        """A helper to process context (prompt)"""
         all_logits = []  # Collect all logits if neuron_config.output_all_logits is True
 
-        current = 0
+        assert len(self.decoder_lm_head_for_context) == 1
+        model = next(iter(self.decoder_lm_head_for_context.values()))
 
-        estimate = find_bucket(self.context_buckets, context_length)
-
-        if estimate is not None:
-            hidden_context = hidden
-            cache_context = cache_ids
-
-            # Slice context that when it is too large
-            if context_length > estimate:
-                current = estimate
-                hidden_context = hidden[:, :estimate]
-                cache_context = cache_ids[:estimate]
-
-            # Cannot use context encoding for a context that is too small. This
-            # is because the caller must be aware of the cache-ids/start-ids
-            # used.
-            elif context_length < estimate:
-                raise ValueError(
-                    f"context_length ({context_length}) shouldn't be smaller than estimate ({estimate})"
-                )
-
-            # Directly pass input to the context network when exactly sized
-            else:
-                current = estimate
-
-            if current == estimate:
-                model = self.decoder_lm_head_for_context[estimate, batch_size]
-                if self.neuron_config.log_softmax_scores:
-                    logits, scores = model.forward(
-                        hidden_context, cache_context, start_ids, last_token_id, *rest
-                    )
-                else:
-                    logits = model.forward(
-                        hidden_context, cache_context, start_ids, last_token_id, *rest
-                    )
-                if self.neuron_config.output_all_logits:
-                    all_logits.append(logits[:, : last_token_id + 1, :])
-
-        # process the leftovers context
-        while current < context_length:
-            # find the optimal "window"
-            estimate = None
-
-            # when the leftovers is smaller than estimate, fall back to single token generation
-            # TODO: can we pad?
-            if estimate is None or context_length - current < estimate:
-                for i in range(current, context_length):
-                    cache_ids = torch.as_tensor([i], dtype=torch.int32)
-                    hidden_slice = hidden[:, i : i + 1].contiguous()
-                    logits = self.decoder_lm_head(
-                        hidden_slice, cache_ids, start_ids, last_token_id, *rest
-                    )
-                    if self.neuron_config.output_all_logits:
-                        all_logits.append(logits)
-                break
-
-            hidden_slice = hidden[:, current : current + estimate].contiguous()
-            cache_ids = torch.as_tensor(
-                [i for i in range(current, current + estimate)], dtype=torch.int32
+        if self.neuron_config.log_softmax_scores:
+            logits, scores = model.forward(
+                hidden, cache_ids, start_ids, last_token_id, *rest
             )
-            last_token_id = torch.as_tensor([estimate - 1])
-            if self.neuron_config.log_softmax_scores:
-                logits, scores = self.decoder_lm_head_for_window_context[estimate](
-                    hidden_slice, cache_ids, start_ids, last_token_id, *rest
-                )
-            else:
-                logits = self.decoder_lm_head_for_window_context[estimate](
-                    hidden_slice, cache_ids, start_ids, last_token_id, *rest
-                )
-            if self.neuron_config.output_all_logits:
-                all_logits.append(logits)
-
-            current += estimate
+        else:
+            logits = model.forward(hidden, cache_ids, start_ids, last_token_id, *rest)
+        if self.neuron_config.output_all_logits:
+            all_logits.append(logits[:, : last_token_id + 1, :])
 
         if all_logits:
             logits = torch.cat(all_logits, dim=1)
