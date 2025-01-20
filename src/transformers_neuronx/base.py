@@ -286,10 +286,7 @@ class NeuronModelBase(PretrainedModel):
             # token generation
             return input_ids, cache_ids, last_token_id, block_tables, context_lens
 
-        if hasattr(self, "context_buckets"):
-            estimate = find_bucket(self.context_buckets, context_length)
-        else:
-            estimate = self.context_length_estimate
+        estimate = self.context_buckets[-1]
 
         if estimate:
             # when context length is larger than estimate, last_token_id=estimate-1
