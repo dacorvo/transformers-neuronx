@@ -204,10 +204,8 @@ def fused_kv_update_cache(
 
     # Check K/V cache layout
     bsh_cache_layout = False
-    use_1d_query = False
     if neuron_config is not None:
         bsh_cache_layout = neuron_config.cache_layout == constants.LAYOUT_BSH
-        use_1d_query = neuron_config and neuron_config.use_1d_query
 
     dtype = cached_keys.dtype
     use_2d_cache_ids = len(cache_ids.sizes) > 1
@@ -303,58 +301,51 @@ def fused_kv_update_cache(
         #        +-----------------------------------------------
         # seq_ids:      cache_ids: (n_active_tokens, n_seqs)     values: (n_active_tokens, n_seqs, n_heads, d_head)
         # seq 1         [[0,1,2,3,4,5]]                          [[A,B,C,D,E,F]]
-        if use_1d_query:  # also covers chunked prefill case
-            updated_keys, updated_vals = hlo.reshape_and_cache(
-                keys, vals, cached_keys, cached_vals, slot_mapping=start_ids
+        keys_r = hlo.reshape(keys, [n_active_tokens, kv_hidden_size])
+        vals_r = hlo.reshape(vals, [n_active_tokens, kv_hidden_size])
+
+        indices = attention_utils.update_indices_context(
+            cached_keys, cache_ids, start_ids, neuron_config
+        )
+
+        # For prefill, assuming n_active_seqs == 1, due to KV cache layout issue.
+        assert n_active_seqs == 1, "n_active_seqs is expected to be 1 for 2D cache_ids"
+
+        scatter_dims = dict(
+            update_window_dims=[1],
+            inserted_window_dims=[0],
+            scatter_dims_to_operand_dims=[0],
+            index_vector_dim=1,
+        )
+        updated_keys = hlo.scatter(
+            cached_keys_r,
+            indices,
+            keys_r,
+            scatter_dims=scatter_dims,
+            to_apply=assign_func,
+        )
+        updated_vals = hlo.scatter(
+            cached_vals_r,
+            indices,
+            vals_r,
+            scatter_dims=scatter_dims,
+            to_apply=assign_func,
+        )
+
+        if bsh_cache_layout:
+            updated_keys = hlo.reshape(
+                updated_keys, [n_seqs, n_positions, n_kv_heads, d_head]
+            )
+            updated_vals = hlo.reshape(
+                updated_vals, [n_seqs, n_positions, n_kv_heads, d_head]
             )
         else:
-            keys_r = hlo.reshape(keys, [n_active_tokens, kv_hidden_size])
-            vals_r = hlo.reshape(vals, [n_active_tokens, kv_hidden_size])
-
-            indices = attention_utils.update_indices_context(
-                cached_keys, cache_ids, start_ids, neuron_config
+            updated_keys = hlo.reshape(
+                updated_keys, [n_positions, n_seqs, n_kv_heads, d_head]
             )
-
-            # For prefill, assuming n_active_seqs == 1, due to KV cache layout issue.
-            assert n_active_seqs == 1, (
-                "n_active_seqs is expected to be 1 for 2D cache_ids"
+            updated_vals = hlo.reshape(
+                updated_vals, [n_positions, n_seqs, n_kv_heads, d_head]
             )
-
-            scatter_dims = dict(
-                update_window_dims=[1],
-                inserted_window_dims=[0],
-                scatter_dims_to_operand_dims=[0],
-                index_vector_dim=1,
-            )
-            updated_keys = hlo.scatter(
-                cached_keys_r,
-                indices,
-                keys_r,
-                scatter_dims=scatter_dims,
-                to_apply=assign_func,
-            )
-            updated_vals = hlo.scatter(
-                cached_vals_r,
-                indices,
-                vals_r,
-                scatter_dims=scatter_dims,
-                to_apply=assign_func,
-            )
-
-            if bsh_cache_layout:
-                updated_keys = hlo.reshape(
-                    updated_keys, [n_seqs, n_positions, n_kv_heads, d_head]
-                )
-                updated_vals = hlo.reshape(
-                    updated_vals, [n_seqs, n_positions, n_kv_heads, d_head]
-                )
-            else:
-                updated_keys = hlo.reshape(
-                    updated_keys, [n_positions, n_seqs, n_kv_heads, d_head]
-                )
-                updated_vals = hlo.reshape(
-                    updated_vals, [n_positions, n_seqs, n_kv_heads, d_head]
-                )
 
     else:
         raise NotImplementedError(

@@ -2010,13 +2010,7 @@ def decoder_attention_mask_lhs_aligned(
     batch_size, n_active_tokens = cache_ids.sizes
     if n_active_tokens == n_positions:
         # Context Encoding
-        if neuron_config and neuron_config.use_1d_query:
-            # For concatenated prompt encoding (1D query), last_token_id is used as prompt_lens
-            return decoder_attention_block_diagonal_causal_mask(
-                last_token_id, n_positions
-            )
-        else:
-            return decoder_attention_mask_lhs_aligned_context(cache_ids, n_positions)
+        return decoder_attention_mask_lhs_aligned_context(cache_ids, n_positions)
     else:
         # Token generation
         return decoder_attention_mask_lhs_aligned_token_padded(

@@ -416,7 +416,7 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
 
     def forward(self, *inputs):
         hidden, cache_ids, start_ids, *_ = inputs
-        batch_size = 1 if self.neuron_config.use_1d_query else start_ids.shape[0]
+        batch_size = start_ids.shape[0]
         sequence_dim, *_ = self.inputs_sdim
         sequence_length = hidden.shape[sequence_dim]
         if sequence_length == 1:

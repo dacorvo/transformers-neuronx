@@ -209,10 +209,6 @@ class NeuronConfig:
         return self.lhs_aligned
 
     @property
-    def use_1d_query(self):
-        return self.cache_layout == Layout.BSH and self.padding_side == "right"
-
-    @property
     def bsh_cache_layout(self):
         from transformers_neuronx import constants
 

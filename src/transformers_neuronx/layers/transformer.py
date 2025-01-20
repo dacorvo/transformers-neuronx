@@ -89,24 +89,14 @@ def inputs(
     else:
         cache_ids = s32[n_active_tokens].Parameter(parameter_number=1)  # 1d cache_ids
 
-    if cache_2d and neuron_config.use_1d_query and n_active_tokens > 1:
-        start_ids = s32[n_active_tokens].Parameter(parameter_number=2)
-    else:
-        start_ids = s32[batch_size].Parameter(parameter_number=2)
+    start_ids = s32[batch_size].Parameter(parameter_number=2)
 
     block_table = None
     context_lens = None
     # Build parameters for last_token_id and others
     if cache_2d:
-        if neuron_config and neuron_config.use_1d_query and n_active_tokens > 1:
-            # context encoding: last_token_id is used as prompt_lens
-            max_num_seqs = (
-                neuron_config.continuous_batching.batch_size_for_shared_caches
-            )
-            last_token_id = s32[max_num_seqs].Parameter(parameter_number=3)
-        else:
-            # regular token gen
-            last_token_id = s32[batch_size].Parameter(parameter_number=3)
+        # regular token gen
+        last_token_id = s32[batch_size].Parameter(parameter_number=3)
     else:
         last_token_id = s32[1].Parameter(parameter_number=3)
 
@@ -169,18 +159,12 @@ def ln_lm_head(
     else:
         hidden_size, n_active_tokens, batch_size = hidden.sizes
 
-    if (
-        neuron_config
-        and neuron_config.is_sequence_parallel
-        and not return_all_outputs
-        and not neuron_config.use_1d_query
-    ):
+    if neuron_config and neuron_config.is_sequence_parallel and not return_all_outputs:
         # For sequence parallel norm, we need to gather the hidden but we don't need the full hidden (which creates a large
         # tensor). Since we only need last_token_id, we can first pick out last_token_id % seq_shard_len from each tp rank,
         # then all-gather only this part, and then pick out the last_token_id // seq_shard_len to pick out the hidden coming
         # from the correct rank.
 
-        # We do not enable for use_1d_query case since the logic is more involved.
         last_token_id_pos_in_shard = hlo.remainder(last_token_id, n_active_tokens)
         hidden = _dynamic_logits_slice(
             hidden, last_token_id_pos_in_shard, neuron_config
@@ -257,22 +241,14 @@ def rms_lm_head(
         batch_size, n_active_tokens, hidden_size = hidden.sizes
     else:
         hidden_size, n_active_tokens, batch_size = hidden.sizes
-    if neuron_config and neuron_config.use_1d_query:
-        batch_size = last_token_id.sizes[0]
     dtype = hidden.dtype
 
-    if (
-        neuron_config
-        and neuron_config.is_sequence_parallel
-        and not return_all_outputs
-        and not neuron_config.use_1d_query
-    ):
+    if neuron_config and neuron_config.is_sequence_parallel and not return_all_outputs:
         # For sequence parallel norm, we need to gather the hidden but we don't need the full hidden (which creates a large
         # tensor). Since we only need last_token_id, we can first pick out last_token_id % seq_shard_len from each tp rank,
         # then all-gather only this part, and then pick out the last_token_id // seq_shard_len to pick out the hidden coming
         # from the correct rank.
 
-        # We do not enable for use_1d_query case since the logic is more involved.
         last_token_id_pos_in_shard = hlo.remainder(last_token_id, n_active_tokens)
         hidden = _dynamic_logits_slice(
             hidden, last_token_id_pos_in_shard, neuron_config
@@ -327,21 +303,12 @@ def _dynamic_logits_slice(hidden, last_token_id, neuron_config=None):
 
         # [6,3,9] -> [(0,6),(1,3),(2,9)] -> [6+0*128,3+1*128,9+2*128] -> [6,131,265]
         # last_token_id + iota * n_active_tokens
-        if neuron_config and neuron_config.use_1d_query:
-            # The input is expected to be a list of prompt lengths
-            # Here, we transform prompt_lens to last_token_id with following algorithm
-            # >   last_token_id = max(cumsum(prompt_lens) - 1, 0)
-            last_token_id = hlo.cumsum(last_token_id, dim=0)
-            last_token_id = hlo.subtract(last_token_id, 1)
-            last_token_id = hlo.maximum(last_token_id, 0)
-        else:
-            assert last_token_id.sizes[0] == batch_size, (
-                f"vectorized last_token_id length ({last_token_id.sizes[0]}) is expected to equal to batch size ({batch_size})"
-            )
-            offset = hlo.iota(last_token_id.dtype, last_token_id.sizes, [0])
-            offset = hlo.multiply(offset, n_active_tokens)
-            last_token_id = hlo.add(last_token_id, offset)
-
+        assert last_token_id.sizes[0] == batch_size, (
+            f"vectorized last_token_id length ({last_token_id.sizes[0]}) is expected to equal to batch size ({batch_size})"
+        )
+        offset = hlo.iota(last_token_id.dtype, last_token_id.sizes, [0])
+        offset = hlo.multiply(offset, n_active_tokens)
+        last_token_id = hlo.add(last_token_id, offset)
         hidden = hlo.index_select(hidden, dim=0, index=last_token_id)
         hidden = hlo.reshape(hidden, (last_token_id.sizes[0], 1, hidden_size))
         if not is_bsh:
