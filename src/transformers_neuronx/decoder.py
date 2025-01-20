@@ -56,8 +56,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         is_prefill=True,
         builder=None,
         tag=None,
-        prompt_batch_size=None,
-        token_tree=None,
     ):
         super().__init__()
         self.tp_degree = tp_degree
@@ -68,7 +66,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         self.n_positions = n_positions
         self.n_active_tokens = n_active_tokens
         self.batch_size = batch_size
-        self.prompt_batch_size = prompt_batch_size
         self.attention_head_size = attention_head_size  # TODO: rename to size_per_head
         self.n_head = n_head
         self.n_kv_head = n_kv_head if (n_kv_head > 0) else n_head
@@ -96,7 +93,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         self.return_ranks = -1
         self.builder = builder
         self.check_gqa_fallback()
-        self.token_tree = token_tree
         self.tag = tag
         self._cpu_compile = False
 
@@ -309,12 +305,8 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
 
     def build_weight_shared(
         self,
-        n_positions_list=None,
-        n_active_tokens=None,
-        batch_size=None,
         share_caches=False,
         new=None,
-        embed_weight=None,
     ):
         if new is None:
             cls = type(self)
