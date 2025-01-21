@@ -19,7 +19,6 @@ import hashlib
 from abc import ABC, abstractmethod
 from concurrent.futures import ProcessPoolExecutor
 
-from .bucket import find_bucket
 from .compiler import ParallelKernel
 from .constants import LAYOUT_BSH, LAYOUT_HSB
 from .config import maybe_dump_config
@@ -208,7 +207,7 @@ class NeuronModelBase(PretrainedModel):
             # token generation
             return input_ids, cache_ids, last_token_id, block_tables, context_lens
 
-        estimate = self.context_buckets[-1]
+        estimate = self.config.n_positions[0]
 
         if estimate:
             # when context length is larger than estimate, last_token_id=estimate-1
@@ -265,18 +264,16 @@ class NeuronModelBase(PretrainedModel):
         if (n_active_tokens > 1) and cache_ids.flatten()[0].item() == 0:
             # context encoding
             n_active_seqs, n_active_tokens = input_ids.shape
-            continuous_batching_n_positions = find_bucket(
-                self.context_buckets, n_active_tokens
-            )
+            n_positions = self.config.n_positions[0]
             assert n_active_seqs == cache_ids.shape[0], (
                 f"invalid n_active_seqs ({n_active_seqs} vs {cache_ids.shape[0]})"
             )
-            assert n_active_tokens <= continuous_batching_n_positions, (
-                f"invalid input prompt length ({n_active_tokens} <= {continuous_batching_n_positions})"
+            assert n_active_tokens <= n_positions, (
+                f"invalid input prompt length ({n_active_tokens} <= {n_positions})"
             )
             cache_ids_pad = torch.zeros(
                 n_active_seqs,
-                continuous_batching_n_positions,
+                n_positions,
                 dtype=cache_ids.dtype,
                 device="cpu",
             )
