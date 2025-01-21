@@ -322,9 +322,6 @@ class NeuronModelBase(PretrainedModel):
             if self.neuron_config.use_2d_cache_ids:
                 cache_ids = cache_ids.unsqueeze(0).expand(batch_size, context_length)
 
-        if hasattr(self, "prefixed_length") and self.prefixed_length:
-            cache_ids += self.prefixed_length
-
         return (
             input_ids,
             cache_ids,

@@ -55,7 +55,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         n_kv_head=0,
         neuron_config=None,
         allow_pad=True,
-        prefixed_length=0,
         return_all_outputs=True,
         builder=None,
         tag=None,
@@ -75,7 +74,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         self.amp = amp
         self.num_layers = num_layers
         self.neuron_config = NeuronConfig() if neuron_config is None else neuron_config
-        self.prefixed_length = prefixed_length
         self.layers = []
         self.ln_f_weight = None
         self.ln_f_bias = None
@@ -351,7 +349,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
                 n_kv_head=self.n_kv_head,
                 neuron_config=self.neuron_config,
                 allow_pad=self.allow_pad,
-                prefixed_length=self.prefixed_length,
                 return_all_outputs=self.return_all_outputs,
             )
         new.add_inputs_builder(self.inputs_builder)
@@ -473,7 +470,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             self.tp_degree,
             self.n_positions_list,
             self.batch_size,
-            self.prefixed_length,
             tag=self.tag,
             on_cpu=self._cpu_compile,
         )
@@ -1476,7 +1472,6 @@ class DecoderProgram:
         tp_degree,
         n_positions,
         batch_size,
-        prefixed_length=0,
         tag=None,
         num_exec_repetition=1,
         on_cpu=False,
@@ -1485,7 +1480,6 @@ class DecoderProgram:
         self.layers = layers
         self.batch_size = batch_size
         self.n_positions = n_positions
-        self.prefixed_length = prefixed_length
         self.input_buffers = [
             compiler.gen_zero_input(hlo_module, idx) for idx in range(num_inputs)
         ]
@@ -1578,7 +1572,6 @@ class DecoderProgramFullyUnrolled(DecoderProgram):
         tp_degree,
         n_positions_list,
         batch_sizes,
-        prefixed_length=0,
         tag=None,
         on_cpu=False,
     ):
@@ -1592,7 +1585,6 @@ class DecoderProgramFullyUnrolled(DecoderProgram):
             tp_degree,
             n_positions_list[0],
             batch_sizes[0],
-            prefixed_length,
             tag=tag,
             on_cpu=on_cpu,
         )
