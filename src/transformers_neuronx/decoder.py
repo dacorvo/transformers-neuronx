@@ -417,8 +417,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
 
         outputs = None
         slice_loop_var = range(0, sequence_length, self.n_active_tokens)
-        if self.n_active_tokens > 1 and self.return_all_outputs:
-            slice_loop_var = [0]
 
         for start in slice_loop_var:
             slicing = slice(start, start + self.n_active_tokens)
