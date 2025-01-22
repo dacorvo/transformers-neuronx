@@ -378,35 +378,19 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             )
 
     def forward(self, *inputs):
-        hidden, cache_ids, start_ids, *_ = inputs
-        batch_size = start_ids.shape[0]
-        sequence_dim, *_ = self.inputs_sdim
-        sequence_length = hidden.shape[sequence_dim]
-        if sequence_length == 1:
-            return self.forward_single(*inputs)
-
-        outputs = None
-        slice_loop_var = range(0, sequence_length, self.n_active_tokens)
-
-        for start in slice_loop_var:
-            slicing = slice(start, start + self.n_active_tokens)
-            input_tensors = []
-            for sdim, tensor in zip(self.inputs_sdim, inputs):
-                if sdim is not None:
-                    slices = [slice(None) for _ in tensor.shape]
-                    slices[sdim] = slicing
-                    tensor = tensor[tuple(slices)].contiguous()
-                input_tensors.append(tensor)
-            if self.use_executor:
-                outputs = self.program.execute(
-                    *input_tensors,
-                    return_ranks=self.return_ranks,
-                )
-            else:
-                self.program.inputs_host_to_device(input_tensors, batch_size)
-                self.program.run()
-
-        if not self.use_executor:
+        """
+        This path makes the assumption that inputs are correctly sized for a
+        sequence length of 1. This allows us to avoid checking buckets, slicing,
+        etc.
+        """
+        if self.use_executor:
+            outputs = self.program.execute(
+                *inputs,
+                return_ranks=self.return_ranks,
+            )
+        else:
+            self.program.inputs_host_to_device(inputs)
+            self.program.run()
             outputs = self.program.maybe_logits_device_to_host(
                 return_ranks=self.return_ranks
             )
