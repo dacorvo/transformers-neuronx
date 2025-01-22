@@ -278,9 +278,6 @@ class LowMemoryLayerNorm(torch.nn.LayerNorm, LowMemoryModule):
         self.weight = UninitializedParameter()
         self.bias = UninitializedParameter()
 
-    def reset_parameters(self) -> None:
-        pass
-
 
 class LowMemoryEmbedding(torch.nn.Embedding, LowMemoryModule):
     def __init__(
@@ -308,9 +305,6 @@ class LowMemoryEmbedding(torch.nn.Embedding, LowMemoryModule):
         self.scale_grad_by_freq = scale_grad_by_freq
         self.sparse = sparse
         self.weight = UninitializedParameter()
-
-    def reset_parameters(self) -> None:
-        pass
 
 
 def maybe_download_weights(path_or_repo_id, safe_serialization=True, **kwargs):

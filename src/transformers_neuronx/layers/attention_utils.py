@@ -20,19 +20,6 @@ except ImportError:
     from neuronxcc.nki._private_kernels.attention import attention_isa_kernel
 
 
-def transpose_qkv(query, key, value):
-    """
-    Transform between BSH and SBH cache layout.
-
-    inputs shapes [n_active_tokens, n_seqs, n_heads_tp, d_head]
-    outputs shapes [n_seqs, n_active_tokens, n_heads_tp, d_head]
-    """
-    query = hlo.transpose(query, 0, 1)
-    key = hlo.transpose(key, 0, 1)
-    value = hlo.transpose(value, 0, 1)
-    return query, key, value
-
-
 def update_indices_decode(cached_keys, cache_ids, neuron_config=None):
     n_positions, n_seqs, n_kv_heads, d_head = cached_keys.sizes
     cache_ids_dtype = cache_ids.dtype

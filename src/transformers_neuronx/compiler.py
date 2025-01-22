@@ -17,7 +17,6 @@ import shlex
 import shutil
 import subprocess
 import hashlib
-import tarfile
 from contextlib import contextmanager, nullcontext
 from textwrap import dedent
 import logging
@@ -32,7 +31,6 @@ from torch_neuronx.pyhlo.scribe import HloScribe
 from torch_neuronx.pyhlo.constant.serialize_torch import serialize_torch
 from torch_neuronx.proto import metaneff_pb2
 from transformers_neuronx import ops
-from transformers_neuronx import parallel
 from libneuronxla import neuron_xla_compile
 from libneuronxla.neuron_cc_cache import CacheUrl, create_compile_cache
 from neuronxcc import __version__ as compiler_version
@@ -271,43 +269,6 @@ class DataTypeConverter:
         return self.torch2hlo_mapping[torch_dtype]
 
 
-class Kernel:
-    def __init__(self, hlo_module, neff_bytes, metaneff, tp_degree):
-        self.hlo_module = hlo_module
-        self.neff_bytes = neff_bytes
-        metaneff_bytes = metaneff.SerializeToString()
-        model_cls = torch.classes.neuron.Model
-        self.models = [model_cls(neff_bytes, metaneff_bytes) for _ in range(tp_degree)]
-        self.executor = parallel.Executor(tp_degree)
-
-    def load(self):
-        ops.init()
-        parallel.parallel_load(self.models)
-
-    def __call__(self, inputs):
-        return self.executor.execute(self.models, *inputs)
-
-    def profile_start(self, profile_dir):
-        for model, ntff_path in zip(self.models, self._ntff_paths(profile_dir)):
-            ops.profile_start(model, ntff_path)
-
-    def profile_stop(self, profile_dir):
-        ntff_paths = self._ntff_paths(profile_dir)
-        for model, ntff_path in zip(self.models, ntff_paths):
-            ops.profile_stop(ntff_path)
-        ntff_tar_path = os.path.join(profile_dir, f"{self.hlo_module.name}.ntff.tar")
-        with tarfile.open(ntff_tar_path, "w|") as fp:
-            for idx, ntff_path in enumerate(ntff_paths):
-                fp.add(ntff_path, f"profile_rank_{idx}.ntff")
-
-    def _ntff_paths(self, profile_dir):
-        paths = []
-        for idx in range(len(self.models)):
-            filename = f"{self.hlo_module.name}.{idx:03d}.ntff"
-            paths.append(os.path.join(profile_dir, filename))
-        return paths
-
-
 class ParallelMemory:
     def __init__(self, hlo_module, tp_degree):
         input_names = find_input_names(hlo_module)
@@ -332,12 +293,6 @@ class ParallelMemory:
             self.outputs.add(idx, tensor)
         self.input_tensors = input_tensors
         self.output_tensors = output_tensors
-
-    def get_debug_tensors(self):
-        if self.n_debug_tensors > 0:
-            return self.output_tensors[-self.n_debug_tensors :]
-        else:
-            return []
 
 
 class Executor:
@@ -679,12 +634,6 @@ def gen_zero_output(hlo_module, index=None):
         shape_proto = shape_proto.tuple_shapes[index]
     shape = [dim for dim in shape_proto.dimensions]
     dtype = DataTypeConverter().hlo2torch(shape_proto.element_type)
-    return torch.zeros(shape, dtype=dtype)
-
-
-def gen_zero_output_from_shape_proto(input):
-    shape = tuple(input.dimensions)
-    dtype = DataTypeConverter().hlo2torch(input.element_type)
     return torch.zeros(shape, dtype=dtype)
 
 

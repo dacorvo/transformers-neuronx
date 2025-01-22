@@ -36,12 +36,6 @@ def load(model, nc_id, nc_count):
     return torch.ops.neuron._load_neuron(model)
 
 
-def load_collectives(model, nc_id, nc_count, g_nc_id, g_nc_count):
-    return torch.ops.neuron._load_collectives_neuron(
-        model, nc_id, nc_count, g_nc_id, g_nc_count
-    )
-
-
 def execute(model, inputs):
     return torch.ops.neuron._execute_neuron(model, inputs)
 
@@ -66,14 +60,6 @@ def parallel_run(parallel_model, parallel_inputs, parallel_outputs):
     return torch.ops.neuron._parallel_run_neuron(
         parallel_model, parallel_inputs, parallel_outputs
     )
-
-
-def profile_start(model, ntff):
-    return torch.ops.neuron._profile_start_neuron(model, ntff)
-
-
-def profile_stop(ntff):
-    return torch.ops.neuron._profile_stop_neuron(ntff)
 
 
 def parallel_profile_start(model, ntff_prefix, ntff_count_limit):

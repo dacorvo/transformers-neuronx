@@ -23,7 +23,6 @@ from transformers_neuronx import hlo
 from transformers_neuronx import ops
 from transformers_neuronx import parallel
 from transformers_neuronx import constants
-from transformers_neuronx import global_debugger
 from transformers_neuronx.config import NeuronConfig
 from transformers_neuronx.llama.hlo import LlamaForSamplingNoEmbeddingHlo
 
@@ -360,23 +359,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         for layer in self.layers:
             layer.reset()
 
-    def forward_single(self, *inputs):
-        """
-        Fast-path forward function which avoids as much overhead as possible.
-
-        This path makes the assumption that inputs are correctly sized for a
-        sequence length of 1. This allows us to avoid checking buckets, slicing,
-        etc.
-        """
-        if self.use_executor:
-            return self.program.execute(*inputs, return_ranks=self.return_ranks)
-        else:
-            self.program.inputs_host_to_device(inputs)
-            self.program.run()
-            return self.program.maybe_logits_device_to_host(
-                return_ranks=self.return_ranks
-            )
-
     def forward(self, *inputs):
         """
         This path makes the assumption that inputs are correctly sized for a
@@ -421,21 +403,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             tag=self.tag,
             on_cpu=self._cpu_compile,
         )
-
-    def _hlo_embedding_layer(self, batch_size):
-        self.builder.n_positions = self.n_positions
-
-        def _embedding(scribe):
-            dtype = getattr(scribe, self.amp)
-            (hidden, *tensors), self.ode_sdim = self.inputs_builder(
-                scribe, dtype, self.n_active_tokens, batch_size
-            )
-            param_builder = DecoderParameterBuilder(scribe, len(self.ode_sdim))
-            pre_layer_params = self._hlo_pre_layer_params(param_builder)
-            hidden = self._hlo_embedding(hidden, tensors, pre_layer_params)
-            return hidden
-
-        return compiler.compile_py_func(_embedding)
 
     def _hlo_unroll(
         self,
@@ -507,44 +474,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             return scribe.tuple(*root_shapes).Tuple(*outputs)
 
         return compiler.compile_py_func(fully_unrolled)
-
-    def _hlo_multi_layer(self, n_positions, batch_size):
-        self.builder.n_positions = n_positions
-
-        def multi_layer(scribe):
-            dtype = getattr(scribe, self.amp)
-            (hidden, *tensors), self.inputs_sdim = self.inputs_builder(
-                scribe, dtype, self.n_active_tokens, batch_size
-            )
-            param_builder = DecoderParameterBuilder(scribe, len(self.inputs_sdim))
-            # use the first `unroll` layers to build the HLO -- assuming all layers are same
-            layers = self.layers
-            layers_caches, layers_weights = self._hlo_layers_params(
-                param_builder, layers, n_positions
-            )
-            pre_layer_params = self._hlo_pre_layer_params(param_builder)
-            hidden, tensors = self._hlo_pre_layer(hidden, tensors, pre_layer_params)
-            out_hidden, out_caches = self._hlo_layers(
-                hidden, tensors, layers, layers_caches, layers_weights
-            )
-            out_hidden.set_alias_to(hidden)
-            out_caches = itertools.chain(*out_caches)
-            outputs = [out_hidden, *out_caches]
-            # Filter out the None's in outputs
-            outputs = [o for o in outputs if o is not None]
-            return outputs
-
-        # NOTE: Forcefully disable on device embedding when setting up multilayer
-        #       layers to ensure that hidden size is uniform on input/output
-        prior = self.neuron_config.on_device_embedding
-        self.neuron_config.on_device_embedding = False
-        debug_tensors = {}
-        patched_func = global_debugger.populate_debug_tensors(debug_tensors)(
-            multi_layer
-        )
-        result = compiler.compile_py_func(patched_func)
-        self.neuron_config.on_device_embedding = prior
-        return result, debug_tensors
 
     def _hlo_parameters(self, n_positions, batch_size, param_builder):
         layers_caches, layers_weights = self._hlo_layers_params(
@@ -677,56 +606,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         head_weight = maybe_transfer_with_static_ring(head_weight)
         head_bias = maybe_transfer_with_static_ring(head_bias)
         return ln_f_weight, ln_f_bias, head_weight, head_bias
-
-    def _hlo_ln_lm_head(self, batch_size):
-        hidden_sizes = []
-        *_, n_positions = self.n_positions_list
-        self.builder.n_positions = n_positions
-
-        def capture_hidden_sizes(scribe):
-            dtype = getattr(scribe, self.amp)
-            (hidden, *_), _ = self.inputs_builder(
-                scribe, dtype, self.n_active_tokens, batch_size
-            )
-            hidden_sizes.clear()
-            hidden_sizes.extend(hidden.sizes)
-            return hidden
-
-        # NOTE: Forcefully disable on device embedding when setting up multilayer
-        #       layers to ensure that hidden size is uniform on input/output
-        prior = self.neuron_config.on_device_embedding
-        self.neuron_config.on_device_embedding = False
-        compiler.compile_py_func(capture_hidden_sizes)
-        self.neuron_config.on_device_embedding = prior
-
-        def ln_lm_head(scribe):
-            dtype = getattr(scribe, self.amp)
-            hidden = dtype[tuple(hidden_sizes)].Parameter(parameter_number=0)
-            if self.neuron_config and self.neuron_config.lhs_aligned:
-                next_tok_id = scribe.s32[batch_size].Parameter(parameter_number=1)
-            else:
-                next_tok_id = scribe.s32[1].Parameter(parameter_number=1)
-            param_builder = DecoderParameterBuilder(scribe, 3)
-            ln_f_weight, ln_f_bias, head_weight, head_bias = self._hlo_lm_head_params(
-                param_builder
-            )
-            logits = self.ln_lm_head_builder(
-                hidden,
-                next_tok_id,
-                ln_f_weight,
-                ln_f_bias,
-                head_weight,
-                head_bias,
-                is_prefill=self.is_prefill,
-            )
-            if self.neuron_config.log_softmax_scores:
-                logits, scores = self._hlo_post_layer(logits)
-                outputs = [logits, scores]
-                root_shapes = [shape.dtype[shape.sizes] for shape in outputs]
-                return scribe.tuple(*root_shapes).Tuple(*outputs)
-            return logits
-
-        return compiler.compile_py_func(ln_lm_head)
 
     def _hlo_post_layer(self, logits):
         return self.post_layer_builder(logits)

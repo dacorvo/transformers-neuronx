@@ -18,11 +18,5 @@ class DecoderProgram:
     def setup(self, layers, ln_lm_head):
         raise NotImplementedError(DecoderProgram)
 
-    def init_length(self, this_length, init_n_active_tokens):
-        return this_length // init_n_active_tokens * init_n_active_tokens
-
-    def init_step(self, init_n_active_tokens):
-        return init_n_active_tokens
-
     def run(self, bucket_id):
         raise NotImplementedError(DecoderProgram)

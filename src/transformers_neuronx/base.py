@@ -85,24 +85,6 @@ class NeuronModelBase(PretrainedModel):
                 )
             self.setup()
 
-    def cpu_compile(self):
-        self.decoder_lm_head._cpu_compile = True
-        with maybe_dump_config(self.config, self.neuron_config):
-            self.load_weights()
-            self.compile(parallel_degree=self.neuron_config.compilation_worker_count)
-
-    def is_compiled(self):
-        # First check if the kernels have neffs already
-        try:
-            if all(
-                [kernel.neff_bytes is not None for kernel in self._get_all_kernels()]
-            ):
-                return True
-        # AttributeError means kernels don't even exist yet.
-        except AttributeError:
-            pass
-        return False
-
     def _save_compiled_artifacts(self, directory):
         if os.path.isfile(directory):
             raise FileExistsError(

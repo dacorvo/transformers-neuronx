@@ -17,7 +17,6 @@ import operator
 from typing import List, Callable, Union
 
 import torch
-import numpy as np
 
 from transformers_neuronx import activations
 from transformers_neuronx.constants import LAYOUT_BSH
@@ -262,14 +261,6 @@ def dot00(lhs, rhs):
     return dtype[lhs_size, rhs_size].Dot(lhs, rhs, dot_dimension_numbers=dot_dims)
 
 
-def dot01(lhs, rhs):
-    dtype = lhs.dtype
-    _, lhs_size = lhs.sizes
-    rhs_size, _ = rhs.sizes
-    dot_dims = dict(lhs_contracting_dimensions=[0], rhs_contracting_dimensions=[1])
-    return dtype[lhs_size, rhs_size].Dot(lhs, rhs, dot_dimension_numbers=dot_dims)
-
-
 def dot_add(
     lhs: "HloShape",  # noqa F821
     rhs: "HloShape",  # noqa F821
@@ -315,10 +306,6 @@ def dot_add(
     return add(dot, bias)
 
 
-def dot00_add0(lhs, rhs, bias):
-    return dot_add(lhs, rhs, bias, 0, 0, 0)
-
-
 def dot00_add1(lhs, rhs, bias):
     return dot_add(lhs, rhs, bias, 0, 0, 1)
 
@@ -329,66 +316,6 @@ def dot10_add1(lhs, rhs, bias):
 
 def dot11_add1(lhs, rhs, bias):
     return dot_add(lhs, rhs, bias, 1, 1, 1)
-
-
-def dot_with_tiled_weight_add(
-    lhs,
-    rhs,
-    bias,
-    lhs_contracting_dimensions,
-    rhs_contracting_dimensions,
-    bias_dimension=0,
-):
-    dtype = lhs.dtype
-    dot_result_lhs_dims = list(
-        filter(
-            lambda x: x not in lhs_contracting_dimensions, list(range(len(lhs.sizes)))
-        )
-    )
-    dot_result_lhs_sizes = [lhs.sizes[i] for i in dot_result_lhs_dims]
-    dot_result_rhs_dims = list(
-        filter(
-            lambda x: x not in rhs_contracting_dimensions, list(range(len(rhs.sizes)))
-        )
-    )
-    dot_result_rhs_sizes = [rhs.sizes[i] for i in dot_result_rhs_dims]
-    dot_dims = dict(
-        lhs_contracting_dimensions=lhs_contracting_dimensions,
-        rhs_contracting_dimensions=rhs_contracting_dimensions,
-    )
-    dot_result_sizes = dot_result_lhs_sizes + dot_result_rhs_sizes
-    dot = dtype[dot_result_sizes].Dot(lhs, rhs, dot_dimension_numbers=dot_dims)
-    lhs_size = np.product(dot_result_lhs_sizes)
-    rhs_size = np.product(dot_result_rhs_sizes)
-    dot = reshape(dot, (lhs_size, rhs_size))
-
-    if bias is None:
-        return dot
-    bias = broadcast(bias, (lhs_size, rhs_size), broadcast_dimensions=[bias_dimension])
-    result = add(dot, bias)
-    return result
-
-
-def dot_1220_add1(lhs, rhs, bias):
-    return dot_with_tiled_weight_add(
-        lhs,
-        rhs,
-        bias,
-        lhs_contracting_dimensions=[1, 2],
-        rhs_contracting_dimensions=[2, 0],
-        bias_dimension=1,
-    )
-
-
-def dot_0120_add1(lhs, rhs, bias):
-    return dot_with_tiled_weight_add(
-        lhs,
-        rhs,
-        bias,
-        lhs_contracting_dimensions=[0, 1],
-        rhs_contracting_dimensions=[2, 0],
-        bias_dimension=1,
-    )
 
 
 def gen_add_func(dtype):
@@ -1549,12 +1476,6 @@ def maximum(lhs, rhs):
     return lhs.dtype[lhs.sizes].Maximum(lhs, rhs)
 
 
-def remainder(lhs, rhs):
-    lhs, rhs = _binary_primitive_broadcast(lhs, rhs)
-    _check_binary_arguments(lhs, rhs)
-    return lhs.dtype[lhs.sizes].Remainder(lhs, rhs)
-
-
 def iota(dtype, shape, dims):
     if isinstance(dims, int):
         dims = [dims]
@@ -1644,24 +1565,6 @@ def reduce_scatter(tensor, dim, replica_groups, to_apply, dtype=None):
         tensor, dimensions=[dim], replica_groups=replica_groups, to_apply=to_apply
     )
     return output
-
-
-def reduce_scatter_sum(tensor, tp_degree, dim, dtype=None, replica_groups=None):
-    if tp_degree == 1:
-        return tensor
-
-    to_apply = gen_add_func(tensor.dtype)
-
-    if replica_groups is None:
-        replica_groups = [list(range(tp_degree))]
-
-    return reduce_scatter(
-        tensor,
-        dim=dim,
-        replica_groups=replica_groups,
-        to_apply=to_apply,
-        dtype=dtype,
-    )
 
 
 def sin(tensor):
@@ -1781,11 +1684,6 @@ def logical_and(lhs, rhs):
     pred = lhs.scribe.pred
     _check_binary_arguments(lhs, rhs, dtype=pred)
     return pred[lhs.sizes].And(lhs, rhs)
-
-
-def logical_not(lhs):
-    pred = lhs.scribe.pred
-    return pred[lhs.sizes].Not(lhs)
 
 
 def dtype_maximum(dtype):
@@ -2013,66 +1911,6 @@ def decoder_attention_mask_lhs_aligned_context(cache_ids, n_positions):
     return prior_mask, active_mask
 
 
-def decoder_attention_block_diagonal_causal_mask(prompt_lens, n_positions):
-    """
-    Creates block diagonal causal masks for multiple prompts.
-
-    This mask is dynamic and depends on the input prompt lengths.
-
-    Example:
-        prompt_lens = [2, 3, 2, 0], n_positions = 7
-
-        prior_mask = [
-            [1, 0, 0, 0, 0, 0, 0], # At position 0 attend to 1st prompt
-            [1, 1, 0, 0, 0, 0, 0], # At position 1 attend to 1st prompt
-            [0, 0, 1, 0, 0, 0, 0], # At position 0 attend to 2nd prompt
-            [0, 0, 1, 1, 0, 0, 0], # At position 1 attend to 2nd prompt
-            [0, 0, 1, 1, 1, 0, 0], # At position 2 attend to 2nd prompt
-            [0, 0, 0, 0, 0, 1, 0], # At position 0 attend to 3rd prompt
-            [0, 0, 0, 0, 0, 1, 1], # At position 1 attend to 3rd prompt
-        ]
-        active_mask = None
-
-    Args:
-        prompt_lens: The list of prompt lengths.
-        n_positions: The total size of the KV cache to consider. This is
-            equal to the current bucket size.
-
-    Returns:
-        prior_mask: The attention mask to apply to the KV cache.
-        active_mask: The attention mask to apply to the active tokens (None).
-    """
-    s32 = prompt_lens.scribe.s32
-    sizes = n_positions, n_positions
-    (num_prompts,) = prompt_lens.sizes
-
-    a = iota(s32, sizes, [0])
-    b = iota(s32, sizes, [1])
-    prior_mask = compare(a, b, "GE")
-
-    anchors = cumsum(prompt_lens, dim=0)
-
-    for idx in range(num_prompts):
-        zero = s32.Constant(constant_value=idx)
-        value = dynamic_slice_along(anchors, dim=0, start=zero, size=1)
-
-        # mask = jnp.logical_and(b<c, a>=c)
-        c = broadcast(value, sizes, [0])
-        c = cast(c, s32)
-        bc = compare(b, c, "LT")
-        ac = compare(a, c, "GE")
-        mask = logical_and(bc, ac)
-
-        # prior_mask = jnp.logical_and(prior_mask, jnp.logical_not(mask))
-        prior_mask = logical_and(prior_mask, logical_not(mask))
-
-    # [n_positions, n_positions] -> [1, n_positions, n_positions]
-    prior_mask = unsqueeze(prior_mask, dim=0)
-
-    active_mask = None
-    return prior_mask, active_mask
-
-
 def decoder_attention_mask_lhs_aligned_token_padded(cache_ids, n_positions):
     """
     Creates decomposed prior/active masks for LHS-aligned token generation.
@@ -2187,55 +2025,3 @@ def masked_select(mask, true_tensor, false_tensor):
         f"mask shape={mask.sizes}, true_tensor shape={true_tensor.sizes}, false_tensor shape={false_tensor.sizes}"
     )
     return dtype[mask.sizes].Select(mask, true_tensor, false_tensor)
-
-
-def reshape_and_cache(key, value, key_cache, value_cache, slot_mapping):
-    """
-    Fused K/V cache placement with slot_mapping.
-
-    Example:
-        prompt_lens = [3, 6, 2], num_blocks = 4, block_size = 128,
-
-        #              |<-- seq 0 -->|<--------   seq 1 ---------->|  seq 2  |
-        slot_mapping = [128, 129, 130, 256, 257, 258, 259, 260, 261, 384, 385]
-
-        updated_keys = [
-            # |<---- block_size (128) ------>|
-            [................................] # empty slot
-            [128, 129, 130, .................] # 3 tokens taking 2nd block
-            [256, 257, 258, 259, 260, 261 ...] # 6 tokens taking 3rd block
-            [384, 385 .......................] # 2 tokens taking 4th block
-        ]
-    """
-    dtype = key.dtype
-    assign_func = gen_assign_func(dtype)
-    _, n_active_tokens, n_head, d_head = key.sizes
-    n_blocks, block_size, _, _ = key_cache.sizes
-    hidden_size = n_head * d_head
-
-    key = reshape(key, [n_active_tokens, hidden_size])
-    value = reshape(value, [n_active_tokens, hidden_size])
-    key_cache = reshape(key_cache, [n_blocks * block_size, hidden_size])
-    value_cache = reshape(value_cache, [n_blocks * block_size, hidden_size])
-
-    scatter_dims = dict(
-        update_window_dims=[1],
-        inserted_window_dims=[0],
-        scatter_dims_to_operand_dims=[0],
-        index_vector_dim=1,
-    )
-    updated_keys = scatter(
-        key_cache, slot_mapping, key, scatter_dims=scatter_dims, to_apply=assign_func
-    )
-    updated_values = scatter(
-        value_cache,
-        slot_mapping,
-        value,
-        scatter_dims=scatter_dims,
-        to_apply=assign_func,
-    )
-
-    updated_keys = reshape(updated_keys, [n_blocks, block_size, n_head, d_head])
-    updated_values = reshape(updated_values, [n_blocks, block_size, n_head, d_head])
-
-    return updated_keys, updated_values

@@ -17,17 +17,6 @@ import torch
 from transformers_neuronx import ops
 
 
-def parallel_load(models):
-    degree = len(models)
-    with ThreadPoolExecutor(degree) as executor:
-        futures = []
-        for ordinal, model in enumerate(models):
-            args = model, ordinal, 1, ordinal, degree
-            fut = executor.submit(ops.load_collectives, *args)
-            futures.append(fut)
-        [future.result() for future in futures]  # wait for load_collectives calls
-
-
 def to_nc(sharded_tensors):
     return [ops.to_nc(ts, ordinal) for ordinal, ts in enumerate(sharded_tensors)]
 
