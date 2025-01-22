@@ -664,7 +664,6 @@ def attention_mask(
     start_ids,
     n_positions,
     last_token_id=None,
-    num_active_blocks=None,
     neuron_config=None,
     context_lens=None,
 ):
@@ -709,10 +708,6 @@ def attention_mask(
         return decoder_attention_mask_lhs_aligned(
             cache_ids,
             n_positions,
-            last_token_id=last_token_id,
-            num_active_blocks=num_active_blocks,
-            neuron_config=neuron_config,
-            context_lens=context_lens,
         )
     else:
         (n_active_tokens,) = cache_ids.sizes
@@ -1952,10 +1947,6 @@ def decoder_attention_mask_window(cache_ids, start_ids, n_positions):
 def decoder_attention_mask_lhs_aligned(
     cache_ids,
     n_positions,
-    last_token_id=None,
-    num_active_blocks=None,
-    neuron_config=None,
-    context_lens=None,
 ):
     """
     Create attention masks for LHS-aligned sequences.

@@ -453,9 +453,6 @@ def context(
     dtype=None,
     neuron_config=None,
     tp_degree=None,
-    context_lens=None,
-    num_active_blocks=None,
-    block_to_seq=None,
 ):
     """
     Compute "context" output from the QK score and value projection.
