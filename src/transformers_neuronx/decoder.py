@@ -301,8 +301,8 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         manipulator = MaybeParallelTensorManipulator(
             self.tp_degree,
             on_cpu=self._cpu_compile,
-            rank_id=self.neuron_config.rank_id,
-            local_tp_degree=self.neuron_config.get_local_tp(self.tp_degree),
+            rank_id=0,
+            local_tp_degree=self.tp_degree,
         )
         self.pre_layer_parameters = self._prepare_pre_layer_params(
             manipulator, self.pre_layer_parameters
@@ -1205,8 +1205,8 @@ class DecoderLayer:
         maybe_manipulator = MaybeParallelTensorManipulator(
             self.tp_degree,
             on_cpu=self._cpu_compile,
-            rank_id=self.neuron_config.rank_id,
-            local_tp_degree=self.neuron_config.get_local_tp(self.tp_degree),
+            rank_id=0,
+            local_tp_degree=self.tp_degree,
         )
         maybe_duplicate = maybe_manipulator.duplicate
         maybe_shard_along = maybe_manipulator.shard_along
@@ -1277,14 +1277,14 @@ class DecoderLayer:
         if self._cpu_compile:
             manipulator = parallel.CPUTensorManipulator(
                 self.tp_degree,
-                rank_id=self.neuron_config.rank_id,
-                local_tp_degree=self.neuron_config.get_local_tp(self.tp_degree),
+                rank_id=0,
+                local_tp_degree=self.tp_degree,
             )
         else:
             manipulator = parallel.ParallelTensorManipulator(
                 self.tp_degree,
-                rank_id=self.neuron_config.rank_id,
-                local_tp_degree=self.neuron_config.get_local_tp(self.tp_degree),
+                rank_id=0,
+                local_tp_degree=self.tp_degree,
             )
         cache_shape = [
             self.n_positions,
@@ -1349,10 +1349,7 @@ class DecoderLayer:
                 self.attn_k_cache.shape,
                 dtype=self.attn_k_cache.dtype,
             )
-            zero_cache = [
-                zero_cache
-                for _ in range(self.neuron_config.get_local_tp(self.tp_degree))
-            ]
+            zero_cache = [zero_cache for _ in range(self.self.tp_degree)]
             if not self._cpu_compile:
                 ops.parallel_write(self.attn_k_cache, zero_cache)
                 ops.parallel_write(self.attn_v_cache, zero_cache)
@@ -1486,9 +1483,9 @@ class DecoderProgram:
             kernel_tag = f"{tag}-seqlen{n_positions}-batch{batch_size}"
         self.kernel = compiler.ParallelKernel(
             hlo_module,
-            self.neuron_config.get_local_tp(tp_degree),
-            self.neuron_config.get_g_start_device_id(tp_degree),
-            self.neuron_config.get_g_device_count(tp_degree),
+            tp_degree,
+            g_start_device_id=0,
+            g_device_count=tp_degree,
             tag=kernel_tag,
             num_exec_repetition=num_exec_repetition,
         )
@@ -1500,14 +1497,14 @@ class DecoderProgram:
         if self._cpu_compile:
             self.manipulator = parallel.CPUTensorManipulator(
                 tp_degree,
-                rank_id=self.neuron_config.rank_id,
-                local_tp_degree=self.neuron_config.get_local_tp(tp_degree),
+                rank_id=0,
+                local_tp_degree=tp_degree,
             )
         else:
             self.manipulator = parallel.ParallelTensorManipulator(
                 tp_degree,
-                rank_id=self.neuron_config.rank_id,
-                local_tp_degree=self.neuron_config.get_local_tp(tp_degree),
+                rank_id=0,
+                local_tp_degree=tp_degree,
             )
 
     def setup(self, io_ring_cache_size):
@@ -1533,7 +1530,7 @@ class DecoderProgram:
 
     def maybe_logits_device_to_host(self, return_ranks):
         if self.logits_buffer is not None:
-            if self.tp_degree == self.neuron_config.get_local_tp(self.tp_degree):
+            if self.tp_degree == self.self.tp_degree:
                 logits = self.manipulator.unshard_along(self.logits_buffer, dim=0)
                 if return_ranks > 0:
                     rank_size = logits.shape[0] // self.tp_degree

@@ -158,15 +158,6 @@ class NeuronConfig:
 
         assert len(kwargs) == 0, f"Unexpected NeuronConfig keyword arguments: {kwargs}"
 
-        self.rank_id = int(os.getenv("NEURON_RANK_ID", "0"))
-
-        self.local_tp = os.getenv("NEURON_LOCAL_TP", None)
-
-        self.pp_stages = int(os.getenv("NEURON_PP_STAGES", 1))
-
-        if self.local_tp is not None:
-            self.local_tp = int(self.local_tp)
-
         self.dist = None
 
         self.layer_partition = {}
@@ -206,25 +197,8 @@ class NeuronConfig:
     def vectorize_last_token_id(self):
         return self.lhs_aligned
 
-    def first_rank(self):
-        return self.rank_id == 0
-
-    def last_rank(self):
-        return self.rank_id == self.pp_stages - 1
-
-    def get_g_device_count(self, tp_degree):
-        return self.pp_stages * tp_degree
-
     def get_replica_groups(self, tp_degree):
         return [list(range(tp_degree))]
-
-    def get_local_tp(self, tp):
-        if self.local_tp is None:
-            return tp
-        return self.local_tp
-
-    def get_g_start_device_id(self, tp):
-        return self.rank_id * self.get_local_tp(tp)
 
     def to_json(self):
         json_serializable_types = (str, int, float, bool)
