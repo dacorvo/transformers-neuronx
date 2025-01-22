@@ -789,18 +789,9 @@ def output(
         result = hlo.reshape(result, hidden_sizes)
 
     dtype, replica_groups = parse_dtype_replica_groups(neuron_config, tp_degree)
-    if neuron_config.is_sequence_parallel:
-        result = hlo.reduce_scatter_sum(
-            result,
-            tp_degree=tp_degree,
-            dim=1,
-            replica_groups=replica_groups,
-            dtype=dtype,
-        )
-    else:
-        result = hlo.all_reduce_sum(
-            result, tp_degree, dtype=dtype, replica_groups=replica_groups
-        )
+    result = hlo.all_reduce_sum(
+        result, tp_degree, dtype=dtype, replica_groups=replica_groups
+    )
 
     # Transpose back to HSB if applicable
     if bsh_collective and not bsh_output:

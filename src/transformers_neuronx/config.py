@@ -171,8 +171,6 @@ class NeuronConfig:
 
         self.layer_partition = {}
 
-        self.is_sequence_parallel = False
-
         self.attn_output_transposed = attn_output_transposed
 
         self.fused_rmsnorm_qkv = fused_rmsnorm_qkv

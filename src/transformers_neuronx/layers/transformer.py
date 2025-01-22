@@ -60,8 +60,6 @@ def inputs(
     """
     s32 = scribe.s32
 
-    neuron_config.is_sequence_parallel = False
-
     # Multilayer on device embedding will use the already-embedded inputs for the layers NEFF
     # because there is a separate neff for embedding.
     if neuron_config and neuron_config.on_device_embedding:
@@ -71,11 +69,6 @@ def inputs(
             hidden_sizes = batch_size, n_active_tokens, hidden_size
         else:  # HASB LAyout
             hidden_sizes = hidden_size, n_active_tokens, batch_size
-
-    if neuron_config.is_sequence_parallel and not neuron_config.on_device_embedding:
-        hidden_sizes = list(hidden_sizes)
-        hidden_sizes[1] = hidden_sizes[1] // tp_degree
-        hidden_sizes = tuple(hidden_sizes)
 
     hidden = (
         s32[hidden_sizes].Parameter(parameter_number=0)
@@ -159,28 +152,10 @@ def ln_lm_head(
     else:
         hidden_size, n_active_tokens, batch_size = hidden.sizes
 
-    if neuron_config and neuron_config.is_sequence_parallel and not return_all_outputs:
-        # For sequence parallel norm, we need to gather the hidden but we don't need the full hidden (which creates a large
-        # tensor). Since we only need last_token_id, we can first pick out last_token_id % seq_shard_len from each tp rank,
-        # then all-gather only this part, and then pick out the last_token_id // seq_shard_len to pick out the hidden coming
-        # from the correct rank.
-
-        last_token_id_pos_in_shard = hlo.remainder(last_token_id, n_active_tokens)
-        hidden = _dynamic_logits_slice(
-            hidden, last_token_id_pos_in_shard, neuron_config
-        )
-        hidden = hlo.all_gather(hidden, 1, tp_degree)
-        last_token_id_shard_idx = hlo.divide(last_token_id, n_active_tokens)
-        hidden = _dynamic_logits_slice(hidden, last_token_id_shard_idx, neuron_config)
+    # Check and perform slicing if needed
+    if not return_all_outputs:
+        hidden = _dynamic_logits_slice(hidden, last_token_id, neuron_config)
         n_active_tokens = 1
-    else:
-        if neuron_config and neuron_config.is_sequence_parallel:
-            hidden = hlo.all_gather(hidden, 1, tp_degree)
-
-        # Check and perform slicing if needed
-        if not return_all_outputs:
-            hidden = _dynamic_logits_slice(hidden, last_token_id, neuron_config)
-            n_active_tokens = 1
 
     if is_bsh:
         ln_hidden = hlo.layer_norm_bsh(
@@ -243,28 +218,10 @@ def rms_lm_head(
         hidden_size, n_active_tokens, batch_size = hidden.sizes
     dtype = hidden.dtype
 
-    if neuron_config and neuron_config.is_sequence_parallel and not return_all_outputs:
-        # For sequence parallel norm, we need to gather the hidden but we don't need the full hidden (which creates a large
-        # tensor). Since we only need last_token_id, we can first pick out last_token_id % seq_shard_len from each tp rank,
-        # then all-gather only this part, and then pick out the last_token_id // seq_shard_len to pick out the hidden coming
-        # from the correct rank.
-
-        last_token_id_pos_in_shard = hlo.remainder(last_token_id, n_active_tokens)
-        hidden = _dynamic_logits_slice(
-            hidden, last_token_id_pos_in_shard, neuron_config
-        )
-        hidden = hlo.all_gather(hidden, 1, tp_degree)
-        last_token_id_shard_idx = hlo.divide(last_token_id, n_active_tokens)
-        hidden = _dynamic_logits_slice(hidden, last_token_id_shard_idx, neuron_config)
+    # Check and perform slicing if needed
+    if not return_all_outputs:
+        hidden = _dynamic_logits_slice(hidden, last_token_id, neuron_config)
         n_active_tokens = 1
-    else:
-        if neuron_config and neuron_config.is_sequence_parallel:
-            hidden = hlo.all_gather(hidden, 1, tp_degree)
-
-        # Check and perform slicing if needed
-        if not return_all_outputs:
-            hidden = _dynamic_logits_slice(hidden, last_token_id, neuron_config)
-            n_active_tokens = 1
 
     rms_hidden = (
         hlo.rms_norm(hidden, rms_weight, eps, neuron_config=None, tp_degree=tp_degree)

@@ -101,9 +101,6 @@ def layer_norm(hidden, weight, bias, neuron_config=None, tp_degree=None):
     output = cast(output, dtype)
     output = reshape(output, input_sizes)
 
-    if neuron_config and neuron_config.is_sequence_parallel:
-        return all_gather(output, 1, tp_degree, replica_groups=None)
-
     return output
 
 
@@ -124,9 +121,6 @@ def layer_norm_bsh(hidden, weight, bias, neuron_config=None, tp_degree=None):
     output = add(output, bias_br)
     output = cast(output, dtype)
     output = reshape(output, input_sizes)
-
-    if neuron_config and neuron_config.is_sequence_parallel:
-        return all_gather(output, 0, tp_degree, replica_groups=None)
 
     return output
 
@@ -168,9 +162,6 @@ def rms_norm_legacy(
     result = multiply(scaled, weight_br)
     result = cast(result, dtype)
 
-    if neuron_config and neuron_config.is_sequence_parallel:
-        result = all_gather(result, 1, tp_degree, replica_groups=None)
-
     return result
 
 
@@ -198,8 +189,6 @@ def rms_norm(hidden, weight, eps=1e-6, dim=2, neuron_config=None, tp_degree=None
         custom_call_target="AwsNeuronRmsNorm",
         backend_config=backend_config,
     )
-    if neuron_config and neuron_config.is_sequence_parallel:
-        result = all_gather(result, 1, tp_degree, replica_groups=None)
 
     return result
 
@@ -493,18 +482,9 @@ def mlp(
         hidden = reshape(hidden, hidden_sizes)
 
     dtype, replica_groups = parse_dtype_replica_groups(neuron_config, tp_degree)
-    if neuron_config is not None and neuron_config.is_sequence_parallel:
-        hidden = reduce_scatter_sum(
-            hidden,
-            tp_degree=tp_degree,
-            dim=1,
-            replica_groups=replica_groups,
-            dtype=dtype,
-        )
-    else:
-        hidden = all_reduce_sum(
-            hidden, tp_degree, dtype=dtype, replica_groups=replica_groups
-        )
+    hidden = all_reduce_sum(
+        hidden, tp_degree, dtype=dtype, replica_groups=replica_groups
+    )
 
     # Transpose back to HSB if applicable
     return permute(hidden, (2, 1, 0)) if is_bsh else hidden
@@ -565,18 +545,9 @@ def gated_mlp_bsh(
 
     if not return_partial:
         dtype, replica_groups = parse_dtype_replica_groups(neuron_config, tp_degree)
-        if neuron_config is not None and neuron_config.is_sequence_parallel:
-            result = reduce_scatter_sum(
-                result,
-                tp_degree=tp_degree,
-                dim=1,
-                replica_groups=replica_groups,
-                dtype=dtype,
-            )
-        else:
-            result = all_reduce_sum(
-                result, tp_degree, dtype=dtype, replica_groups=replica_groups
-            )
+        result = all_reduce_sum(
+            result, tp_degree, dtype=dtype, replica_groups=replica_groups
+        )
     return result
 
 
@@ -646,18 +617,9 @@ def gated_mlp(
 
     if not return_partial:
         dtype, replica_groups = parse_dtype_replica_groups(neuron_config, tp_degree)
-        if neuron_config is not None and neuron_config.is_sequence_parallel:
-            result = reduce_scatter_sum(
-                result,
-                tp_degree=tp_degree,
-                dim=1,
-                replica_groups=replica_groups,
-                dtype=dtype,
-            )
-        else:
-            result = all_reduce_sum(
-                result, tp_degree, dtype=dtype, replica_groups=replica_groups
-            )
+        result = all_reduce_sum(
+            result, tp_degree, dtype=dtype, replica_groups=replica_groups
+        )
 
     # Transpose back to HSB if applicable
     return permute(result, (2, 1, 0)) if is_bsh else result
