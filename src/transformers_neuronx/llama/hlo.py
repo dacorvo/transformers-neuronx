@@ -551,7 +551,7 @@ class LlamaForSamplingNoEmbeddingHlo:
         unused_bias,
         lm_head_weight,
         lm_head_bias,
-        return_all_outputs=True,
+        is_prefill=True,
     ):
         logits = transformer.rms_lm_head(
             self.config.tp_degree,
@@ -560,7 +560,7 @@ class LlamaForSamplingNoEmbeddingHlo:
             rms_weight,
             lm_head_weight,
             lm_head_bias,
-            return_all_outputs,
+            is_prefill=is_prefill,
             eps=self.config.rms_norm_eps,
             neuron_config=self.neuron_config,
         )

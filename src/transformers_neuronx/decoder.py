@@ -55,7 +55,7 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         n_kv_head=0,
         neuron_config=None,
         allow_pad=True,
-        return_all_outputs=True,
+        is_prefill=True,
         builder=None,
         tag=None,
         prompt_batch_size=None,
@@ -70,7 +70,7 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         self.attention_head_size = attention_head_size  # TODO: rename to size_per_head
         self.n_head = n_head
         self.n_kv_head = n_kv_head if (n_kv_head > 0) else n_head
-        self.return_all_outputs = return_all_outputs
+        self.is_prefill = is_prefill
         self.amp = amp
         self.num_layers = num_layers
         self.neuron_config = NeuronConfig() if neuron_config is None else neuron_config
@@ -193,9 +193,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             self.context_batch_sizes = [1]
         else:
             self.context_batch_sizes = self.batch_size
-        return_all_outputs = False
-        if self.neuron_config and self.neuron_config.output_all_logits:
-            return_all_outputs = True
         for context_length_estimate in buckets:
             for batch_size in self.context_batch_sizes:
                 decoder_lm_head[context_length_estimate, batch_size] = cls(
@@ -210,7 +207,7 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
                     n_kv_head=self.n_kv_head,
                     neuron_config=self.neuron_config,
                     allow_pad=self.allow_pad,
-                    return_all_outputs=return_all_outputs,
+                    is_prefill=True,
                     builder=self.builder,
                     tag="context",
                 )
@@ -233,7 +230,7 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             n_kv_head=self.n_kv_head,
             neuron_config=self.neuron_config,
             allow_pad=True,
-            return_all_outputs=True,
+            is_prefill=False,
             builder=self.builder,
             tag="token",
         )
@@ -346,7 +343,7 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
                 n_kv_head=self.n_kv_head,
                 neuron_config=self.neuron_config,
                 allow_pad=self.allow_pad,
-                return_all_outputs=self.return_all_outputs,
+                is_prefill=self.is_prefill,
             )
         new.add_inputs_builder(self.inputs_builder)
         new.add_embedding_builder(self.embedding_builder)
@@ -509,7 +506,7 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             hidden,
             last_token_id,
             *lm_head_params,
-            return_all_outputs=self.return_all_outputs,
+            is_prefill=self.is_prefill,
         )
         return logits, out_caches
 
@@ -765,7 +762,7 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
                 ln_f_bias,
                 head_weight,
                 head_bias,
-                return_all_outputs=self.return_all_outputs,
+                is_prefill=self.is_prefill,
             )
             if self.neuron_config.log_softmax_scores:
                 logits, scores = self._hlo_post_layer(logits)

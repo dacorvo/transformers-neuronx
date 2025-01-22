@@ -128,18 +128,18 @@ def ln_lm_head(
     ln_f_bias,
     lm_head_weight,
     lm_head_bias,
-    return_all_outputs=True,
+    is_prefill=True,
     neuron_config=None,
 ):
     """
     Language model head with layer normalization.
 
     Context encoding network:
-    n_active_tokens will be equal to context_length_estimate and return_all_outputs will be False.
+    n_active_tokens will be equal to context_length_estimate.
     In this case we slice the hidden input and compute the next token logits only for the last context token.
 
     Normal token gen network:
-    n_active_tokens will be 1 and return_all_outputs will be True.
+    n_active_tokens will be 1.
     No slicing required. Will return the next token logits for the current active token.
 
     Models: GPT2, OPT, GPT-J, GPTNeoX, BLOOM.
@@ -152,9 +152,9 @@ def ln_lm_head(
     else:
         hidden_size, n_active_tokens, batch_size = hidden.sizes
 
-    # Check and perform slicing if needed
-    if not return_all_outputs:
+    if is_prefill:
         hidden = _dynamic_logits_slice(hidden, last_token_id, neuron_config)
+        # slice the hidden input and compute the next token logits only for the last context token.
         n_active_tokens = 1
 
     if is_bsh:
@@ -187,7 +187,7 @@ def rms_lm_head(
     rms_weight,
     lm_head_weight,
     lm_head_bias,
-    return_all_outputs=True,
+    is_prefill=True,
     eps=1e-6,
     neuron_config=None,
 ):
@@ -195,11 +195,11 @@ def rms_lm_head(
     Language model head with rms normalization.
 
     Context encoding network:
-    n_active_tokens will be equal to context_length_estimate and return_all_outputs will be False.
+    n_active_tokens will be equal to context_length_estimate.
     In this case we slice the hidden input and compute the next token logits only for the last context token.
 
     Normal token gen network:
-    n_active_tokens will be 1 and return_all_outputs will be True.
+    n_active_tokens will be 1.
     No slicing required. Will return the next token logits for the current active token.
 
     Models: LLaMa.
@@ -213,9 +213,9 @@ def rms_lm_head(
         hidden_size, n_active_tokens, batch_size = hidden.sizes
     dtype = hidden.dtype
 
-    # Check and perform slicing if needed
-    if not return_all_outputs:
+    if is_prefill:
         hidden = _dynamic_logits_slice(hidden, last_token_id, neuron_config)
+        # slice the hidden input and compute the next token logits only for the last context token.
         n_active_tokens = 1
 
     rms_hidden = (
