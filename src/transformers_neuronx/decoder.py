@@ -299,10 +299,7 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
 
     def to_neuron(self):
         manipulator = MaybeParallelTensorManipulator(
-            self.tp_degree,
-            on_cpu=self._cpu_compile,
-            rank_id=0,
-            local_tp_degree=self.tp_degree,
+            self.tp_degree, on_cpu=self._cpu_compile
         )
         self.pre_layer_parameters = self._prepare_pre_layer_params(
             manipulator, self.pre_layer_parameters
@@ -1205,8 +1202,6 @@ class DecoderLayer:
         maybe_manipulator = MaybeParallelTensorManipulator(
             self.tp_degree,
             on_cpu=self._cpu_compile,
-            rank_id=0,
-            local_tp_degree=self.tp_degree,
         )
         maybe_duplicate = maybe_manipulator.duplicate
         maybe_shard_along = maybe_manipulator.shard_along
@@ -1275,17 +1270,9 @@ class DecoderLayer:
             n_heads_kv_cache = round_up_to_divisor(self.n_kv_head, self.tp_degree)
         # Select manipulator based on device
         if self._cpu_compile:
-            manipulator = parallel.CPUTensorManipulator(
-                self.tp_degree,
-                rank_id=0,
-                local_tp_degree=self.tp_degree,
-            )
+            manipulator = parallel.CPUTensorManipulator(self.tp_degree)
         else:
-            manipulator = parallel.ParallelTensorManipulator(
-                self.tp_degree,
-                rank_id=0,
-                local_tp_degree=self.tp_degree,
-            )
+            manipulator = parallel.ParallelTensorManipulator(self.tp_degree)
         cache_shape = [
             self.n_positions,
             self.batch_size,
@@ -1394,16 +1381,12 @@ class DecoderLayer:
 
 
 class MaybeParallelTensorManipulator:
-    def __init__(self, tp_degree, on_cpu=False, rank_id=0, local_tp_degree=None):
+    def __init__(self, tp_degree, on_cpu=False):
         self.use_cpu = on_cpu
         if on_cpu:
-            self.manipulator = parallel.CPUTensorManipulator(
-                tp_degree, rank_id=rank_id, local_tp_degree=local_tp_degree
-            )
+            self.manipulator = parallel.CPUTensorManipulator(tp_degree)
         else:
-            self.manipulator = parallel.ParallelTensorManipulator(
-                tp_degree, rank_id=rank_id, local_tp_degree=local_tp_degree
-            )
+            self.manipulator = parallel.ParallelTensorManipulator(tp_degree)
 
     def duplicate(self, tensor):
         if tensor is None:
@@ -1495,17 +1478,9 @@ class DecoderProgram:
         self._cpu_compile = on_cpu
         # Select manipulator based on device
         if self._cpu_compile:
-            self.manipulator = parallel.CPUTensorManipulator(
-                tp_degree,
-                rank_id=0,
-                local_tp_degree=tp_degree,
-            )
+            self.manipulator = parallel.CPUTensorManipulator(tp_degree)
         else:
-            self.manipulator = parallel.ParallelTensorManipulator(
-                tp_degree,
-                rank_id=0,
-                local_tp_degree=tp_degree,
-            )
+            self.manipulator = parallel.ParallelTensorManipulator(tp_degree)
 
     def setup(self, io_ring_cache_size):
         self.input_buffers = [

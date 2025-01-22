@@ -51,50 +51,36 @@ class Executor:
 
 
 class ParallelTensorManipulator:
-    def __init__(self, tp_degree, rank_id=0, local_tp_degree=None):
+    def __init__(self, tp_degree):
         self.tp_degree = tp_degree
-        self.rank_id = rank_id
-        if local_tp_degree is None:
-            local_tp_degree = tp_degree
-        self.local_tp_degree = local_tp_degree
 
     def duplicate_on_cpu(self, tensor):
-        return [tensor for ordinal in range(self.local_tp_degree)]
+        return [tensor for ordinal in range(self.tp_degree)]
 
     def duplicate(self, tensor):
-        return ops.parallel_to_nc(
-            [tensor.contiguous() for ordinal in range(self.local_tp_degree)]
-        )
+        return ops.parallel_to_nc([tensor.contiguous() for _ in range(self.tp_degree)])
 
     def shard_along_on_cpu(self, tensor, dim):
         size = tensor.shape[dim]
         shard_size = size // self.tp_degree
         slices = [slice(None) for _ in tensor.shape]
         tensors = []
-        if self.local_tp_degree != self.tp_degree:  # for multi-instance tp
-            slice_start = self.rank_id * self.local_tp_degree * shard_size
-            slice_end = (self.rank_id + 1) * self.local_tp_degree * shard_size
-            for start in range(slice_start, slice_end, shard_size):
-                slices[dim] = slice(start, start + shard_size, 1)
-                shard = tensor[tuple(slices)].contiguous()
-                tensors.append(shard)
-        else:
-            slice_start = 0
-            slice_end = size
-            slice_range = range(slice_start, slice_end, shard_size)
-            for start in slice_range:
-                slices[dim] = slice(start, start + shard_size, 1)
-                shard = tensor[tuple(slices)].contiguous()
-                if len(slice_range) == 1:
-                    # edge case for save_presharded flow where something is "sharded"
-                    # but in reality is a no-op causing some tensors to share memory
-                    # safetensors cannot share memory so we make a copy
-                    shard = shard.clone()
-                tensors.append(shard)
-        if len(tensors) != self.local_tp_degree:
+        slice_start = 0
+        slice_end = size
+        slice_range = range(slice_start, slice_end, shard_size)
+        for start in slice_range:
+            slices[dim] = slice(start, start + shard_size, 1)
+            shard = tensor[tuple(slices)].contiguous()
+            if len(slice_range) == 1:
+                # edge case for save_presharded flow where something is "sharded"
+                # but in reality is a no-op causing some tensors to share memory
+                # safetensors cannot share memory so we make a copy
+                shard = shard.clone()
+            tensors.append(shard)
+        if len(tensors) != self.tp_degree:
             raise ValueError(
                 f"Weight with shape {tensor.shape} cannot be sharded along dimension {dim}. "
-                f"This results in {len(tensors)} weight partitions which cannot be distributed to {self.local_tp_degree} NeuronCores evenly. "
+                f"This results in {len(tensors)} weight partitions which cannot be distributed to {self.tp_degree} NeuronCores evenly. "
                 f"To fix this issue either the model parameters or the `tp_degree` must be changed to allow the weight to be evenly split"
             )
         return tensors
@@ -109,7 +95,7 @@ class ParallelTensorManipulator:
 
     def primary_only(self, tensor):
         tensors = [tensor]
-        tensors.extend(torch.zeros_like(tensor) for _ in range(1, self.local_tp_degree))
+        tensors.extend(torch.zeros_like(tensor) for _ in range(1, self.tp_degree))
         return ops.parallel_to_nc(tensors)
 
     def unshard_along(self, sharded_tensors, dim):
@@ -121,14 +107,14 @@ class ParallelTensorManipulator:
 
 class CPUTensorManipulator(ParallelTensorManipulator):
     def duplicate(self, tensor):
-        return [tensor.contiguous() for _ in range(self.local_tp_degree)]
+        return [tensor.contiguous() for _ in range(self.tp_degree)]
 
     def shard_along(self, tensor, dim):
         return self.shard_along_on_cpu(tensor, dim)
 
     def primary_only(self, tensor):
         tensors = [tensor]
-        tensors.extend(torch.zeros_like(tensor) for _ in range(1, self.local_tp_degree))
+        tensors.extend(torch.zeros_like(tensor) for _ in range(1, self.tp_degree))
         return tensors
 
     def slice_on_nc(self, tensor, dim, start, end, step):
