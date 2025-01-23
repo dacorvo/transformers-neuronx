@@ -37,13 +37,6 @@ class NeuronModelBase(PretrainedModel):
         self.chkpt_model.load_state_dict_dir(pretrained_model_path)
 
     # top level api
-    def save(self, directory):
-        assert self.serialization_enabled(), (
-            "serialization is not enabled for this model"
-        )
-        self._save_compiled_artifacts(directory)
-
-    # top level api
     def load(self, directory):
         assert self.serialization_enabled(), (
             "serialization is not enabled for this model"
@@ -78,14 +71,19 @@ class NeuronModelBase(PretrainedModel):
             init_neuron()
             self.load_weights()
             if hasattr(self, "_compiled_artifacts_directory"):
-                self._load_compiled_artifacts(self._compiled_artifacts_directory)
+                if not os.path.isdir(self._compiled_artifacts_directory):
+                    raise FileNotFoundError(
+                        f"Did not find directory: {self._compiled_artifacts_directory}."
+                    )
+                for nbs_obj in self.nbs_objs:
+                    nbs_obj.set_neff_bytes(self._compiled_artifacts_directory)
             else:
                 self.compile(
                     parallel_degree=self.neuron_config.compilation_worker_count
                 )
             self.setup()
 
-    def _save_compiled_artifacts(self, directory):
+    def save(self, directory):
         if os.path.isfile(directory):
             raise FileExistsError(
                 f"Artifacts should be saved to a directory. "
@@ -94,13 +92,6 @@ class NeuronModelBase(PretrainedModel):
         os.makedirs(directory, exist_ok=True)
         for i, nbs_obj in enumerate(self.nbs_objs):
             nbs_obj.save_compiler_artifacts(directory)
-
-    def _load_compiled_artifacts(self, directory):
-        if not os.path.isdir(directory):
-            raise FileNotFoundError(f"Did not find directory: {directory}.")
-
-        for nbs_obj in self.nbs_objs:
-            nbs_obj.set_neff_bytes(directory)
 
     def _get_all_kernels(self):
         all_kernels = []
