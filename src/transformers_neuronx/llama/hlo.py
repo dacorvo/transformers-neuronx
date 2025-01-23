@@ -14,10 +14,10 @@
 # ==============================================================================
 from typing import Optional
 
+from transformers.models.llama import LlamaConfig
 from transformers_neuronx import hlo, utils
 from transformers_neuronx import constants
 from transformers_neuronx.layers import transformer, rotary, attention
-from transformers_neuronx.llama.config import LlamaConfig
 from transformers_neuronx.config import NeuronConfig
 from transformers_neuronx.constants import LAYOUT_BSH, LAYOUT_HSB
 
@@ -51,7 +51,7 @@ class LlamaForSamplingNoEmbeddingHlo:
             n_active_tokens,
             self.config.hidden_size,
             self.neuron_config,
-            self.config.tp_degree,
+            self.neuron_config.tp_degree,
         )
 
         return tensors, dims
@@ -67,11 +67,11 @@ class LlamaForSamplingNoEmbeddingHlo:
         *weights,
     ):
         embed_weight, *rst = weights
-        dtype = getattr(input_ids.scribe, self.config.amp)
+        dtype = getattr(input_ids.scribe, self.neuron_config.amp)
         hidden = hlo.embedding(
-            embed_weight, input_ids, tp_degree=self.config.tp_degree, dtype=dtype
+            embed_weight, input_ids, tp_degree=self.neuron_config.tp_degree, dtype=dtype
         )
-        if self.config.hidden_size % self.config.tp_degree != 0:
+        if self.config.hidden_size % self.neuron_config.tp_degree != 0:
             hidden = hlo.slice_along(
                 hidden, dim=-1, limit=self.config.hidden_size, start=0
             )
@@ -96,14 +96,13 @@ class LlamaForSamplingNoEmbeddingHlo:
         active_to_contexted = None
         core_id = None
 
-        head_dim = self.config.attention_head_size
+        head_dim = self.config.hidden_size // self.config.num_attention_heads
         position_ids = cache_ids if position_ids is None else position_ids
         pos_embed = rotary.hlo_rotary_embedding(
             hidden.dtype,
-            int(head_dim * self.config.rotary_percentage),
+            head_dim,
             position_ids,
             base=self.config.rope_theta,
-            interpolation_factor=self.config.position_interpolation_factor,
             rope_scaling=self.config.rope_scaling,
         )
 
@@ -251,7 +250,7 @@ class LlamaForSamplingNoEmbeddingHlo:
                     pre_attn_ln_weight,
                     eps,
                     neuron_config=self.neuron_config,
-                    tp_degree=self.config.tp_degree,
+                    tp_degree=self.neuron_config.tp_degree,
                 )
                 if is_bsh
                 else hlo.rms_norm(
@@ -260,7 +259,7 @@ class LlamaForSamplingNoEmbeddingHlo:
                     eps,
                     dim=0,
                     neuron_config=self.neuron_config,
-                    tp_degree=self.config.tp_degree,
+                    tp_degree=self.neuron_config.tp_degree,
                 )
             )
         else:
@@ -299,7 +298,7 @@ class LlamaForSamplingNoEmbeddingHlo:
             eps,
             dim=rms_norm_dim,
             neuron_config=self.neuron_config,
-            tp_degree=self.config.tp_degree,
+            tp_degree=self.neuron_config.tp_degree,
         )
         if self.neuron_config.fuse_mlp:
             assert all(map(lambda x: not (x), [in0_weight, in1_weight, out_weight])), (
@@ -314,7 +313,7 @@ class LlamaForSamplingNoEmbeddingHlo:
             in1_weight,
             out_weight,
             activation_function="silu",
-            tp_degree=self.config.tp_degree,
+            tp_degree=self.neuron_config.tp_degree,
             neuron_config=self.neuron_config,
         )
         res_hidden = hlo.add(mlp_hidden, hidden)
@@ -445,7 +444,7 @@ class LlamaForSamplingNoEmbeddingHlo:
                     pre_attn_ln_weight,
                     eps,
                     neuron_config=self.neuron_config,
-                    tp_degree=self.config.tp_degree,
+                    tp_degree=self.neuron_config.tp_degree,
                 )
                 if is_bsh
                 else hlo.rms_norm(
@@ -454,7 +453,7 @@ class LlamaForSamplingNoEmbeddingHlo:
                     eps,
                     dim=0,
                     neuron_config=self.neuron_config,
-                    tp_degree=self.config.tp_degree,
+                    tp_degree=self.neuron_config.tp_degree,
                 )
             )
             attn_output, out_attn_k_cache, out_attn_v_cache = self.attention(
@@ -503,11 +502,11 @@ class LlamaForSamplingNoEmbeddingHlo:
                 ],
             )
             dtype, replica_groups = utils.parse_dtype_replica_groups(
-                self.neuron_config, self.config.tp_degree
+                self.neuron_config, self.neuron_config.tp_degree
             )
             mlp_hidden = hlo.all_reduce_sum(
                 mlp_result,
-                self.config.tp_degree,
+                self.neuron_config.tp_degree,
                 dtype=dtype,
                 replica_groups=replica_groups,
             )
@@ -528,7 +527,7 @@ class LlamaForSamplingNoEmbeddingHlo:
                 eps,
                 dim=rms_norm_dim,
                 neuron_config=self.neuron_config,
-                tp_degree=self.config.tp_degree,
+                tp_degree=self.neuron_config.tp_degree,
             )
             mlp_hidden = gated_mlp(
                 norm_hidden,
@@ -536,7 +535,7 @@ class LlamaForSamplingNoEmbeddingHlo:
                 in1_weight,
                 out_weight,
                 activation_function="silu",
-                tp_degree=self.config.tp_degree,
+                tp_degree=self.neuron_config.tp_degree,
                 neuron_config=self.neuron_config,
             )
             if is_first_last_layer or not enable_qkv_kernel:
@@ -554,7 +553,7 @@ class LlamaForSamplingNoEmbeddingHlo:
         is_prefill=True,
     ):
         logits = transformer.rms_lm_head(
-            self.config.tp_degree,
+            self.neuron_config.tp_degree,
             hidden,
             last_token_id,
             rms_weight,
@@ -613,8 +612,8 @@ class LlamaForSamplingNoEmbeddingHlo:
             hidden, mlp_out, attn_out = hidden
 
         n_seqs, n_active_tokens, _ = hidden.sizes
-        d_head = self.config.attention_head_size
-        tp_degree = self.config.tp_degree
+        d_head = self.config.hidden_size // self.config.num_attention_heads
+        tp_degree = self.neuron_config.tp_degree
 
         # Compute the expected number of KV heads (Used in case fused QKV is used)
         n_kv_heads_tp = None
@@ -745,8 +744,8 @@ class LlamaForSamplingNoEmbeddingHlo:
         out_bias,
         qkv_tuple: tuple = None,
     ):
-        d_head = self.config.attention_head_size
-        tp_degree = self.config.tp_degree
+        d_head = self.config.hidden_size // self.config.num_attention_heads
+        tp_degree = self.neuron_config.tp_degree
 
         # Compute the expected number of KV heads (Used in case fused QKV is used)
         n_kv_heads_tp = None
@@ -787,7 +786,6 @@ class LlamaForSamplingNoEmbeddingHlo:
             query,
             key,
             pos_embed,
-            self.config.rotary_percentage,
             tp_degree=tp_degree,
             shard_over_batch=self.shard_over_batch,
         )

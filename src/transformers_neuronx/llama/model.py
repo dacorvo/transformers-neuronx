@@ -18,8 +18,8 @@ import torch
 from ..base import NeuronHloDecoderModel
 from ..config import NeuronConfig
 from ..decoder import DecoderLmHeadForSamplingNoEmbedding
+from ..dtypes import to_torch_dtype
 from ..utils import interleave_mlp
-from .config import LlamaConfig
 from .hlo import LlamaForSamplingNoEmbeddingHlo
 from .modules import LlamaForCausalLM
 
@@ -28,31 +28,19 @@ class LlamaHloModel(NeuronHloDecoderModel):
     def __init__(
         self,
         config,
-        *,
-        n_positions=2048,
-        batch_size=1,
-        amp="f32",
-        tp_degree=2,
-        neuron_config=None,
-        **kwargs,
+        neuron_config,
     ):
-        config = LlamaConfig(config, n_positions, batch_size, amp, tp_degree)
-        super().__init__(LlamaForCausalLM, config)
+        dtype = to_torch_dtype(neuron_config.amp)
+        super().__init__(LlamaForCausalLM, config, dtype)
         self.context_pre_hook = None
         self.context_hook = None
         self.config = config
         self.neuron_config = neuron_config if neuron_config else NeuronConfig()
-        self.n_positions = n_positions
-        self.batch_size = batch_size
         hlo_builder = LlamaForSamplingNoEmbeddingHlo(
             config, neuron_config=self.neuron_config
         )
         self.decoder_param_set = DecoderLmHeadForSamplingNoEmbedding(
-            tp_degree=tp_degree,
-            n_positions=self.n_positions,
             n_active_tokens=1,
-            batch_size=self.batch_size,
-            amp=amp,
             config=config,
             neuron_config=self.neuron_config,
             allow_pad=True,

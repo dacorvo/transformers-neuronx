@@ -12,15 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-from transformers_neuronx import dtypes
 from transformers_neuronx import module
 
 
 class LlamaForCausalLM(module.PretrainedModel):
-    def __init__(self, config):
+    def __init__(self, config, dtype):
         super().__init__()
-        dtype = dtypes.to_torch_dtype(config.amp)
-        self.model = LlamaModel(config)
+        self.model = LlamaModel(config, dtype)
         self.lm_head = module.LowMemoryLazyLinear(
             config.vocab_size, dtype=dtype, bias=False
         )
@@ -33,39 +31,38 @@ class LlamaForCausalLM(module.PretrainedModel):
 
 
 class LlamaModel(module.LowMemoryModule):
-    def __init__(self, config):
+    def __init__(self, config, dtype):
         super().__init__()
         self.embed_tokens = module.LowMemoryEmbedding(
             config.vocab_size, config.hidden_size
         )
         self.layers = module.LowMemoryModuleList(
-            [LlamaDecoderLayer(config) for _ in range(config.num_hidden_layers)]
+            [LlamaDecoderLayer(config, dtype) for _ in range(config.num_hidden_layers)]
         )
-        self.norm = LlamaRMSNorm(config)
+        self.norm = LlamaRMSNorm()
 
 
 class LlamaRMSNorm(module.LowMemoryModule):
-    def __init__(self, config) -> None:
+    def __init__(self) -> None:
         super().__init__()
         self.weight = module.UninitializedParameter()
 
 
 class LlamaDecoderLayer(module.LowMemoryModule):
-    def __init__(self, config):
+    def __init__(self, config, dtype):
         super().__init__()
-        self.self_attn = LlamaAttention(config)
-        self.mlp = LlamaMLP(config)
-        self.input_layernorm = LlamaRMSNorm(config)
-        self.post_attention_layernorm = LlamaRMSNorm(config)
+        self.self_attn = LlamaAttention(config, dtype)
+        self.mlp = LlamaMLP(config, dtype)
+        self.input_layernorm = LlamaRMSNorm()
+        self.post_attention_layernorm = LlamaRMSNorm()
 
 
 class LlamaAttention(module.LowMemoryModule):
-    def __init__(self, config):
+    def __init__(self, config, dtype):
         super().__init__()
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
         self.head_dim = self.hidden_size // self.num_heads
-        dtype = dtypes.to_torch_dtype(config.amp)
         self.q_proj = module.LowMemoryLazyLinear(
             self.num_heads * self.head_dim, bias=False, dtype=dtype
         )
@@ -81,9 +78,8 @@ class LlamaAttention(module.LowMemoryModule):
 
 
 class LlamaMLP(module.LowMemoryModule):
-    def __init__(self, config):
+    def __init__(self, config, dtype):
         super().__init__()
-        dtype = dtypes.to_torch_dtype(config.amp)
         self.gate_proj = module.LowMemoryLazyLinear(
             config.intermediate_size, bias=False, dtype=dtype
         )

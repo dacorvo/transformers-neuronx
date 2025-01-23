@@ -384,34 +384,6 @@ def maybe_download_weights(path_or_repo_id, safe_serialization=True, **kwargs):
 class PretrainedModel(LowMemoryModule):
     @classmethod
     def from_pretrained(cls, pretrained_model_path, *model_args, **kwargs):
-        def _sanity_check(**kwargs):
-            context_length_estimate = kwargs.get("context_length_estimate", None)
-            n_positions = kwargs.get("n_positions", 2048)
-            max_n_pos = (
-                max(n_positions) if isinstance(n_positions, list) else n_positions
-            )
-            max_cle = (
-                max(context_length_estimate)
-                if isinstance(context_length_estimate, list)
-                else context_length_estimate
-            )
-            # max_n_pos or max_cle could be None if customer intends to use defaults
-            if isinstance(max_n_pos, int) and isinstance(max_cle, int):
-                assert max_n_pos >= max_cle, (
-                    f"Max context_length_estimate {max_cle} cannot be more than max n_positions {max_n_pos}."
-                )
-            neuron_config = kwargs.get("neuron_config", None)
-            continuous_batching = neuron_config and neuron_config.continuous_batching
-            if continuous_batching:
-                batch_size_for_shared_caches = (
-                    neuron_config.continuous_batching.batch_size_for_shared_caches
-                )
-                expected_batch_size = kwargs.get("batch_size")
-                assert batch_size_for_shared_caches == expected_batch_size, (
-                    f"invalid batch_size_for_shared_caches ({batch_size_for_shared_caches}), {expected_batch_size} is expected"
-                )
-
-        _sanity_check(**kwargs)
         config = AutoConfig.from_pretrained(pretrained_model_path)
         model = cls(config, *model_args, **kwargs)
         pretrained_model_path = maybe_download_weights(pretrained_model_path, **kwargs)

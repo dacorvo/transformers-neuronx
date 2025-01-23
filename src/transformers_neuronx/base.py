@@ -170,7 +170,7 @@ class NeuronHloDecoderModel(NeuronModelBase):
             # token generation
             return input_ids, cache_ids, last_token_id, block_tables, context_lens
 
-        estimate = self.config.n_positions[0]
+        estimate = self.neuron_config.n_positions
 
         if estimate:
             # when context length is larger than estimate, last_token_id=estimate-1
@@ -227,7 +227,7 @@ class NeuronHloDecoderModel(NeuronModelBase):
         if (n_active_tokens > 1) and cache_ids.flatten()[0].item() == 0:
             # context encoding
             n_active_seqs, n_active_tokens = input_ids.shape
-            n_positions = self.config.n_positions[0]
+            n_positions = self.neuron_config.n_positions
             assert n_active_seqs == cache_ids.shape[0], (
                 f"invalid n_active_seqs ({n_active_seqs} vs {cache_ids.shape[0]})"
             )

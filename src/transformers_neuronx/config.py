@@ -61,6 +61,10 @@ class NeuronConfig:
     Neuron configurations for extra features and performance optimizations.
 
     Arguments:
+        n_positions: the model maximum number of input tokens
+        batch_size: the model input batch_size
+        amp: the neuron dtype (one of fp32, fp16, bf16)
+        tp_degree: the tensor parallelism degree
         continuous_batching: Enables the model to be used with continuous
             batching using the given configurations.
         attention_layout: Layout to be used for attention computation.
@@ -94,6 +98,10 @@ class NeuronConfig:
 
     def __init__(
         self,
+        n_positions: int = 1024,
+        batch_size: int = 1,
+        amp: str = "bf16",
+        tp_degree: int = 2,
         *,
         continuous_batching: Optional[ContinuousBatchingConfig] = None,
         attention_layout: Layout = Layout.HSB,
@@ -116,6 +124,10 @@ class NeuronConfig:
         duplicate_q_weight_sos: bool = False,
         **kwargs,
     ):
+        self.n_positions = n_positions
+        self.batch_size = batch_size
+        self.amp = amp
+        self.tp_degree = tp_degree
         self.all_reduce_dtype = all_reduce_dtype
         self.cast_logits_dtype = cast_logits_dtype
         assert cast_logits_dtype in valid_dtypes, (
