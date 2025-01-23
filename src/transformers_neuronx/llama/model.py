@@ -15,7 +15,7 @@
 import torch
 
 
-from ..base import NeuronModelBase
+from ..base import NeuronHloDecoderModel
 from ..config import NeuronConfig
 from ..decoder import DecoderLmHeadForSamplingNoEmbedding
 from ..utils import interleave_mlp
@@ -24,7 +24,7 @@ from .hlo import LlamaForSamplingNoEmbeddingHlo
 from .modules import LlamaForCausalLM
 
 
-class LlamaForSampling(NeuronModelBase):
+class LlamaHloModel(NeuronHloDecoderModel):
     def __init__(
         self,
         config,

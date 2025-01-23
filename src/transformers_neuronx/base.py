@@ -116,6 +116,18 @@ class NeuronModelBase(PretrainedModel):
         temp.append(nbs_obj)
         self.nbs_objs = temp
 
+    def serialization_enabled(self):
+        return getattr(self, "nbs_objs", None) is not None
+
+    def profile(self, profile_dir, ntff_count_limit):
+        kernels = self._get_all_kernels()
+
+        for kernel in kernels:
+            if isinstance(kernel, ParallelKernel):
+                kernel.profile(profile_dir, ntff_count_limit)
+
+
+class NeuronHloDecoderModel(NeuronModelBase):
     def reset(self):
         self.decoder_lm_head.reset()
 
@@ -372,16 +384,6 @@ class NeuronModelBase(PretrainedModel):
             logits = logits[: self.config.vocab_size, -1, :]
             logits = logits.transpose(0, 1)
         return logits
-
-    def serialization_enabled(self):
-        return getattr(self, "nbs_objs", None) is not None
-
-    def profile(self, profile_dir, ntff_count_limit):
-        kernels = self._get_all_kernels()
-
-        for kernel in kernels:
-            if isinstance(kernel, ParallelKernel):
-                kernel.profile(profile_dir, ntff_count_limit)
 
     def forward(
         self,
