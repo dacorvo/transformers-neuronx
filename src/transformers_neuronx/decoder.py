@@ -17,6 +17,7 @@ import itertools
 import warnings
 
 import torch
+from transformers import PretrainedConfig
 from transformers_neuronx import compiler
 from transformers_neuronx import dtypes
 from transformers_neuronx import hlo
@@ -45,11 +46,8 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         n_positions,
         n_active_tokens,
         batch_size,
-        attention_head_size,
         amp,
-        num_layers,
-        n_head=None,
-        n_kv_head=0,
+        config: PretrainedConfig,
         neuron_config=None,
         allow_pad=True,
         is_prefill=True,
@@ -65,12 +63,13 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         self.n_positions = n_positions
         self.n_active_tokens = n_active_tokens
         self.batch_size = batch_size
-        self.attention_head_size = attention_head_size  # TODO: rename to size_per_head
-        self.n_head = n_head
-        self.n_kv_head = n_kv_head if (n_kv_head > 0) else n_head
+        self.config = config
+        self.attention_head_size = config.hidden_size // config.num_attention_heads
+        self.num_layers = config.num_hidden_layers
+        self.n_head = config.num_attention_heads
+        self.n_kv_head = config.num_key_value_heads
         self.is_prefill = is_prefill
         self.amp = amp
-        self.num_layers = num_layers
         self.neuron_config = NeuronConfig() if neuron_config is None else neuron_config
         self.layers = []
         self.ln_f_weight = None
@@ -185,11 +184,8 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             n_positions=self.n_positions,
             n_active_tokens=self.n_positions,
             batch_size=1,
-            attention_head_size=self.attention_head_size,
             amp=self.amp,
-            num_layers=self.num_layers,
-            n_head=self.n_head,
-            n_kv_head=self.n_kv_head,
+            config=self.config,
             neuron_config=self.neuron_config,
             allow_pad=self.allow_pad,
             is_prefill=True,
@@ -206,11 +202,8 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             n_positions=self.n_positions,
             n_active_tokens=1,
             batch_size=self.batch_size,
-            attention_head_size=self.attention_head_size,
             amp=self.amp,
-            num_layers=self.num_layers,
-            n_head=self.n_head,
-            n_kv_head=self.n_kv_head,
+            config=self.config,
             neuron_config=self.neuron_config,
             allow_pad=True,
             is_prefill=False,
@@ -314,11 +307,8 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
                 self.n_positions,
                 self.n_active_tokens,
                 self.batch_size,
-                self.attention_head_size,
                 amp=self.amp,
-                num_layers=self.num_layers,
-                n_head=self.n_head,
-                n_kv_head=self.n_kv_head,
+                config=self.config,
                 neuron_config=self.neuron_config,
                 allow_pad=self.allow_pad,
                 is_prefill=self.is_prefill,
