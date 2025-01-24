@@ -45,7 +45,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         n_active_tokens,
         config: PretrainedConfig,
         neuron_config: NeuronConfig,
-        allow_pad=True,
         is_prefill=True,
         builder=None,
         tag=None,
@@ -78,7 +77,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         self.program = None
         self.pre_layer_parameters = []
         self.pre_layer_builder = None
-        self.allow_pad = allow_pad
         self.use_executor = False
         self.return_ranks = -1
         self.builder = builder
@@ -178,7 +176,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             config=self.config,
             neuron_config=self.neuron_config,
             n_active_tokens=self.neuron_config.n_positions,
-            allow_pad=self.allow_pad,
             is_prefill=True,
             builder=self.builder,
             tag="context",
@@ -192,7 +189,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             n_active_tokens=1,
             config=self.config,
             neuron_config=self.neuron_config,
-            allow_pad=True,
             is_prefill=False,
             builder=self.builder,
             tag="token",
@@ -217,8 +213,8 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
     def add_embedding_builder(self, embedding_builder):
         self.embedding_builder = embedding_builder
 
-    def add_pre_layer_parameter(self, param, sharding=None, allow_pad=True):
-        self.pre_layer_parameters.append((param, sharding, allow_pad))
+    def add_pre_layer_parameter(self, param, sharding=None):
+        self.pre_layer_parameters.append((param, sharding))
 
     def add_pre_layer_builder(self, builder):
         self.pre_layer_builder = builder
@@ -234,7 +230,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             self.config,
             self.neuron_config,
             self.batch_size,
-            allow_pad=self.allow_pad,
             n_active_tokens=self.n_active_tokens,
             layer_num=len(self.layers),
             is_unit_scale=is_unit_scale,
@@ -292,7 +287,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
                 n_active_tokens=self.n_active_tokens,
                 config=self.config,
                 neuron_config=self.neuron_config,
-                allow_pad=self.allow_pad,
                 is_prefill=self.is_prefill,
             )
         new.add_inputs_builder(self.inputs_builder)
@@ -353,8 +347,8 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
 
     def _prepare_pre_layer_params(self, manipulator, pre_layer_parameters):
         extras = []
-        for param, dim, allow_pad in pre_layer_parameters:
-            if allow_pad and dim is not None:
+        for param, dim in pre_layer_parameters:
+            if dim is not None:
                 if param.shape[dim] % self.neuron_config.tp_degree != 0:
                     size = round_up_to_divisor(
                         param.shape[dim], self.neuron_config.tp_degree
@@ -657,7 +651,6 @@ class DecoderLayer:
         config,
         neuron_config,
         batch_size,
-        allow_pad=True,
         n_active_tokens=None,
         layer_num=None,
         is_unit_scale=False,
@@ -712,7 +705,6 @@ class DecoderLayer:
         self.amp = self.neuron_config.amp
         self.cache_dtype = dtypes.to_torch_dtype(self.amp)
         self.extra_parameters = []
-        self.allow_pad = allow_pad
         self.attn_out_sharding = 0
         self.attn_out_transposed = True
         self.mlp_out_sharding = 0
@@ -722,10 +714,8 @@ class DecoderLayer:
         self.is_unit_scale = is_unit_scale
         self._cpu_compile = False
 
-    def add_parameter(
-        self, param, sharding=None, allow_pad=True, allow_transform=False
-    ):
-        self.extra_parameters.append((param, sharding, allow_pad, allow_transform))
+    def add_parameter(self, param, sharding=None, allow_transform=False):
+        self.extra_parameters.append((param, sharding, allow_transform))
 
     def add_pre_attention_layer_norm(self, weight, bias):
         self.pre_attn_ln_weight = weight
@@ -776,221 +766,219 @@ class DecoderLayer:
         self.mlp_out_transposed = transposed
 
     def to_neuron(self):
-        # If we allow padding then we need to pad non-sharded QKV weight dimensions
+        # Apply QKV weight paddings + head replication to evenly split weights
+        # for the specified tensor parallelism
         self.neuron_config.n_head_padded = self.n_head
-        if self.allow_pad:
-            # Hidden size padding
-            _, hidden_size = self.attn_q_weight.shape
-            n_heads = hidden_size // self.attention_head_size
+        # Hidden size padding
+        _, hidden_size = self.attn_q_weight.shape
+        n_heads = hidden_size // self.attention_head_size
 
-            n_head_padded, n_kv_heads_padded = get_qkv_padding(
-                n_heads, self.n_kv_head, self.tp_degree, self.neuron_config
-            )
-            self.n_head_padded = n_head_padded
-            self.neuron_config.n_head_padded = self.n_head_padded
+        n_head_padded, n_kv_heads_padded = get_qkv_padding(
+            n_heads, self.n_kv_head, self.tp_degree, self.neuron_config
+        )
+        self.n_head_padded = n_head_padded
+        self.neuron_config.n_head_padded = self.n_head_padded
 
-            hidden_size_padded = hidden_size_padded_qkv = (
-                n_head_padded * self.attention_head_size
+        hidden_size_padded = hidden_size_padded_qkv = (
+            n_head_padded * self.attention_head_size
+        )
+        if self.neuron_config.group_query_attention == constants.GQA.ALL_GATHER_HEADS:
+            qkv_maybe_pad = attn_out_maybe_pad = MaybePadder(
+                hidden_size_padded,
+                padding="interleaved",
+                split_size=n_heads,
+                interleaved_factor=self.n_kv_head,
             )
+        else:
+            qkv_maybe_pad = MaybePadder(hidden_size_padded_qkv)
+            attn_out_maybe_pad = MaybePadder(hidden_size_padded)
+
+            # Adjust padding strategy if we can use less K/V replication
+            # with interleaved padding.
+            extra_heads = n_head_padded - n_heads
             if (
-                self.neuron_config.group_query_attention
-                == constants.GQA.ALL_GATHER_HEADS
+                self.n_head != self.n_kv_head
+                and self.neuron_config.group_query_attention
+                == constants.GQA.REPLICATED_HEADS
+                and self.tp_degree % self.n_kv_head == 0
+                and extra_heads % self.n_kv_head == 0
+                and extra_heads > 0
             ):
-                qkv_maybe_pad = attn_out_maybe_pad = MaybePadder(
+                qkv_maybe_pad = MaybePadder(
+                    hidden_size_padded_qkv,
+                    padding="interleaved",
+                    split_size=n_heads,
+                    interleaved_factor=self.n_kv_head,
+                )
+                attn_out_maybe_pad = MaybePadder(
                     hidden_size_padded,
                     padding="interleaved",
                     split_size=n_heads,
                     interleaved_factor=self.n_kv_head,
                 )
+
+        self.attn_q_weight = qkv_maybe_pad(self.attn_q_weight, dim=1)
+        self.attn_q_bias = qkv_maybe_pad(self.attn_q_bias, dim=0)
+
+        node_interleaving = False
+
+        if n_kv_heads_padded != self.n_kv_head:
+            if n_kv_heads_padded % self.n_kv_head == 0:
+                ratio = int(n_kv_heads_padded / self.n_kv_head)
             else:
-                qkv_maybe_pad = MaybePadder(hidden_size_padded_qkv)
-                attn_out_maybe_pad = MaybePadder(hidden_size_padded)
+                ratio = int((n_kv_heads_padded - extra_heads) / self.n_kv_head)
 
-                # Adjust padding strategy if we can use less K/V replication
-                # with interleaved padding.
-                extra_heads = n_head_padded - n_heads
-                if (
-                    self.n_head != self.n_kv_head
-                    and self.neuron_config.group_query_attention
-                    == constants.GQA.REPLICATED_HEADS
-                    and self.tp_degree % self.n_kv_head == 0
-                    and extra_heads % self.n_kv_head == 0
-                    and extra_heads > 0
-                ):
-                    qkv_maybe_pad = MaybePadder(
-                        hidden_size_padded_qkv,
-                        padding="interleaved",
-                        split_size=n_heads,
-                        interleaved_factor=self.n_kv_head,
-                    )
-                    attn_out_maybe_pad = MaybePadder(
-                        hidden_size_padded,
-                        padding="interleaved",
-                        split_size=n_heads,
-                        interleaved_factor=self.n_kv_head,
-                    )
+            # Full replication: replicate KV heads to original Q heads and then do padding
+            if n_head_padded == n_kv_heads_padded and extra_heads > 0:
+                ratio = int((n_kv_heads_padded - extra_heads) / self.n_kv_head)
 
-            self.attn_q_weight = qkv_maybe_pad(self.attn_q_weight, dim=1)
-            self.attn_q_bias = qkv_maybe_pad(self.attn_q_bias, dim=0)
-
-            node_interleaving = False
-
-            if n_kv_heads_padded != self.n_kv_head:
-                if n_kv_heads_padded % self.n_kv_head == 0:
-                    ratio = int(n_kv_heads_padded / self.n_kv_head)
-                else:
-                    ratio = int((n_kv_heads_padded - extra_heads) / self.n_kv_head)
-
-                # Full replication: replicate KV heads to original Q heads and then do padding
-                if n_head_padded == n_kv_heads_padded and extra_heads > 0:
-                    ratio = int((n_kv_heads_padded - extra_heads) / self.n_kv_head)
-
-                def repeat(weight):
-                    if weight is None:
-                        return weight
-                    shape = weight.shape[:-1] + (
-                        self.n_kv_head,
-                        weight.shape[-1] // self.n_kv_head,
-                    )
-                    weight = weight.view(shape)
-                    weight = torch.repeat_interleave(weight, repeats=ratio, dim=-2)
-                    shape = weight.shape[:-2] + (weight.shape[-1] * weight.shape[-2],)
-                    return weight.view(shape)
-
-                def pad_kv_no_repeat(weight, pad_size):
-                    if weight is None:
-                        return weight
-                    shape = weight.shape[:-1] + (
-                        self.n_kv_head,
-                        weight.shape[-1] // self.n_kv_head,
-                    )
-                    weight = weight.view(shape)
-                    weight = torch.nn.functional.pad(weight, (0, 0, 0, pad_size))
-                    shape = weight.shape[:-2] + (weight.shape[-1] * weight.shape[-2],)
-                    return weight.view(shape)
-
-                if ratio == 0:
-                    # in case no replication is needed, pad kv based on n_kv_heads_padded calculated above
-                    self.attn_k_weight = pad_kv_no_repeat(
-                        self.attn_k_weight, n_kv_heads_padded - self.n_kv_head
-                    )
-                    self.attn_v_weight = pad_kv_no_repeat(
-                        self.attn_v_weight, n_kv_heads_padded - self.n_kv_head
-                    )
-                    self.attn_k_bias = pad_kv_no_repeat(
-                        self.attn_k_bias, n_kv_heads_padded - self.n_kv_head
-                    )
-                    self.attn_v_bias = pad_kv_no_repeat(
-                        self.attn_v_bias, n_kv_heads_padded - self.n_kv_head
-                    )
-                    self.n_kv_head = n_kv_heads_padded
-                else:
-                    self.attn_k_weight = repeat(self.attn_k_weight)
-                    self.attn_v_weight = repeat(self.attn_v_weight)
-                    self.attn_k_bias = repeat(self.attn_k_bias)
-                    self.attn_v_bias = repeat(self.attn_v_bias)
-                    self.n_kv_head *= ratio
-                self.kv_replication = ratio
-                # FIXME: As a workaround to get kv_replication info (after padding) in HLO construction
-                self.neuron_config.kv_replication = self.kv_replication
-
-            if self.n_head == self.n_kv_head:
-                self.attn_k_weight = qkv_maybe_pad(self.attn_k_weight, dim=1)
-                self.attn_k_bias = qkv_maybe_pad(self.attn_k_bias, dim=0)
-
-                self.attn_v_weight = qkv_maybe_pad(self.attn_v_weight, dim=1)
-                self.attn_v_bias = qkv_maybe_pad(self.attn_v_bias, dim=0)
-
-            def interleave_by_node(tensor, dim, n_nodes):
-                if tensor is None:
-                    return tensor
-                shape = tensor.shape
-                assert shape[dim] % n_nodes == 0, (
-                    f"cannot interleave across node for tensor shape {shape}"
-                    f" and n_nodes {n_nodes}"
+            def repeat(weight):
+                if weight is None:
+                    return weight
+                shape = weight.shape[:-1] + (
+                    self.n_kv_head,
+                    weight.shape[-1] // self.n_kv_head,
                 )
-                stride = constants.TRN1_WORLD_SIZE
-                view_shape = (
-                    (stride, shape[0] // stride, shape[1])
-                    if dim == 0
-                    else (shape[0], stride, shape[1] // stride)
-                )
-                return (
-                    tensor.reshape(view_shape).permute(1, 0, 2).reshape(shape)
-                    if dim == 0
-                    else tensor.reshape(view_shape).permute(0, 2, 1).reshape(shape)
-                )
+                weight = weight.view(shape)
+                weight = torch.repeat_interleave(weight, repeats=ratio, dim=-2)
+                shape = weight.shape[:-2] + (weight.shape[-1] * weight.shape[-2],)
+                return weight.view(shape)
 
-            if node_interleaving:
-                n_nodes = self.tp_degree // constants.TRN1_WORLD_SIZE
-                self.attn_q_weight = interleave_by_node(
-                    self.attn_q_weight, dim=1, n_nodes=n_nodes
+            def pad_kv_no_repeat(weight, pad_size):
+                if weight is None:
+                    return weight
+                shape = weight.shape[:-1] + (
+                    self.n_kv_head,
+                    weight.shape[-1] // self.n_kv_head,
                 )
-                self.attn_k_weight = interleave_by_node(
-                    self.attn_k_weight, dim=1, n_nodes=n_nodes
-                )
-                self.attn_v_weight = interleave_by_node(
-                    self.attn_v_weight, dim=1, n_nodes=n_nodes
-                )
-                self.attn_q_bias = interleave_by_node(
-                    self.attn_q_bias, dim=0, n_nodes=n_nodes
-                )
-                self.attn_k_bias = interleave_by_node(
-                    self.attn_k_bias, dim=0, n_nodes=n_nodes
-                )
-                self.attn_v_bias = interleave_by_node(
-                    self.attn_v_bias, dim=0, n_nodes=n_nodes
-                )
+                weight = weight.view(shape)
+                weight = torch.nn.functional.pad(weight, (0, 0, 0, pad_size))
+                shape = weight.shape[:-2] + (weight.shape[-1] * weight.shape[-2],)
+                return weight.view(shape)
 
-            if self.neuron_config and self.neuron_config.fuse_qkv:
-                fused_qkv_weight = interleave_qkv(
-                    self.attn_q_weight,
-                    self.attn_k_weight,
-                    self.attn_v_weight,
+            if ratio == 0:
+                # in case no replication is needed, pad kv based on n_kv_heads_padded calculated above
+                self.attn_k_weight = pad_kv_no_repeat(
+                    self.attn_k_weight, n_kv_heads_padded - self.n_kv_head
+                )
+                self.attn_v_weight = pad_kv_no_repeat(
+                    self.attn_v_weight, n_kv_heads_padded - self.n_kv_head
+                )
+                self.attn_k_bias = pad_kv_no_repeat(
+                    self.attn_k_bias, n_kv_heads_padded - self.n_kv_head
+                )
+                self.attn_v_bias = pad_kv_no_repeat(
+                    self.attn_v_bias, n_kv_heads_padded - self.n_kv_head
+                )
+                self.n_kv_head = n_kv_heads_padded
+            else:
+                self.attn_k_weight = repeat(self.attn_k_weight)
+                self.attn_v_weight = repeat(self.attn_v_weight)
+                self.attn_k_bias = repeat(self.attn_k_bias)
+                self.attn_v_bias = repeat(self.attn_v_bias)
+                self.n_kv_head *= ratio
+            self.kv_replication = ratio
+            # FIXME: As a workaround to get kv_replication info (after padding) in HLO construction
+            self.neuron_config.kv_replication = self.kv_replication
+
+        if self.n_head == self.n_kv_head:
+            self.attn_k_weight = qkv_maybe_pad(self.attn_k_weight, dim=1)
+            self.attn_k_bias = qkv_maybe_pad(self.attn_k_bias, dim=0)
+
+            self.attn_v_weight = qkv_maybe_pad(self.attn_v_weight, dim=1)
+            self.attn_v_bias = qkv_maybe_pad(self.attn_v_bias, dim=0)
+
+        def interleave_by_node(tensor, dim, n_nodes):
+            if tensor is None:
+                return tensor
+            shape = tensor.shape
+            assert shape[dim] % n_nodes == 0, (
+                f"cannot interleave across node for tensor shape {shape}"
+                f" and n_nodes {n_nodes}"
+            )
+            stride = constants.TRN1_WORLD_SIZE
+            view_shape = (
+                (stride, shape[0] // stride, shape[1])
+                if dim == 0
+                else (shape[0], stride, shape[1] // stride)
+            )
+            return (
+                tensor.reshape(view_shape).permute(1, 0, 2).reshape(shape)
+                if dim == 0
+                else tensor.reshape(view_shape).permute(0, 2, 1).reshape(shape)
+            )
+
+        if node_interleaving:
+            n_nodes = self.tp_degree // constants.TRN1_WORLD_SIZE
+            self.attn_q_weight = interleave_by_node(
+                self.attn_q_weight, dim=1, n_nodes=n_nodes
+            )
+            self.attn_k_weight = interleave_by_node(
+                self.attn_k_weight, dim=1, n_nodes=n_nodes
+            )
+            self.attn_v_weight = interleave_by_node(
+                self.attn_v_weight, dim=1, n_nodes=n_nodes
+            )
+            self.attn_q_bias = interleave_by_node(
+                self.attn_q_bias, dim=0, n_nodes=n_nodes
+            )
+            self.attn_k_bias = interleave_by_node(
+                self.attn_k_bias, dim=0, n_nodes=n_nodes
+            )
+            self.attn_v_bias = interleave_by_node(
+                self.attn_v_bias, dim=0, n_nodes=n_nodes
+            )
+
+        if self.neuron_config and self.neuron_config.fuse_qkv:
+            fused_qkv_weight = interleave_qkv(
+                self.attn_q_weight,
+                self.attn_k_weight,
+                self.attn_v_weight,
+                self.tp_degree,
+                dim=1,
+            )
+            if self.attn_q_bias is not None:
+                fused_qkv_bias = interleave_qkv(
+                    self.attn_q_bias,
+                    self.attn_k_bias,
+                    self.attn_v_bias,
                     self.tp_degree,
-                    dim=1,
+                    dim=0,
                 )
-                if self.attn_q_bias is not None:
-                    fused_qkv_bias = interleave_qkv(
-                        self.attn_q_bias,
-                        self.attn_k_bias,
-                        self.attn_v_bias,
-                        self.tp_degree,
-                        dim=0,
-                    )
-                else:
-                    fused_qkv_bias = None
-                self.attn_k_weight = None
-                self.attn_k_bias = None
-                self.attn_v_weight = None
-                self.attn_v_bias = None
-            if self.attn_out_pad:
-                self.attn_out_weight = attn_out_maybe_pad(
-                    self.attn_out_weight, dim=self.attn_out_sharding
-                )
-            if node_interleaving:
-                self.attn_out_weight = interleave_by_node(
-                    self.attn_out_weight, dim=self.attn_out_sharding, n_nodes=n_nodes
-                )
-            # Intermediate MLP layer padding
-            if self.mlp_in_weight is not None:
-                _, intermediate_size = self.mlp_in_weight.shape
+            else:
+                fused_qkv_bias = None
+            self.attn_k_weight = None
+            self.attn_k_bias = None
+            self.attn_v_weight = None
+            self.attn_v_bias = None
+        if self.attn_out_pad:
+            self.attn_out_weight = attn_out_maybe_pad(
+                self.attn_out_weight, dim=self.attn_out_sharding
+            )
+        if node_interleaving:
+            self.attn_out_weight = interleave_by_node(
+                self.attn_out_weight, dim=self.attn_out_sharding, n_nodes=n_nodes
+            )
+        # Intermediate MLP layer padding
+        if self.mlp_in_weight is not None:
+            _, intermediate_size = self.mlp_in_weight.shape
+            intermediate_size_padded = round_up_to_divisor(
+                intermediate_size, self.tp_degree
+            )
+            maybe_pad = MaybePadder(intermediate_size_padded)
+
+            self.mlp_in_weight = maybe_pad(self.mlp_in_weight, dim=1)
+            self.mlp_in_bias = maybe_pad(self.mlp_in_bias, dim=0)
+            if self.neuron_config.fuse_mlp:
+                intermediate_size = intermediate_size // 2
                 intermediate_size_padded = round_up_to_divisor(
                     intermediate_size, self.tp_degree
                 )
                 maybe_pad = MaybePadder(intermediate_size_padded)
-
-                self.mlp_in_weight = maybe_pad(self.mlp_in_weight, dim=1)
-                self.mlp_in_bias = maybe_pad(self.mlp_in_bias, dim=0)
-                if self.neuron_config.fuse_mlp:
-                    intermediate_size = intermediate_size // 2
-                    intermediate_size_padded = round_up_to_divisor(
-                        intermediate_size, self.tp_degree
-                    )
-                    maybe_pad = MaybePadder(intermediate_size_padded)
-                self.mlp_out_weight = maybe_pad(
-                    self.mlp_out_weight, dim=self.mlp_out_sharding
-                )
+            self.mlp_out_weight = maybe_pad(
+                self.mlp_out_weight, dim=self.mlp_out_sharding
+            )
+        # End of replication + padding code
 
         if self.neuron_config and self.neuron_config.fused_rmsnorm_qkv:
             self.fused_pre_attn_ln_qkv_weight = (
@@ -1038,10 +1026,9 @@ class DecoderLayer:
         self.post_mlp_ln_bias = maybe_duplicate(self.post_mlp_ln_bias)
 
         extras = []
-        for param, dim, allow_pad, allow_transform in self.extra_parameters:
-            if allow_pad:
-                size = round_up_to_divisor(param.shape[dim], self.tp_degree)
-                param = maybe_pad_tensor(param, dim, size)
+        for param, dim, allow_transform in self.extra_parameters:
+            size = round_up_to_divisor(param.shape[dim], self.tp_degree)
+            param = maybe_pad_tensor(param, dim, size)
 
             if allow_transform:
                 param = maybe_shard_along_and_transform(param, dim)
@@ -1062,10 +1049,10 @@ class DecoderLayer:
     def init_caches(self):
         n_heads_kv_cache = self.n_kv_head
 
-        # When padding, compute the hidden size based on the padding. We must
-        # allow the KV cache to be padded so it can be evenly divisible across
-        # NeuronCores.
-        if self.allow_pad and not self.shard_over_batch:
+        if not self.shard_over_batch:
+            # Compute the hidden size taking a potential padding into account. We must
+            # allow the KV cache to be padded so it can be evenly divisible across
+            # NeuronCores.
             n_heads_kv_cache = round_up_to_divisor(self.n_kv_head, self.tp_degree)
         # Select manipulator based on device
         if self._cpu_compile:

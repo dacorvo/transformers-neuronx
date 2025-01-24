@@ -43,7 +43,6 @@ class LlamaHloModel(NeuronHloDecoderModel):
             n_active_tokens=1,
             config=config,
             neuron_config=self.neuron_config,
-            allow_pad=True,
             builder=hlo_builder,
         )
         self.decoder_lm_head = self.decoder_param_set.init_token_decoder(model_obj=self)
@@ -94,21 +93,15 @@ class LlamaHloModel(NeuronHloDecoderModel):
                         dtype=mlp.gate_proj.weight.dtype
                     )
                 )
-                new_layer.add_parameter(
-                    fused_pre_mlp_ln_gate_weight.T, sharding=1, allow_pad=True
-                )
+                new_layer.add_parameter(fused_pre_mlp_ln_gate_weight.T, sharding=1)
                 fused_pre_mlp_ln_up_weight = (
                     mlp.up_proj.weight
                     * layer.post_attention_layernorm.weight.detach().to(
                         dtype=mlp.up_proj.weight.dtype
                     )
                 )
-                new_layer.add_parameter(
-                    fused_pre_mlp_ln_up_weight.T, sharding=1, allow_pad=True
-                )
-                new_layer.add_parameter(
-                    mlp.down_proj.weight.T, sharding=0, allow_pad=True
-                )
+                new_layer.add_parameter(fused_pre_mlp_ln_up_weight.T, sharding=1)
+                new_layer.add_parameter(mlp.down_proj.weight.T, sharding=0)
             elif self.neuron_config.fuse_mlp:
                 assert all(
                     getattr(mlp, attr, None) for attr in ["gate_proj", "up_proj"]
@@ -133,18 +126,14 @@ class LlamaHloModel(NeuronHloDecoderModel):
                 new_layer.add_parameter(
                     mlp.gate_proj.weight.T,
                     sharding=1,
-                    allow_pad=True,
                     allow_transform=True,
                 )
                 new_layer.add_parameter(
                     mlp.up_proj.weight.T,
                     sharding=1,
-                    allow_pad=True,
                     allow_transform=True,
                 )
-                new_layer.add_parameter(
-                    mlp.down_proj.weight, sharding=1, allow_pad=True
-                )
+                new_layer.add_parameter(mlp.down_proj.weight, sharding=1)
             new_layer.to_neuron()
             layer.nullify()
 
@@ -162,7 +151,6 @@ class LlamaHloModel(NeuronHloDecoderModel):
             self.decoder_lm_head.add_pre_layer_parameter(
                 self.chkpt_model.model.embed_tokens.weight,
                 sharding=1,
-                allow_pad=True,
             )
         self.decoder_lm_head.to_neuron()
         self.init_rest_of_model()
