@@ -217,7 +217,7 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
     def add_embedding_builder(self, embedding_builder):
         self.embedding_builder = embedding_builder
 
-    def add_pre_layer_parameter(self, param, sharding=None, allow_pad=False):
+    def add_pre_layer_parameter(self, param, sharding=None, allow_pad=True):
         self.pre_layer_parameters.append((param, sharding, allow_pad))
 
     def add_pre_layer_builder(self, builder):
@@ -657,7 +657,7 @@ class DecoderLayer:
         config,
         neuron_config,
         batch_size,
-        allow_pad=False,
+        allow_pad=True,
         n_active_tokens=None,
         layer_num=None,
         is_unit_scale=False,
@@ -723,7 +723,7 @@ class DecoderLayer:
         self._cpu_compile = False
 
     def add_parameter(
-        self, param, sharding=None, allow_pad=False, allow_transform=False
+        self, param, sharding=None, allow_pad=True, allow_transform=False
     ):
         self.extra_parameters.append((param, sharding, allow_pad, allow_transform))
 
