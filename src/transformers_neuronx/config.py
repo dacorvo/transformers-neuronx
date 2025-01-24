@@ -119,7 +119,6 @@ class NeuronConfig:
         fused_rmsnorm_qkv: bool = False,
         fused_rmsnorm_mlp: bool = False,
         fuse_mlp: bool = False,
-        has_pre_attention_norm: bool = True,
         compilation_worker_count: Optional[int] = None,
         duplicate_q_weight_sos: bool = False,
         **kwargs,
@@ -198,7 +197,6 @@ class NeuronConfig:
 
         self.duplicate_q_weight_sos = duplicate_q_weight_sos
 
-        self.has_pre_attention_norm = has_pre_attention_norm
         self.compilation_worker_count = compilation_worker_count
 
     @property
