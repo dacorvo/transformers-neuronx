@@ -367,8 +367,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             self.layers,
             hlo_module,
             num_inputs,
-            self.neuron_config.tp_degree,
-            self.neuron_config.n_positions,
             self.batch_size,
             tag=self.tag,
             on_cpu=self._cpu_compile,
@@ -701,7 +699,6 @@ class DecoderLayer:
         self.n_head_padded = None
         self.n_kv_head = config.num_key_value_heads
         self.attention_head_size = config.hidden_size // config.num_attention_heads
-        self.tp_degree = self.neuron_config.tp_degree
         self.amp = self.neuron_config.amp
         self.cache_dtype = dtypes.to_torch_dtype(self.amp)
         self.extra_parameters = []
@@ -1232,8 +1229,6 @@ class DecoderProgram:
         layers,
         hlo_module,
         num_inputs,
-        tp_degree,
-        n_positions,
         batch_size,
         tag=None,
         num_exec_repetition=1,
@@ -1242,30 +1237,30 @@ class DecoderProgram:
         self.neuron_config = neuron_config
         self.layers = layers
         self.batch_size = batch_size
-        self.n_positions = n_positions
         self.input_buffers = [
             compiler.gen_zero_input(hlo_module, idx) for idx in range(num_inputs)
         ]
-        kernel_tag = f"seqlen{n_positions}-batch{batch_size}"
+        kernel_tag = f"seqlen{neuron_config.n_positions}-batch{batch_size}"
         if tag is not None:
-            kernel_tag = f"{tag}-seqlen{n_positions}-batch{batch_size}"
+            kernel_tag = f"{tag}-seqlen{neuron_config.n_positions}-batch{batch_size}"
         self.kernel = compiler.ParallelKernel(
             hlo_module,
-            tp_degree,
+            neuron_config.tp_degree,
             g_start_device_id=0,
-            g_device_count=tp_degree,
+            g_device_count=neuron_config.tp_degree,
             tag=kernel_tag,
             num_exec_repetition=num_exec_repetition,
         )
         self.n_active_tokens = read_n_active_tokens(hlo_module)
-        self.tp_degree = tp_degree
         self.tag = tag
         self._cpu_compile = on_cpu
         # Select manipulator based on device
         if self._cpu_compile:
-            self.manipulator = parallel.CPUTensorManipulator(tp_degree)
+            self.manipulator = parallel.CPUTensorManipulator(neuron_config.tp_degree)
         else:
-            self.manipulator = parallel.ParallelTensorManipulator(tp_degree)
+            self.manipulator = parallel.ParallelTensorManipulator(
+                neuron_config.tp_degree
+            )
 
     def setup(self, io_ring_cache_size):
         self.input_buffers = [
@@ -1290,19 +1285,16 @@ class DecoderProgram:
 
     def maybe_logits_device_to_host(self, return_ranks):
         if self.logits_buffer is not None:
-            if self.tp_degree == self.self.tp_degree:
-                logits = self.manipulator.unshard_along(self.logits_buffer, dim=0)
-                if return_ranks > 0:
-                    rank_size = logits.shape[0] // self.tp_degree
-                    logits = logits[: rank_size * return_ranks]
-                return logits
-            else:
-                return ops.parallel_cpu(self.logits_buffer)[0]
+            logits = self.manipulator.unshard_along(self.logits_buffer, dim=0)
+            if return_ranks > 0:
+                rank_size = logits.shape[0] // self.tp_degree
+                logits = logits[: rank_size * return_ranks]
+            return logits
         else:
             return None
 
     def _fill_io_tensors(self, input_tensors, output_tensors, layers):
-        end = self.n_positions
+        end = self.neuron_config.n_positions
         for layer in layers:
             for cache in layer.attn_k_cache, layer.attn_v_cache:
                 cache_slice = self.manipulator.slice_on_nc(
@@ -1321,8 +1313,6 @@ class DecoderProgramFullyUnrolled(DecoderProgram):
         layers,
         hlo_module,
         num_inputs,
-        tp_degree,
-        n_positions,
         batch_size,
         tag=None,
         on_cpu=False,
@@ -1332,8 +1322,6 @@ class DecoderProgramFullyUnrolled(DecoderProgram):
             layers,
             hlo_module,
             num_inputs,
-            tp_degree,
-            n_positions,
             batch_size,
             tag=tag,
             on_cpu=on_cpu,
