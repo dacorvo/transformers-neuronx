@@ -57,10 +57,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         if self.neuron_config.continuous_batching and is_prefill:
             # Always use a batch_size of 1 when using continuous batching
             self.batch_size = 1
-        self.attention_head_size = config.hidden_size // config.num_attention_heads
-        self.num_layers = config.num_hidden_layers
-        self.n_head = config.num_attention_heads
-        self.n_kv_head = config.num_key_value_heads
         self.is_prefill = is_prefill
         self.layers = []
         self.ln_f_weight = None
@@ -100,7 +96,7 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
 
         if gqa is None:
             # MHA Early exit - This avoids emitting irrelevant GQA warnings
-            if self.n_head == self.n_kv_head:
+            if self.config.num_attention_heads == self.config.num_key_value_heads:
                 return
             self.neuron_config.group_query_attention = constants.GQA.SHARD_OVER_HEADS
 
@@ -124,30 +120,33 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
                 return
 
         if gqa == constants.GQA.ALL_GATHER_HEADS:
+            attention_head_size = self.config.hidden_size // self.config.num_attention_heads
             if (
-                self.n_kv_head * self.attention_head_size
+                self.config.num_key_value_heads * attention_head_size
             ) % self.neuron_config.tp_degree != 0:
                 warnings.warn(
                     f'Cannot enable "{gqa}" when the hidden size of KV '
-                    f"({self.n_kv_head} x {self.attention_head_size}) is not evenly divisible "
+                    f"({self.config.num_key_value_heads} x {attention_head_size}) is not evenly divisible "
                     f"by the tensor parallel degree ({self.neuron_config.tp_degree})"
                 )
                 self.neuron_config.group_query_attention = (
                     constants.GQA.SHARD_OVER_HEADS
                 )
 
-            if self.n_head % self.neuron_config.tp_degree != 0:
+            if self.config.num_attention_heads % self.neuron_config.tp_degree != 0:
                 # try pad on n_head, if pad_size could be evenly disible by n_kv_head,
                 # then we can evenly distribute same number of padding q_head to each k/v head
-                pad_size = get_pad_size(self.n_head, self.neuron_config.tp_degree)
+                pad_size = get_pad_size(
+                    self.config.num_attention_heads, self.neuron_config.tp_degree
+                )
 
-                if pad_size % self.n_kv_head == 0:
+                if pad_size % self.config.num_key_value_heads == 0:
                     return
                 else:
                     warnings.warn(
                         f'Cannot enable "{gqa}" when the number of padding {pad_size} need for query '
-                        f"attention heads ({self.n_head}) with the tensor parallel degree ({self.neuron_config.tp_degree}) "
-                        f"is not divisible by KV heads ({self.n_kv_head})"
+                        f"attention heads ({self.config.num_attention_heads}) with the tensor parallel degree ({self.neuron_config.tp_degree}) "
+                        f"is not divisible by KV heads ({self.config.num_attention_heads})"
                     )
                     self.neuron_config.group_query_attention = (
                         constants.GQA.SHARD_OVER_HEADS
@@ -155,10 +154,10 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             else:
                 return
 
-        if self.n_kv_head % self.neuron_config.tp_degree != 0:
+        if self.config.num_key_value_heads % self.neuron_config.tp_degree != 0:
             warnings.warn(
                 f"KV head replication will be enabled since the number of KV "
-                f"heads ({self.n_kv_head}) is not evenly divisible by the "
+                f"heads ({self.config.num_key_value_heads}) is not evenly divisible by the "
                 f"tensor parallel degree ({self.neuron_config.tp_degree})"
             )
             self.neuron_config.group_query_attention = constants.GQA.REPLICATED_HEADS
