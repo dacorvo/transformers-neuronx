@@ -693,7 +693,6 @@ class DecoderLayer:
         self.attn_v_cache = None
         self.cache_shape = None
         self.n_head = config.num_attention_heads
-        self.n_head_padded = None
         self.n_kv_head = config.num_key_value_heads
         self.attention_head_size = config.hidden_size // config.num_attention_heads
         self.extra_parameters = []
@@ -760,7 +759,6 @@ class DecoderLayer:
     def to_neuron(self):
         # Apply QKV weight paddings + head replication to evenly split weights
         # for the specified tensor parallelism
-        self.neuron_config.n_head_padded = self.n_head
         # Hidden size padding
         _, hidden_size = self.attn_q_weight.shape
         n_heads = hidden_size // self.attention_head_size
@@ -768,8 +766,6 @@ class DecoderLayer:
         n_head_padded, n_kv_heads_padded = get_qkv_padding(
             n_heads, self.n_kv_head, self.neuron_config
         )
-        self.n_head_padded = n_head_padded
-        self.neuron_config.n_head_padded = self.n_head_padded
 
         hidden_size_padded = hidden_size_padded_qkv = (
             n_head_padded * self.attention_head_size
