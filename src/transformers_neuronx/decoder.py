@@ -693,14 +693,10 @@ class DecoderLayer:
         self.attn_k_cache = None
         self.attn_v_cache = None
         self.cache_shape = None
-        self.tp_degree = neuron_config.tp_degree
-        self.n_positions = neuron_config.n_positions
         self.n_head = config.num_attention_heads
         self.n_head_padded = None
         self.n_kv_head = config.num_key_value_heads
         self.attention_head_size = config.hidden_size // config.num_attention_heads
-        self.amp = self.neuron_config.amp
-        self.cache_dtype = dtypes.to_torch_dtype(self.amp)
         self.extra_parameters = []
         self.attn_out_sharding = 0
         self.attn_out_transposed = True
@@ -771,7 +767,7 @@ class DecoderLayer:
         n_heads = hidden_size // self.attention_head_size
 
         n_head_padded, n_kv_heads_padded = get_qkv_padding(
-            n_heads, self.n_kv_head, self.tp_degree, self.neuron_config
+            n_heads, self.n_kv_head, self.neuron_config
         )
         self.n_head_padded = n_head_padded
         self.neuron_config.n_head_padded = self.n_head_padded
@@ -797,7 +793,7 @@ class DecoderLayer:
                 self.n_head != self.n_kv_head
                 and self.neuron_config.group_query_attention
                 == constants.GQA.REPLICATED_HEADS
-                and self.tp_degree % self.n_kv_head == 0
+                and self.neuron_config.tp_degree % self.n_kv_head == 0
                 and extra_heads % self.n_kv_head == 0
                 and extra_heads > 0
             ):
@@ -906,7 +902,7 @@ class DecoderLayer:
             )
 
         if node_interleaving:
-            n_nodes = self.tp_degree // constants.TRN1_WORLD_SIZE
+            n_nodes = self.neuron_config.tp_degree // constants.TRN1_WORLD_SIZE
             self.attn_q_weight = interleave_by_node(
                 self.attn_q_weight, dim=1, n_nodes=n_nodes
             )
@@ -926,12 +922,12 @@ class DecoderLayer:
                 self.attn_v_bias, dim=0, n_nodes=n_nodes
             )
 
-        if self.neuron_config and self.neuron_config.fuse_qkv:
+        if self.neuron_config.fuse_qkv:
             fused_qkv_weight = interleave_qkv(
                 self.attn_q_weight,
                 self.attn_k_weight,
                 self.attn_v_weight,
-                self.tp_degree,
+                self.neuron_config.tp_degree,
                 dim=1,
             )
             if self.attn_q_bias is not None:
@@ -939,7 +935,7 @@ class DecoderLayer:
                     self.attn_q_bias,
                     self.attn_k_bias,
                     self.attn_v_bias,
-                    self.tp_degree,
+                    self.neuron_config.tp_degree,
                     dim=0,
                 )
             else:
@@ -960,7 +956,7 @@ class DecoderLayer:
         if self.mlp_in_weight is not None:
             _, intermediate_size = self.mlp_in_weight.shape
             intermediate_size_padded = round_up_to_divisor(
-                intermediate_size, self.tp_degree
+                intermediate_size, self.neuron_config.tp_degree
             )
             maybe_pad = MaybePadder(intermediate_size_padded)
 
@@ -969,7 +965,7 @@ class DecoderLayer:
             if self.neuron_config.fuse_mlp:
                 intermediate_size = intermediate_size // 2
                 intermediate_size_padded = round_up_to_divisor(
-                    intermediate_size, self.tp_degree
+                    intermediate_size, self.neuron_config.tp_degree
                 )
                 maybe_pad = MaybePadder(intermediate_size_padded)
             self.mlp_out_weight = maybe_pad(
@@ -984,7 +980,7 @@ class DecoderLayer:
             ).T
 
         maybe_manipulator = MaybeParallelTensorManipulator(
-            self.tp_degree,
+            self.neuron_config.tp_degree,
             on_cpu=self._cpu_compile,
         )
         maybe_duplicate = maybe_manipulator.duplicate
@@ -1024,7 +1020,7 @@ class DecoderLayer:
 
         extras = []
         for param, dim, allow_transform in self.extra_parameters:
-            size = round_up_to_divisor(param.shape[dim], self.tp_degree)
+            size = round_up_to_divisor(param.shape[dim], self.neuron_config.tp_degree)
             param = maybe_pad_tensor(param, dim, size)
 
             if allow_transform:
@@ -1050,29 +1046,34 @@ class DecoderLayer:
             # Compute the hidden size taking a potential padding into account. We must
             # allow the KV cache to be padded so it can be evenly divisible across
             # NeuronCores.
-            n_heads_kv_cache = round_up_to_divisor(self.n_kv_head, self.tp_degree)
+            n_heads_kv_cache = round_up_to_divisor(
+                self.n_kv_head, self.neuron_config.tp_degree
+            )
         # Select manipulator based on device
         if self._cpu_compile:
-            manipulator = parallel.CPUTensorManipulator(self.tp_degree)
+            manipulator = parallel.CPUTensorManipulator(self.neuron_config.tp_degree)
         else:
-            manipulator = parallel.ParallelTensorManipulator(self.tp_degree)
+            manipulator = parallel.ParallelTensorManipulator(
+                self.neuron_config.tp_degree
+            )
         cpu_cache_shape = [
-            self.n_positions,
+            self.neuron_config.n_positions,
             self.batch_size,
             n_heads_kv_cache,
             self.attention_head_size,
         ]
         self.cache_shape = [
-            self.n_positions,
+            self.neuron_config.n_positions,
             self.batch_size,
-            n_heads_kv_cache // self.tp_degree,
+            n_heads_kv_cache // self.neuron_config.tp_degree,
             self.attention_head_size,
         ]
-        cpu_cache = torch.zeros(cpu_cache_shape, dtype=self.cache_dtype)
-        assert (n_heads_kv_cache >= self.tp_degree) and (
-            n_heads_kv_cache % self.tp_degree == 0
+        cache_dtype = dtypes.to_torch_dtype(self.neuron_config.amp)
+        cpu_cache = torch.zeros(cpu_cache_shape, dtype=cache_dtype)
+        assert (n_heads_kv_cache >= self.neuron_config.tp_degree) and (
+            n_heads_kv_cache % self.neuron_config.tp_degree == 0
         ), (
-            f"cannot shard along kv_heads dimension: n_kv_head={n_heads_kv_cache}, tp_degree={self.tp_degree}"
+            f"cannot shard along kv_heads dimension: n_kv_head={n_heads_kv_cache}, tp_degree={self.neuron_config.tp_degree}"
         )
         self.attn_k_cache = manipulator.shard_along(cpu_cache, dim=2)
         self.attn_v_cache = manipulator.shard_along(cpu_cache, dim=2)
@@ -1118,7 +1119,7 @@ class DecoderLayer:
             self.attn_k_cache.shape,
             dtype=self.attn_k_cache.dtype,
         )
-        zero_cache = [zero_cache for _ in range(self.self.tp_degree)]
+        zero_cache = [zero_cache for _ in range(self.neuron_config.tp_degree)]
         if not self._cpu_compile:
             ops.parallel_write(self.attn_k_cache, zero_cache)
             ops.parallel_write(self.attn_v_cache, zero_cache)
@@ -1287,7 +1288,7 @@ class DecoderProgram:
         if self.logits_buffer is not None:
             logits = self.manipulator.unshard_along(self.logits_buffer, dim=0)
             if return_ranks > 0:
-                rank_size = logits.shape[0] // self.tp_degree
+                rank_size = logits.shape[0] // self.neuron_config.tp_degree
                 logits = logits[: rank_size * return_ranks]
             return logits
         else:

@@ -608,7 +608,7 @@ class LlamaForSamplingNoEmbeddingHlo:
             n_head = self.config.num_attention_heads
             n_kv_head = self.config.num_key_value_heads
             n_head, n_kv_head_padded = utils.get_qkv_padding(
-                n_head, n_kv_head, tp_degree, self.neuron_config
+                n_head, n_kv_head, self.neuron_config
             )
             n_kv_heads_tp = n_kv_head_padded // tp_degree
 
@@ -740,7 +740,7 @@ class LlamaForSamplingNoEmbeddingHlo:
             n_head = self.config.num_attention_heads
             n_kv_head = self.config.num_key_value_heads
             n_head_padded, n_kv_head_padded = utils.get_qkv_padding(
-                n_head, n_kv_head, tp_degree, self.neuron_config
+                n_head, n_kv_head, self.neuron_config
             )
             n_kv_heads_tp = n_kv_head_padded // tp_degree
 
