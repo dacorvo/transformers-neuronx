@@ -90,8 +90,6 @@ class NeuronConfig:
         fuse_qkv: Fuses the QKV projection into a single matrix multiplication.
         log_softmax_scores: Return log-softmax scores along with logits.
         output_all_logits: Return all logits from each model invocation.
-        fused_rmsnorm_qkv: Use the fused RMS norm and QKV input projection kernel.
-        fused_rmsnorm_mlp: Use the fused RMSNorm and MLP BIR kernel for llama3.
         attn_output_transposed: Transposes the attention output projection weight tensor.
         compilation_worker_count: Count of concurrent compilation workers.
     """
@@ -116,8 +114,6 @@ class NeuronConfig:
         log_softmax_scores: bool = False,
         output_all_logits: bool = False,
         attn_output_transposed: bool = False,
-        fused_rmsnorm_qkv: bool = False,
-        fused_rmsnorm_mlp: bool = False,
         fuse_mlp: bool = False,
         compilation_worker_count: Optional[int] = None,
         duplicate_q_weight_sos: bool = False,
@@ -174,26 +170,6 @@ class NeuronConfig:
         self.layer_partition = {}
 
         self.attn_output_transposed = attn_output_transposed
-
-        self.fused_rmsnorm_qkv = fused_rmsnorm_qkv
-        self.fused_rmsnorm_mlp = fused_rmsnorm_mlp
-
-        if any(
-            [
-                not self.fuse_qkv,
-                self.attention_layout != Layout.BSH,
-                self.group_query_attention != GQA.REPLICATED_HEADS,
-            ]
-        ):
-            self.fused_rmsnorm_qkv = False
-
-        if any(
-            [
-                self.attention_layout != Layout.BSH,
-                self.group_query_attention != GQA.REPLICATED_HEADS,
-            ]
-        ):
-            self.fused_rmsnorm_mlp = False
 
         self.duplicate_q_weight_sos = duplicate_q_weight_sos
 

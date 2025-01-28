@@ -862,12 +862,6 @@ class DecoderLayer:
             )
         # End of replication + padding code
 
-        if self.neuron_config and self.neuron_config.fused_rmsnorm_qkv:
-            self.fused_pre_attn_ln_qkv_weight = (
-                fused_qkv_weight.T
-                * self.pre_attn_ln_weight.to(dtype=fused_qkv_weight.dtype)
-            ).T
-
         maybe_manipulator = MaybeParallelTensorManipulator(
             self.neuron_config.tp_degree,
             on_cpu=self._cpu_compile,
