@@ -837,67 +837,6 @@ def all_reduce_sum(tensor, tp_degree, dtype=None, replica_groups=None):
     )
 
 
-def _all_to_all(tensor, split_dim, concat_dim, tp_degree):
-    # Add extra reshape (and potentially transpose) before and after all-to-all CC, due to
-    # 1) hlo_to_mlir_hlo would assume split_dim == concat_dim
-    # 2) split_count is taken from first replica_group
-    # 3) we can only split/concat outer most dimension
-    shape = list(tensor.sizes)
-    dtype = tensor.dtype
-    assert (split_dim == 0 and concat_dim == 1) or (
-        split_dim == 1 and concat_dim == 0
-    ), f"invalid input dimensions: split_dim={split_dim}, concat_dim={concat_dim}"
-    assert shape[split_dim] >= tp_degree and shape[split_dim] % tp_degree == 0, (
-        f"invalid split size ({shape[split_dim]}) and tp_degree ({tp_degree})"
-    )
-    shape_flat = shape[1:].copy()
-    shape_flat[0] *= shape[0]
-
-    # Assume input_shape = [N,M]
-    # split_dim == 0 and concat_dim == 1, new shape = [M*tp_degree, N/tp_degree]
-    # concat_dim == 0 and split_dim == 1, new shape = [N*tp_degree, M/tp_degree]
-    shape_new = shape.copy()
-    shape_new[split_dim] = shape_new[split_dim] // tp_degree
-    shape_new[concat_dim] *= tp_degree
-    if split_dim == 0:
-        assert concat_dim == 1
-        shape_new[1], shape_new[0] = shape_new[0], shape_new[1]
-
-    if split_dim == 1:
-        assert concat_dim == 0
-        tensor = transpose(tensor, 0, 1)
-    tensor = reshape(tensor, shape_flat)
-    tensor = dtype[shape_flat].AllToAll(
-        tensor,
-        dimensions=[0],
-        replica_groups=[list(range(tp_degree))],
-    )
-    tensor = reshape(tensor, shape_new)
-    if split_dim == 0:
-        assert concat_dim == 1
-        tensor = transpose(tensor, 0, 1)
-    return tensor
-
-
-def all_to_all(tensor, split_dim, concat_dim, tp_degree):
-    # Handle the case when split_dim==0 and concat_dim=0
-    if split_dim == 0 and concat_dim == 0:
-        tensor = unsqueeze(tensor, dim=0)
-        tensor = _all_to_all(tensor, split_dim=1, concat_dim=0, tp_degree=tp_degree)
-        tensor = squeeze(tensor, dim=1)
-    else:
-        tensor = _all_to_all(tensor, split_dim, concat_dim, tp_degree)
-    return tensor
-
-
-def squeeze(tensor, dim):
-    assert tensor.sizes[dim] == 1
-    dtype = tensor.dtype
-    size = list(tensor.sizes)
-    size.pop(dim)
-    return dtype[size].Reshape(tensor)
-
-
 def unsqueeze(tensor, dim):
     size = list(tensor.sizes)
     dim %= len(size) + 1  # Handle negative sizes
@@ -1185,45 +1124,6 @@ def slice_along(tensor, dim, limit, start=0, stride=1):
     sizes[dim] = (limit - start + stride - 1) // stride
 
     return tensor.dtype[sizes].Slice(tensor, slice_dimensions=dimensions)
-
-
-def dynamic_slice_along(tensor, dim, start, size):
-    scribe = tensor.scribe
-    s32 = scribe.s32
-    u32 = scribe.u32
-    s64 = scribe.s64
-    u64 = scribe.u64
-    dtype = tensor.dtype
-
-    assert isinstance(size, int), (
-        f"Parameter 'size' must be an integer. Found type={type(size)}"
-    )
-    assert not isinstance(start, int), (
-        f"Parameter 'start must be a tensor. Found type={type(size)}"
-    )
-    assert len(start.sizes) == 0, (
-        f"Parameter 'start' must be a scalar. Found shape={start.sizes}"
-    )
-    assert start.dtype in (s32, u32, s64, u64), (
-        "Parameter 'start' must be an integer type."
-    )
-
-    sizes = list(tensor.sizes)
-    assert size <= sizes[dim], (
-        f"Parameter 'size' ({size}) must less/equal to {sizes[dim]}. (dim={dim}, shape={sizes})"
-    )
-    sizes[dim] = size
-
-    start = cast(start, s32)
-    zero = s32.Constant(constant_value=0)
-    starts = [zero] * len(sizes)
-    starts[dim] = start
-
-    return dtype[sizes].DynamicSlice(
-        tensor,
-        *starts,
-        dynamic_slice_sizes=sizes,
-    )
 
 
 def pad(tensor, dim, size, value=0):

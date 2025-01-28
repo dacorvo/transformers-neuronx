@@ -22,7 +22,7 @@ from transformers_neuronx.layers import attention, attention_utils
 from transformers_neuronx.nki.compile import nki_call
 
 
-from ..utils import build_replica_groups, parse_dtype_replica_groups
+from ..utils import parse_dtype_replica_groups
 
 
 def query_key_value(
@@ -119,33 +119,6 @@ def query_key_value(
     active_v = hlo.reshape(active_v, active_kv_sizes)
 
     return active_q, active_k, active_v
-
-
-def _sharded_kv_projection(hidden, weight, bias, d_head, tp_degree):
-    _, hidden_size_tp = weight.sizes
-    group_size = d_head // hidden_size_tp
-    num_groups = tp_degree // group_size
-    n_head = (tp_degree * hidden_size_tp) // d_head
-    num_heads_per_group = n_head // num_groups
-
-    # (h, s, b) => (h, s * b)
-    hidden_size, n_active_tokens, n_seqs = hidden.sizes
-    hidden = hlo.reshape(hidden, (hidden_size, n_active_tokens * n_seqs))
-
-    # O = (hidden @ W) + B
-    # (h, s * b) @ (h, n_head * d_head) contract(0, 0) => (s * b, n_head * d_head)
-    active = hlo.dot00_add1(hidden, weight, bias)
-
-    # Gather portions of the groups together
-    replica_groups = build_replica_groups(num_groups, group_size)
-    active = hlo.all_gather(
-        active, dim=1, tp_degree=tp_degree, replica_groups=replica_groups
-    )
-
-    # (s * b, n_head * d_head) => (s * b, n_head, d_head)
-    active = hlo.reshape(active, (n_active_tokens, n_seqs, num_heads_per_group, d_head))
-
-    return active
 
 
 def fused_kv_update_cache(
