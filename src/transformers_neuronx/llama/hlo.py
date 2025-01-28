@@ -81,10 +81,6 @@ class LlamaForSamplingNoEmbeddingHlo:
         position_ids=None,
     ):
         block_to_seq = None
-        cached_mask = None
-        cached_to_contexted = None
-        active_to_contexted = None
-        core_id = None
 
         head_dim = self.config.hidden_size // self.config.num_attention_heads
         position_ids = cache_ids if position_ids is None else position_ids
@@ -114,11 +110,6 @@ class LlamaForSamplingNoEmbeddingHlo:
             block_to_seq,
             mask,
             active_mask,
-            core_id,
-            block_tables,
-            cached_mask,
-            cached_to_contexted,
-            active_to_contexted,
         )
 
     def layer(
@@ -131,11 +122,6 @@ class LlamaForSamplingNoEmbeddingHlo:
         block_to_seq,
         mask,
         active_mask,
-        core_id,
-        block_tables,
-        cached_mask,
-        cached_to_contexted,
-        active_to_contexted,
         attn_k_cache,
         attn_v_cache,
         pre_attn_ln_weight,
@@ -197,11 +183,6 @@ class LlamaForSamplingNoEmbeddingHlo:
         block_to_seq,
         mask,
         active_mask,
-        core_id,
-        block_tables,
-        cached_mask,
-        cached_to_contexted,
-        active_to_contexted,
         attn_k_cache,
         attn_v_cache,
         pre_attn_ln_weight,
@@ -301,11 +282,6 @@ class LlamaForSamplingNoEmbeddingHlo:
         block_to_seq,
         mask,
         active_mask,
-        core_id,
-        block_tables,
-        cached_mask,
-        cached_to_contexted,
-        active_to_contexted,
         attn_k_cache,
         attn_v_cache,
         pre_attn_ln_weight,
@@ -387,11 +363,6 @@ class LlamaForSamplingNoEmbeddingHlo:
                 pos_embed,
                 mask,
                 active_mask,
-                core_id,
-                block_tables,
-                cached_mask,
-                cached_to_contexted,
-                active_to_contexted,
                 attn_k_cache,
                 attn_v_cache,
                 attn_q_weight,
@@ -544,11 +515,6 @@ class LlamaForSamplingNoEmbeddingHlo:
         pos_embed,
         mask,
         active_mask,
-        core_id,
-        block_tables,
-        cached_mask,
-        cached_to_contexted,
-        active_to_contexted,
         attn_k_cache,
         attn_v_cache,
         attn_q_weight,
