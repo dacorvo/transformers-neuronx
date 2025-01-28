@@ -114,7 +114,6 @@ class NeuronConfig:
         log_softmax_scores: bool = False,
         output_all_logits: bool = False,
         attn_output_transposed: bool = False,
-        fuse_mlp: bool = False,
         compilation_worker_count: Optional[int] = None,
         duplicate_q_weight_sos: bool = False,
         **kwargs,
@@ -129,7 +128,6 @@ class NeuronConfig:
             f"The `cast_logits_dtype={cast_logits_dtype}` argument must be one of {valid_dtypes}"
         )
         self.fuse_qkv = fuse_qkv
-        self.fuse_mlp = fuse_mlp
         self.continuous_batching = continuous_batching
         self.padding_side = padding_side
         assert padding_side in ["left", "right"], (

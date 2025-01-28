@@ -448,14 +448,8 @@ def gated_mlp_bsh(
 
     hidden = reshape(hidden, hidden_r_sizes)
     hidden_active = dot10_add1(hidden, in0_weight, in0_bias)
-    if neuron_config and neuron_config.fuse_mlp:
-        size = hidden_active.sizes[1] // 2
-        hidden_gate = slice_along(hidden_active, 1, limit=size, start=0)
-        hidden_linear = slice_along(hidden_active, 1, limit=2 * size, start=size)
-        hidden_active = get_activation(activation_function)(hidden_gate)
-    else:
-        hidden_active = get_activation(activation_function)(hidden_active)
-        hidden_linear = dot10_add1(hidden, in1_weight, in1_bias)
+    hidden_active = get_activation(activation_function)(hidden_active)
+    hidden_linear = dot10_add1(hidden, in1_weight, in1_bias)
     hidden_states = multiply(hidden_active, hidden_linear)
     result = dot11_add1(hidden_states, out_weight, out_bias)
     result = reshape(result, hidden_sizes)
@@ -506,16 +500,10 @@ def gated_mlp(
 
     # (h, b * s) @ (h, i) contract=(0, 0) => (b * s, i)
     hidden_active = dot00_add1(hidden, in0_weight, in0_bias)
-    if neuron_config and neuron_config.fuse_mlp:
-        size = hidden_active.sizes[1] // 2
-        hidden_gate = slice_along(hidden_active, 1, limit=size, start=0)
-        hidden_linear = slice_along(hidden_active, 1, limit=2 * size, start=size)
-        hidden_active = get_activation(activation_function)(hidden_gate)
-    else:
-        hidden_active = get_activation(activation_function)(hidden_active)
+    hidden_active = get_activation(activation_function)(hidden_active)
 
-        # (h, b * s) @ (h, i) contract=(0, 0) => (b * s, i)
-        hidden_linear = dot00_add1(hidden, in1_weight, in1_bias)
+    # (h, b * s) @ (h, i) contract=(0, 0) => (b * s, i)
+    hidden_linear = dot00_add1(hidden, in1_weight, in1_bias)
     hidden_states = multiply(hidden_active, hidden_linear)
 
     # (b * s, i) @ (h, i) contract=(1, 1) => (b * s, h)
