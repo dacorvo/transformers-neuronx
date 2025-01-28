@@ -12,44 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-import math
-
-
-def gelu_new(hidden):
-    return hidden.dtype[hidden.sizes].CustomCall(
-        hidden, custom_call_target="AwsNeuronGeluApprxTanh"
-    )
-
-
-def gelu_new_legacy(hidden):
-    dtype = hidden.dtype
-    sizes = hidden.sizes
-    input_input = dtype[sizes].Multiply(hidden, hidden)
-    input_pow_3 = dtype[sizes].Multiply(input_input, hidden)
-    scale = dtype.Constant(constant_value=0.044715)
-    scale_br = dtype[sizes].Broadcast(scale, dimensions=[])
-    mul = dtype[sizes].Multiply(input_pow_3, scale_br)
-    add = dtype[sizes].Add(mul, hidden)
-    sqrt_2_over_pi = dtype.Constant(constant_value=math.sqrt(2.0 / math.pi))
-    sqrt_2_over_pi_br = dtype[sizes].Broadcast(sqrt_2_over_pi, dimensions=[])
-    mul2 = dtype[sizes].Multiply(add, sqrt_2_over_pi_br)
-    tanh = dtype[sizes].Tanh(mul2)
-    one = dtype.Constant(constant_value=1.0)
-    one_br = dtype[sizes].Broadcast(one, dimensions=[])
-    add1 = dtype[sizes].Add(tanh, one_br)
-    mul3 = dtype[sizes].Multiply(add1, hidden)
-    half = dtype.Constant(constant_value=0.5)
-    half_br = dtype[sizes].Broadcast(half, dimensions=[])
-    output = dtype[sizes].Multiply(mul3, half_br)
-    return output
-
-
-def relu(hidden):
-    dtype = hidden.dtype
-    sizes = hidden.sizes
-    zero = dtype.Constant(constant_value=0.0)
-    zero_br = dtype[sizes].Broadcast(zero, dimensions=[])
-    return dtype[sizes].Maximum(hidden, zero_br)
 
 
 def softmax(logits, dim=None):
@@ -64,14 +26,6 @@ def softmax(logits, dim=None):
         custom_call_target="AwsNeuronSoftmax",
         backend_config=backend_config,
     )
-
-
-def solu(hidden, dim=None):
-    dtype = hidden.dtype
-    sizes = hidden.sizes
-    softmax_hidden = softmax(hidden, dim)
-    output = dtype[sizes].Multiply(hidden, softmax_hidden)
-    return output
 
 
 def sigmoid(tensor):
