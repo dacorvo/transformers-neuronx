@@ -124,9 +124,7 @@ def layer_norm_bsh(hidden, weight, bias, neuron_config=None, tp_degree=None):
     return output
 
 
-def rms_norm_legacy(
-    hidden, weight, eps=1e-6, dim=2, neuron_config=None, tp_degree=None
-):
+def rms_norm_legacy(hidden, weight, eps=1e-6, dim=2, neuron_config=None):
     # Reference: https://github.com/huggingface/transformers/blob/v4.29.2/src/transformers/models/t5/modeling_t5.py#L238-L260
 
     size = hidden.sizes
@@ -164,12 +162,12 @@ def rms_norm_legacy(
     return result
 
 
-def rms_norm(hidden, weight, eps=1e-6, dim=2, neuron_config=None, tp_degree=None):
+def rms_norm(hidden, weight, eps=1e-6, dim=2, neuron_config=None):
     dtype = hidden.dtype
     shape = hidden.sizes
     # Fallback on generic HLO implementation when norm dimension is 1
     if shape[dim] == 1:
-        return rms_norm_legacy(hidden, weight, eps, dim, neuron_config, tp_degree)
+        return rms_norm_legacy(hidden, weight, eps, dim, neuron_config)
     scribe = hidden.scribe
     backend_config = str(dim).encode()
     if neuron_config and neuron_config.bf16_rms_norm:
@@ -408,9 +406,9 @@ def mlp(
         hidden = transpose(hidden, 0, 1)
         hidden = reshape(hidden, hidden_sizes)
 
-    dtype, replica_groups = parse_dtype_replica_groups(neuron_config, tp_degree)
+    dtype, replica_groups = parse_dtype_replica_groups(neuron_config)
     hidden = all_reduce_sum(
-        hidden, tp_degree, dtype=dtype, replica_groups=replica_groups
+        hidden, neuron_config.tp_degree, dtype=dtype, replica_groups=replica_groups
     )
 
     # Transpose back to HSB if applicable
@@ -426,7 +424,6 @@ def gated_mlp_bsh(
     in1_bias=None,
     out_bias=None,
     activation_function="silu",
-    tp_degree=1,
     neuron_config=None,
     return_partial=False,
 ):
@@ -471,9 +468,9 @@ def gated_mlp_bsh(
     result = reshape(result, hidden_sizes)
 
     if not return_partial:
-        dtype, replica_groups = parse_dtype_replica_groups(neuron_config, tp_degree)
+        dtype, replica_groups = parse_dtype_replica_groups(neuron_config)
         result = all_reduce_sum(
-            result, tp_degree, dtype=dtype, replica_groups=replica_groups
+            result, neuron_config.tp_degree, dtype=dtype, replica_groups=replica_groups
         )
     return result
 
@@ -487,7 +484,6 @@ def gated_mlp(
     in1_bias=None,
     out_bias=None,
     activation_function="silu",
-    tp_degree=1,
     neuron_config=None,
     return_partial=False,
 ):
@@ -543,9 +539,9 @@ def gated_mlp(
         result = reshape(result, hidden_sizes)
 
     if not return_partial:
-        dtype, replica_groups = parse_dtype_replica_groups(neuron_config, tp_degree)
+        dtype, replica_groups = parse_dtype_replica_groups(neuron_config)
         result = all_reduce_sum(
-            result, tp_degree, dtype=dtype, replica_groups=replica_groups
+            result, neuron_config.tp_degree, dtype=dtype, replica_groups=replica_groups
         )
 
     # Transpose back to HSB if applicable

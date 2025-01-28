@@ -34,7 +34,6 @@ def query_key_value(
     v_weight,
     v_bias,
     d_head,
-    tp_degree=None,
     neuron_config=None,
     n_kv_heads_tp=None,
 ):
@@ -293,9 +292,7 @@ def scale(query, d_head):
     return dtype[query.sizes].Divide(query, scale_br)
 
 
-def score(
-    query, keys, tp_degree=None, n_kv_heads=0, block_to_seq=None, neuron_config=None
-):
+def score(query, keys, n_kv_heads=0):
     """
     Compute the attention score by combining scaled-query & keys.
 
@@ -359,7 +356,6 @@ def context(
     active_mask=None,
     n_kv_heads=0,
     dtype=None,
-    neuron_config=None,
     tp_degree=None,
 ):
     """
@@ -486,8 +482,6 @@ def context_combined(
     values,
     n_kv_heads=0,
     dtype=None,
-    tp_degree=None,
-    neuron_config=None,
     skip_softmax=False,
 ):
     """
@@ -646,9 +640,9 @@ def output(
         result = hlo.transpose(result, 0, 1)
         result = hlo.reshape(result, hidden_sizes)
 
-    dtype, replica_groups = parse_dtype_replica_groups(neuron_config, tp_degree)
+    dtype, replica_groups = parse_dtype_replica_groups(neuron_config)
     result = hlo.all_reduce_sum(
-        result, tp_degree, dtype=dtype, replica_groups=replica_groups
+        result, neuron_config.tp_degree, dtype=dtype, replica_groups=replica_groups
     )
 
     # Transpose back to HSB if applicable

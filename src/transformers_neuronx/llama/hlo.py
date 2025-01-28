@@ -41,7 +41,6 @@ class LlamaForSamplingNoEmbeddingHlo:
             n_active_tokens,
             self.config.hidden_size,
             self.neuron_config,
-            self.neuron_config.tp_degree,
         )
 
         return tensors, dims
@@ -220,7 +219,6 @@ class LlamaForSamplingNoEmbeddingHlo:
             eps,
             dim=2 if is_bsh else 0,
             neuron_config=self.neuron_config,
-            tp_degree=self.neuron_config.tp_degree,
         )
         attn_output, out_attn_k_cache, out_attn_v_cache = self.attention(
             ln_hidden,
@@ -251,7 +249,6 @@ class LlamaForSamplingNoEmbeddingHlo:
             eps,
             dim=rms_norm_dim,
             neuron_config=self.neuron_config,
-            tp_degree=self.neuron_config.tp_degree,
         )
         if self.neuron_config.fuse_mlp:
             assert all(map(lambda x: not (x), [in0_weight, in1_weight, out_weight])), (
@@ -266,7 +263,6 @@ class LlamaForSamplingNoEmbeddingHlo:
             in1_weight,
             out_weight,
             activation_function="silu",
-            tp_degree=self.neuron_config.tp_degree,
             neuron_config=self.neuron_config,
         )
         res_hidden = hlo.add(mlp_hidden, hidden)
@@ -387,7 +383,6 @@ class LlamaForSamplingNoEmbeddingHlo:
                     pre_attn_ln_weight,
                     eps,
                     neuron_config=self.neuron_config,
-                    tp_degree=self.neuron_config.tp_degree,
                 )
                 if is_bsh
                 else hlo.rms_norm(
@@ -396,7 +391,6 @@ class LlamaForSamplingNoEmbeddingHlo:
                     eps,
                     dim=0,
                     neuron_config=self.neuron_config,
-                    tp_degree=self.neuron_config.tp_degree,
                 )
             )
             attn_output, out_attn_k_cache, out_attn_v_cache = self.attention(
@@ -439,9 +433,7 @@ class LlamaForSamplingNoEmbeddingHlo:
                     hidden.dtype[hidden.sizes[0], hidden.sizes[1], hidden.sizes[2]]
                 ],
             )
-            dtype, replica_groups = utils.parse_dtype_replica_groups(
-                self.neuron_config, self.neuron_config.tp_degree
-            )
+            dtype, replica_groups = utils.parse_dtype_replica_groups(self.neuron_config)
             mlp_hidden = hlo.all_reduce_sum(
                 mlp_result,
                 self.neuron_config.tp_degree,
@@ -465,7 +457,6 @@ class LlamaForSamplingNoEmbeddingHlo:
                 eps,
                 dim=rms_norm_dim,
                 neuron_config=self.neuron_config,
-                tp_degree=self.neuron_config.tp_degree,
             )
             mlp_hidden = gated_mlp(
                 norm_hidden,
@@ -473,7 +464,6 @@ class LlamaForSamplingNoEmbeddingHlo:
                 in1_weight,
                 out_weight,
                 activation_function="silu",
-                tp_degree=self.neuron_config.tp_degree,
                 neuron_config=self.neuron_config,
             )
             if is_first_last_layer or not enable_qkv_kernel:
@@ -698,7 +688,6 @@ class LlamaForSamplingNoEmbeddingHlo:
                 v_bias,
                 d_head,
                 neuron_config=self.neuron_config,
-                tp_degree=tp_degree,  # TODO: include tp_degree into neuron_config
                 n_kv_heads_tp=n_kv_heads_tp,
             )
 
@@ -762,9 +751,6 @@ class LlamaForSamplingNoEmbeddingHlo:
                 query,
                 cached_keys_s,
                 n_kv_heads=self.config.num_key_value_heads,
-                tp_degree=tp_degree,
-                block_to_seq=block_to_seq,
-                neuron_config=self.neuron_config,
             )
             prior_scores = attention.mask(
                 prior_scores,
@@ -777,8 +763,6 @@ class LlamaForSamplingNoEmbeddingHlo:
                 query,
                 key,
                 n_kv_heads=self.config.num_key_value_heads,
-                tp_degree=tp_degree,
-                neuron_config=self.neuron_config,
             )
             active_score = attention.mask(
                 active_score,
@@ -793,8 +777,7 @@ class LlamaForSamplingNoEmbeddingHlo:
                 cached_values_s,
                 value,
                 n_kv_heads=self.config.num_key_value_heads,
-                tp_degree=tp_degree,
-                neuron_config=self.neuron_config,
+                tp_degree=self.neuron_config.tp_degree,
             )
 
             # KCache[I], VCache[I] = K, V
@@ -825,8 +808,6 @@ class LlamaForSamplingNoEmbeddingHlo:
                     query,
                     key,
                     n_kv_heads=self.config.num_key_value_heads,
-                    tp_degree=tp_degree,
-                    neuron_config=self.neuron_config,
                 )
                 score = attention.mask(
                     score,
@@ -837,8 +818,6 @@ class LlamaForSamplingNoEmbeddingHlo:
                     score,
                     value,
                     n_kv_heads=self.config.num_key_value_heads,
-                    tp_degree=tp_degree,
-                    neuron_config=self.neuron_config,
                 )
 
             # KCache, VCache = K, V

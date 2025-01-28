@@ -22,13 +22,12 @@ from .constants import FUSED_QKV_TP_FACTOR, GQA
 from .config import NeuronConfig
 
 
-def parse_dtype_replica_groups(neuron_config, tp_degree):
+def parse_dtype_replica_groups(neuron_config):
     dtype = None
     replica_groups = None
 
-    if neuron_config:
-        dtype = neuron_config.all_reduce_dtype
-        replica_groups = neuron_config.get_replica_groups(tp_degree)
+    dtype = neuron_config.all_reduce_dtype
+    replica_groups = neuron_config.get_replica_groups(neuron_config.tp_degree)
 
     return dtype, replica_groups
 

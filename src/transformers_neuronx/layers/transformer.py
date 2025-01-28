@@ -23,7 +23,6 @@ def inputs(
     n_active_tokens,
     hidden_size,
     neuron_config=None,
-    tp_degree=None,
 ):
     """
     Defines the set of required inputs for all decoder models.
@@ -219,11 +218,9 @@ def rms_lm_head(
         n_active_tokens = 1
 
     rms_hidden = (
-        hlo.rms_norm(hidden, rms_weight, eps, neuron_config=None, tp_degree=tp_degree)
+        hlo.rms_norm(hidden, rms_weight, eps, neuron_config=None)
         if is_bsh
-        else hlo.rms_norm(
-            hidden, rms_weight, eps, dim=0, neuron_config=None, tp_degree=tp_degree
-        )
+        else hlo.rms_norm(hidden, rms_weight, eps, dim=0, neuron_config=None)
     )
 
     if is_bsh:
