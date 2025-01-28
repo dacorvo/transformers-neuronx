@@ -103,57 +103,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         if gqa == constants.GQA.REPLICATED_HEADS:
             return
 
-        if gqa == constants.GQA.SHARD_OVER_BATCH:
-            success = True
-            if self.neuron_config.batch_size % self.neuron_config.tp_degree != 0:
-                warnings.warn(
-                    f'Cannot enable "{gqa}" when a batch size '
-                    f"({self.neuron_config.batch_size} in {self.neuron_config.batch_size}) is not evenly "
-                    f"divisible by the tensor parallel degree "
-                    f"({self.neuron_config.tp_degree})"
-                )
-                success = False
-                self.neuron_config.group_query_attention = (
-                    constants.GQA.SHARD_OVER_HEADS
-                )
-            if success:
-                return
-
-        if gqa == constants.GQA.ALL_GATHER_HEADS:
-            attention_head_size = self.config.hidden_size // self.config.num_attention_heads
-            if (
-                self.config.num_key_value_heads * attention_head_size
-            ) % self.neuron_config.tp_degree != 0:
-                warnings.warn(
-                    f'Cannot enable "{gqa}" when the hidden size of KV '
-                    f"({self.config.num_key_value_heads} x {attention_head_size}) is not evenly divisible "
-                    f"by the tensor parallel degree ({self.neuron_config.tp_degree})"
-                )
-                self.neuron_config.group_query_attention = (
-                    constants.GQA.SHARD_OVER_HEADS
-                )
-
-            if self.config.num_attention_heads % self.neuron_config.tp_degree != 0:
-                # try pad on n_head, if pad_size could be evenly disible by n_kv_head,
-                # then we can evenly distribute same number of padding q_head to each k/v head
-                pad_size = get_pad_size(
-                    self.config.num_attention_heads, self.neuron_config.tp_degree
-                )
-
-                if pad_size % self.config.num_key_value_heads == 0:
-                    return
-                else:
-                    warnings.warn(
-                        f'Cannot enable "{gqa}" when the number of padding {pad_size} need for query '
-                        f"attention heads ({self.config.num_attention_heads}) with the tensor parallel degree ({self.neuron_config.tp_degree}) "
-                        f"is not divisible by KV heads ({self.config.num_attention_heads})"
-                    )
-                    self.neuron_config.group_query_attention = (
-                        constants.GQA.SHARD_OVER_HEADS
-                    )
-            else:
-                return
-
         if self.config.num_key_value_heads % self.neuron_config.tp_degree != 0:
             warnings.warn(
                 f"KV head replication will be enabled since the number of KV "
@@ -770,40 +719,32 @@ class DecoderLayer:
         hidden_size_padded = hidden_size_padded_qkv = (
             n_head_padded * self.attention_head_size
         )
-        if self.neuron_config.group_query_attention == constants.GQA.ALL_GATHER_HEADS:
-            qkv_maybe_pad = attn_out_maybe_pad = MaybePadder(
+        qkv_maybe_pad = MaybePadder(hidden_size_padded_qkv)
+        attn_out_maybe_pad = MaybePadder(hidden_size_padded)
+
+        # Adjust padding strategy if we can use less K/V replication
+        # with interleaved padding.
+        extra_heads = n_head_padded - n_heads
+        if (
+            self.n_head != self.n_kv_head
+            and self.neuron_config.group_query_attention
+            == constants.GQA.REPLICATED_HEADS
+            and self.neuron_config.tp_degree % self.n_kv_head == 0
+            and extra_heads % self.n_kv_head == 0
+            and extra_heads > 0
+        ):
+            qkv_maybe_pad = MaybePadder(
+                hidden_size_padded_qkv,
+                padding="interleaved",
+                split_size=n_heads,
+                interleaved_factor=self.n_kv_head,
+            )
+            attn_out_maybe_pad = MaybePadder(
                 hidden_size_padded,
                 padding="interleaved",
                 split_size=n_heads,
                 interleaved_factor=self.n_kv_head,
             )
-        else:
-            qkv_maybe_pad = MaybePadder(hidden_size_padded_qkv)
-            attn_out_maybe_pad = MaybePadder(hidden_size_padded)
-
-            # Adjust padding strategy if we can use less K/V replication
-            # with interleaved padding.
-            extra_heads = n_head_padded - n_heads
-            if (
-                self.n_head != self.n_kv_head
-                and self.neuron_config.group_query_attention
-                == constants.GQA.REPLICATED_HEADS
-                and self.neuron_config.tp_degree % self.n_kv_head == 0
-                and extra_heads % self.n_kv_head == 0
-                and extra_heads > 0
-            ):
-                qkv_maybe_pad = MaybePadder(
-                    hidden_size_padded_qkv,
-                    padding="interleaved",
-                    split_size=n_heads,
-                    interleaved_factor=self.n_kv_head,
-                )
-                attn_out_maybe_pad = MaybePadder(
-                    hidden_size_padded,
-                    padding="interleaved",
-                    split_size=n_heads,
-                    interleaved_factor=self.n_kv_head,
-                )
 
         self.attn_q_weight = qkv_maybe_pad(self.attn_q_weight, dim=1)
         self.attn_q_bias = qkv_maybe_pad(self.attn_q_bias, dim=0)
@@ -981,22 +922,15 @@ class DecoderLayer:
         self.extra_parameters = extras
         self.init_caches()
 
-    @property
-    def shard_over_batch(self):
-        return (
-            self.neuron_config.group_query_attention == constants.GQA.SHARD_OVER_BATCH
-        )
-
     def init_caches(self):
         n_heads_kv_cache = self.n_kv_head
 
-        if not self.shard_over_batch:
-            # Compute the hidden size taking a potential padding into account. We must
-            # allow the KV cache to be padded so it can be evenly divisible across
-            # NeuronCores.
-            n_heads_kv_cache = round_up_to_divisor(
-                self.n_kv_head, self.neuron_config.tp_degree
-            )
+        # Compute the hidden size taking a potential padding into account. We must
+        # allow the KV cache to be padded so it can be evenly divisible across
+        # NeuronCores.
+        n_heads_kv_cache = round_up_to_divisor(
+            self.n_kv_head, self.neuron_config.tp_degree
+        )
         # Select manipulator based on device
         if self._cpu_compile:
             manipulator = parallel.CPUTensorManipulator(self.neuron_config.tp_degree)

@@ -275,8 +275,6 @@ def get_qkv_padding(
     """
     n_head_padded = round_up_to_divisor(n_head, neuron_config.tp_degree)
     # Assume no KV padding by default. This applies to:
-    # - SHARD_OVER_BATCH -> Linearly split across NCs
-    # - ALL_GATHER_HEADS -> Linearly split across NCs
     # - SHARD_OVER_HEADS -> Split by head across NCs (Assumes validated size)
     n_kv_head_padded = n_kv_head
 

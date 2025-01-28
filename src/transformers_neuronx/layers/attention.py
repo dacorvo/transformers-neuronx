@@ -17,7 +17,6 @@ from typing import Optional
 from transformers_neuronx import hlo
 from transformers_neuronx.constants import FUSED_QKV_TP_FACTOR
 from transformers_neuronx.constants import LAYOUT_BSH
-from transformers_neuronx import constants
 from transformers_neuronx.config import NeuronConfig
 from transformers_neuronx.layers import attention, attention_utils
 from transformers_neuronx.nki.compile import nki_call
@@ -37,7 +36,6 @@ def query_key_value(
     d_head,
     tp_degree=None,
     neuron_config=None,
-    shard_over_batch=False,
     n_kv_heads_tp=None,
 ):
     """
@@ -78,28 +76,11 @@ def query_key_value(
         n_heads_tp = hidden_size_tp // d_head
         n_kv_heads_tp = kv_hidden_size_tp // d_head
 
-    sharded_gqa_kv = (
-        kv_hidden_size_tp < d_head
-        and neuron_config is not None
-        and neuron_config.group_query_attention == constants.GQA.ALL_GATHER_HEADS
-    )
-
     # (h, s, b) => (h, s * b)
     hidden_r = hlo.reshape(hidden, (hidden_size, n_active_tokens * n_seqs))
 
-    # Sharded KV GQA
-    if sharded_gqa_kv:
-        # Q = (hidden @ wQ) + bQ
-        active_q = hlo.dot00_add1(hidden_r, q_weight, q_bias)
-
-        # K = (hidden @ wK) + bK
-        active_k = _sharded_kv_projection(hidden, k_weight, k_bias, d_head, tp_degree)
-
-        # V = (hidden @ wV) + bV
-        active_v = _sharded_kv_projection(hidden, v_weight, v_bias, d_head, tp_degree)
-
     # Fused MHA
-    elif fuse_qkv:
+    if fuse_qkv:
         # QKV = (hidden @ wQKV) + bQKV
         active_qkv = hlo.dot00_add1(hidden_r, q_weight, q_bias)
 
@@ -130,37 +111,12 @@ def query_key_value(
         # V = (hidden @ wV) + bV
         active_v = hlo.dot00_add1(hidden_r, v_weight, v_bias)
 
-    if shard_over_batch:
-        # shard over batch
-        n_seqs_per_nc = n_seqs // tp_degree
-        n_heads = n_heads_tp * tp_degree
-        n_kv_heads = n_heads_tp * tp_degree // (hidden_size_tp // kv_hidden_size_tp)
-        n_repeats = n_heads // n_kv_heads
-        active_q_sizes = n_active_tokens, n_seqs_per_nc, n_kv_heads * n_repeats, d_head
-        active_kv_sizes = n_active_tokens, n_seqs_per_nc, n_kv_heads, d_head
-
-        # split along batch dimension, and concat along head dimension
-        active_q = hlo.all_to_all(
-            active_q, split_dim=0, concat_dim=1, tp_degree=tp_degree
-        )
-        active_k = hlo.all_to_all(
-            active_k, split_dim=0, concat_dim=1, tp_degree=tp_degree
-        )
-        active_v = hlo.all_to_all(
-            active_v, split_dim=0, concat_dim=1, tp_degree=tp_degree
-        )
-
-        active_q = hlo.reshape(active_q, active_q_sizes)
-        active_k = hlo.reshape(active_k, active_kv_sizes)
-        active_v = hlo.reshape(active_v, active_kv_sizes)
-    else:
-        # shard over head
-        active_q_sizes = n_active_tokens, n_seqs, n_heads_tp, d_head
-        active_kv_sizes = n_active_tokens, n_seqs, n_kv_heads_tp, d_head
-        active_q = hlo.reshape(active_q, active_q_sizes)
-        if not sharded_gqa_kv:
-            active_k = hlo.reshape(active_k, active_kv_sizes)
-            active_v = hlo.reshape(active_v, active_kv_sizes)
+    # shard over head
+    active_q_sizes = n_active_tokens, n_seqs, n_heads_tp, d_head
+    active_kv_sizes = n_active_tokens, n_seqs, n_kv_heads_tp, d_head
+    active_q = hlo.reshape(active_q, active_q_sizes)
+    active_k = hlo.reshape(active_k, active_kv_sizes)
+    active_v = hlo.reshape(active_v, active_kv_sizes)
 
     return active_q, active_k, active_v
 
@@ -397,13 +353,12 @@ def score(
     return result_dot
 
 
-def mask(score, mask, tp_degree=None, shard_over_batch=False, constant_value=-30000):
+def mask(score, mask, tp_degree=None, constant_value=-30000):
     """
     Masks the computed attention scores with the attention mask.
 
     score = masked_fill(score, mask, -65535)
     """
-    scribe = score.scribe
     dtype = score.dtype
     score_sizes = score.sizes
 
@@ -413,29 +368,9 @@ def mask(score, mask, tp_degree=None, shard_over_batch=False, constant_value=-30
     )  # Valid for fp32/fp16/bf16
     large_neg_br = dtype[score_sizes].Broadcast(large_neg, dimensions=[])
     if len(mask.sizes) == 2:
-        if shard_over_batch:
-            assert isinstance(tp_degree, int), (
-                f"tp_degree ({tp_degree}) is required to be an integer for shard-over-batch."
-            )
-            zero = scribe.s32.Constant(constant_value=0)
-            n_seqs_per_nc = score_sizes[0]
-            assert n_seqs_per_nc == mask.sizes[0] // tp_degree, (
-                f"invalid n_seqs_per_nc ({n_seqs_per_nc}) vs mask_sizes ({mask.sizes})"
-            )
-            mask = hlo.dynamic_slice_along(mask, dim=0, start=zero, size=n_seqs_per_nc)
         # broadcast from [n_seqs, n_active_tokens] to [n_seqs, n_heads, n_active_tokens, n_positions]
         mask_br = hlo.broadcast(mask, score_sizes, [0, 2])
     else:
-        if shard_over_batch:
-            assert isinstance(tp_degree, int), (
-                f"tp_degree ({tp_degree}) is required to be an integer for shard-over-batch."
-            )
-            zero = scribe.s32.Constant(constant_value=0)
-            n_seqs_per_nc = score_sizes[0]
-            assert n_seqs_per_nc == mask.sizes[0] // tp_degree, (
-                f"invalid n_seqs_per_nc ({n_seqs_per_nc}) vs mask_sizes ({mask.sizes})"
-            )
-            mask = hlo.dynamic_slice_along(mask, dim=0, start=zero, size=n_seqs_per_nc)
         # broadcast from [n_seqs, n_active_tokens, n_positions] to [n_seqs, n_heads, n_active_tokens, n_positions]
         mask_br = hlo.broadcast(mask, score_sizes, [0, 2, 3])
     score = hlo.masked_select(mask_br, score, large_neg_br)
@@ -476,22 +411,11 @@ def context(
     scribe = active_score.scribe
     f32 = scribe.f32
 
-    shard_over_batch = False
-    if neuron_config is not None:
-        shard_over_batch = (
-            neuron_config.group_query_attention == constants.GQA.SHARD_OVER_BATCH
-        )
-
     n_seqs, n_heads, n_active_tokens, n_active_tokens = active_score.sizes
     _, _, _, n_positions = past_scores.sizes
-    if shard_over_batch:
-        n_positions, n_seqs_per_nc, n_kv_heads, d_head = past_values.sizes
-        n_seqs = n_seqs_per_nc * tp_degree
-        n_heads_tp = n_heads // tp_degree
-    else:
-        n_positions, _, n_kv_heads_tp, d_head = past_values.sizes
-        n_seqs = active_values.sizes[1]
-        _, n_heads_tp, _, _ = active_score.sizes
+    n_positions, _, n_kv_heads_tp, d_head = past_values.sizes
+    n_seqs = active_values.sizes[1]
+    _, n_heads_tp, _, _ = active_score.sizes
 
     # Upcast to f32 before computation
     past_scores = hlo.cast(past_scores, f32)
@@ -515,7 +439,6 @@ def context(
             exp,
             past_mask,
             tp_degree=tp_degree,
-            shard_over_batch=shard_over_batch,
             constant_value=0,
         )
     denom = hlo.reduce_sum(exp, dim=3)
@@ -532,7 +455,6 @@ def context(
             active_prob,
             active_mask,
             tp_degree=tp_degree,
-            shard_over_batch=shard_over_batch,
             constant_value=0,
         )
     active_denom = hlo.reduce_sum(active_prob, dim=3)
@@ -552,13 +474,9 @@ def context(
     denom = dtype[denom.sizes].Convert(denom)
 
     if n_kv_heads != 0:
-        if shard_over_batch:
-            n_heads = n_heads_tp * tp_degree
-            n_repeats = n_heads // n_kv_heads
-        else:
-            _, n_heads_tp, *_ = past_prob.sizes
-            _, _, n_kv_heads_tp, *_ = past_values.sizes
-            n_repeats = n_heads_tp // n_kv_heads_tp
+        _, n_heads_tp, *_ = past_prob.sizes
+        _, _, n_kv_heads_tp, *_ = past_values.sizes
+        n_repeats = n_heads_tp // n_kv_heads_tp
 
         # values layout: (n_positions, n_seqs_per_nc, n_kv_heads, d_head) -> repeat_dim=2
         past_values = hlo.repeat_kv(past_values, n_repeats=n_repeats, repeat_dim=2)
@@ -581,11 +499,6 @@ def context(
         active_prob, active_values, dimension_numbers=dot_dims
     )
     output = hlo.add(output_dot, active_output_dot)
-
-    if shard_over_batch:
-        # concat along batch dimension and split along head dimension
-        output = hlo.all_to_all(output, split_dim=1, concat_dim=0, tp_degree=tp_degree)
-        denom = hlo.all_to_all(denom, split_dim=1, concat_dim=0, tp_degree=tp_degree)
 
     sizes = n_seqs, n_heads_tp, n_active_tokens, d_head
     denom_br = hlo.broadcast(denom, sizes, broadcast_dimensions=[0, 1, 2])
@@ -619,12 +532,6 @@ def context_combined(
     If n_kv_heads != 0, uses multi-query, multi-group attention.
     If dtype is None, uses values datatype.
     """
-    shard_over_batch = False
-    if neuron_config is not None:
-        shard_over_batch = (
-            neuron_config.group_query_attention == constants.GQA.SHARD_OVER_BATCH
-        )
-
     if skip_softmax:
         probs = score
     else:
@@ -638,18 +545,8 @@ def context_combined(
     probs = hlo.cast(probs, dtype)
 
     if n_kv_heads != 0:
-        if shard_over_batch:
-            assert isinstance(tp_degree, int), (
-                f"expect tp_degree as int, but it is {tp_degree}"
-            )
-            _, n_seqs_per_nc, n_kv_heads, d_head = values.sizes
-            n_repeats = n_heads_tp // n_kv_heads
-            n_seqs = n_seqs_per_nc * tp_degree
-            _, n_heads, _, _ = probs.sizes
-            n_heads_tp = n_heads // tp_degree
-        else:
-            _, n_seqs, n_kv_heads_tp, d_head = values.sizes
-            n_repeats = n_heads_tp // n_kv_heads_tp
+        _, n_seqs, n_kv_heads_tp, d_head = values.sizes
+        n_repeats = n_heads_tp // n_kv_heads_tp
         values = hlo.repeat_kv(values, n_repeats=n_repeats, repeat_dim=2)
 
     rhs_contracting_dimensions = [0]
@@ -663,17 +560,8 @@ def context_combined(
     result = hlo.dot_general(probs, values, dimension_numbers=dot_dims, dtype=dtype)
 
     if n_kv_heads != 0:
-        if shard_over_batch:
-            result_sizes = n_seqs_per_nc, n_heads, n_active_tokens, d_head
-            result = hlo.reshape(result, result_sizes)
-
-            # concat along batch dimension and split along head dimension
-            result = hlo.all_to_all(
-                result, split_dim=1, concat_dim=0, tp_degree=tp_degree
-            )
-        else:
-            result_sizes = n_seqs, n_heads_tp, n_active_tokens, d_head
-            result = hlo.reshape(result, result_sizes)
+        result_sizes = n_seqs, n_heads_tp, n_active_tokens, d_head
+        result = hlo.reshape(result, result_sizes)
 
     sizes = n_active_tokens, n_seqs, n_heads_tp, d_head
     result = dtype[sizes].Transpose(result, dimensions=[2, 0, 1, 3])

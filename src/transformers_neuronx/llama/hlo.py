@@ -16,7 +16,6 @@ from typing import Optional
 
 from transformers.models.llama import LlamaConfig
 from transformers_neuronx import hlo, utils
-from transformers_neuronx import constants
 from transformers_neuronx.layers import transformer, rotary, attention
 from transformers_neuronx.config import NeuronConfig
 from transformers_neuronx.constants import LAYOUT_BSH, LAYOUT_HSB
@@ -33,15 +32,6 @@ class LlamaForSamplingNoEmbeddingHlo:
         self.config = config
         self.neuron_config = neuron_config
         self.n_positions = None
-
-    @property
-    def shard_over_batch(self):
-        # Property access allows fallback configuration to be enabled after construction
-        return (
-            self.neuron_config is not None
-            and self.neuron_config.group_query_attention
-            == constants.GQA.SHARD_OVER_BATCH
-        )
 
     def inputs(self, scribe, dtype, n_active_tokens, batch_size):
         tensors, dims = transformer.inputs(
@@ -763,7 +753,6 @@ class LlamaForSamplingNoEmbeddingHlo:
                 d_head,
                 neuron_config=self.neuron_config,
                 tp_degree=tp_degree,  # TODO: include tp_degree into neuron_config
-                shard_over_batch=self.shard_over_batch,
                 n_kv_heads_tp=n_kv_heads_tp,
             )
 
@@ -774,7 +763,6 @@ class LlamaForSamplingNoEmbeddingHlo:
             key,
             pos_embed,
             tp_degree=tp_degree,
-            shard_over_batch=self.shard_over_batch,
         )
 
         # Q = Q / sqrt(d_head)
@@ -836,7 +824,6 @@ class LlamaForSamplingNoEmbeddingHlo:
                 prior_scores,
                 mask,
                 tp_degree=tp_degree,
-                shard_over_batch=self.shard_over_batch,
             )
 
             # Sa = Q @ Ka
@@ -851,7 +838,6 @@ class LlamaForSamplingNoEmbeddingHlo:
                 active_score,
                 active_mask,
                 tp_degree=tp_degree,
-                shard_over_batch=self.shard_over_batch,
             )
 
             # C = softmax(Sa, Sp) @ (Va, Vp)
@@ -900,7 +886,6 @@ class LlamaForSamplingNoEmbeddingHlo:
                     score,
                     mask,
                     tp_degree=tp_degree,
-                    shard_over_batch=self.shard_over_batch,
                 )
                 context = attention.context_combined(
                     score,
