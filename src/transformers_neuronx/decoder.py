@@ -625,18 +625,6 @@ class DecoderLayer:
         self.mlp_out_bias = None
         self.post_mlp_ln_weight = None
         self.post_mlp_ln_bias = None
-        self.attn_q_min = None
-        self.attn_q_max = None
-        self.attn_k_min = None
-        self.attn_k_max = None
-        self.attn_v_min = None
-        self.attn_v_max = None
-        self.attn_out_min = None
-        self.attn_out_max = None
-        self.mlp_in_min = None
-        self.mlp_in_max = None
-        self.mlp_out_min = None
-        self.mlp_out_max = None
         # Create KV caches for each batch_size
         self.attn_k_cache = None
         self.attn_v_cache = None
@@ -1024,18 +1012,6 @@ class DecoderLayer:
         self.mlp_out_bias = layer.mlp_out_bias
         self.post_mlp_ln_weight = layer.post_mlp_ln_weight
         self.post_mlp_ln_bias = layer.post_mlp_ln_bias
-        self.attn_q_min = layer.attn_q_min
-        self.attn_q_max = layer.attn_q_max
-        self.attn_k_min = layer.attn_k_min
-        self.attn_k_max = layer.attn_k_max
-        self.attn_v_min = layer.attn_v_min
-        self.attn_v_max = layer.attn_v_max
-        self.attn_out_min = layer.attn_out_min
-        self.attn_out_max = layer.attn_out_max
-        self.mlp_in_min = layer.mlp_in_min
-        self.mlp_in_max = layer.mlp_in_max
-        self.mlp_out_min = layer.mlp_out_min
-        self.mlp_out_max = layer.mlp_out_max
         self.extra_parameters = layer.extra_parameters
 
 
