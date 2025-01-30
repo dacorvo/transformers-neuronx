@@ -21,7 +21,6 @@ from concurrent.futures import ProcessPoolExecutor
 
 from .compiler import ParallelKernel
 from .constants import LAYOUT_BSH, LAYOUT_HSB
-from .config import maybe_dump_config
 from .module import PretrainedModel
 from .ops import init_neuron
 from .utils import maybe_pad_tensor
@@ -67,21 +66,18 @@ class NeuronModelBase(PretrainedModel):
     # TODO: decouple hlo_generation from load weights so compile can be called before it
     def to_neuron(self):
         self.decoder_lm_head._cpu_compile = False
-        with maybe_dump_config(self.config, self.neuron_config):
-            init_neuron()
-            self.load_weights()
-            if hasattr(self, "_compiled_artifacts_directory"):
-                if not os.path.isdir(self._compiled_artifacts_directory):
-                    raise FileNotFoundError(
-                        f"Did not find directory: {self._compiled_artifacts_directory}."
-                    )
-                for nbs_obj in self.nbs_objs:
-                    nbs_obj.set_neff_bytes(self._compiled_artifacts_directory)
-            else:
-                self.compile(
-                    parallel_degree=self.neuron_config.compilation_worker_count
+        init_neuron()
+        self.load_weights()
+        if hasattr(self, "_compiled_artifacts_directory"):
+            if not os.path.isdir(self._compiled_artifacts_directory):
+                raise FileNotFoundError(
+                    f"Did not find directory: {self._compiled_artifacts_directory}."
                 )
-            self.setup()
+            for nbs_obj in self.nbs_objs:
+                nbs_obj.set_neff_bytes(self._compiled_artifacts_directory)
+        else:
+            self.compile(parallel_degree=self.neuron_config.compilation_worker_count)
+        self.setup()
 
     def save(self, directory):
         if os.path.isfile(directory):

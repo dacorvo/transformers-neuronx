@@ -12,11 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-import os
-import json
 import enum
 import warnings
-import contextlib
 from typing import Optional
 
 from .constants import GQA, Layout
@@ -202,43 +199,3 @@ class NeuronConfig:
                 return _to_json(as_dict)
 
         return _to_json(self)
-
-
-@contextlib.contextmanager
-def maybe_dump_config(config, neuron_config):
-    if "NEURONX_DUMP_TO" in os.environ and (neuron_config or config):
-        dump_to = os.environ.get("NEURONX_DUMP_TO", "/tmp")
-        os.makedirs(dump_to, exist_ok=True)
-        config_to_dump = {}
-        if neuron_config:
-            config_to_dump["neuron_config"] = neuron_config.to_json()
-        if config:
-            key_aliases = {
-                "attention_dropout": ["attn_pdrop"],
-                "hidden_act": ["activation_function"],
-                "max_position_embeddings": ["n_positions"],
-                "num_hidden_layers": ["n_layer"],
-                "num_attention_heads": ["n_head"],
-                "intermediate_size": ["ffn_dim", "n_inner"],
-                "hidden_size": ["n_embd"],
-                "initializer_range": ["init_std"],
-            }
-            key_mapping = {}  # inverted and flattened key_aliases
-            for key, aliases in key_aliases.items():
-                for alias in aliases:
-                    key_mapping[alias] = key
-            model_config = {
-                key_mapping.get(k, k): v for k, v in config.__dict__.items()
-            }
-            config_to_dump["model_config"] = model_config
-        config_dump_path = os.path.join(dump_to, "neuron_model_config.json")
-        with open(config_dump_path, "w") as fp:
-            json.dump(config_to_dump, fp)
-        yield
-        # by now, the config has been copied into the sub-directories, so we can clean this one up
-        try:
-            os.remove(config_dump_path)
-        except FileNotFoundError:
-            pass
-    else:
-        yield
