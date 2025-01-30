@@ -27,7 +27,7 @@ def parse_dtype_replica_groups(neuron_config):
     replica_groups = None
 
     dtype = neuron_config.all_reduce_dtype
-    replica_groups = neuron_config.get_replica_groups(neuron_config.tp_degree)
+    replica_groups = [list(range((neuron_config.tp_degree)))]
 
     return dtype, replica_groups
 

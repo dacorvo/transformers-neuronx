@@ -150,9 +150,6 @@ class NeuronConfig:
     def vectorize_last_token_id(self):
         return self.lhs_aligned
 
-    def get_replica_groups(self, tp_degree):
-        return [list(range(tp_degree))]
-
     def to_json(self):
         json_serializable_types = (str, int, float, bool)
 
