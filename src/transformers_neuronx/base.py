@@ -210,15 +210,12 @@ class NeuronHloDecoderModel(NeuronModelBase):
 
     def _prepare_for_continuous_batching(self, input_ids, cache_ids=None, seq_ids=None):
         n_seqs, n_active_tokens = input_ids.shape
-        continuous_batching = (
-            self.neuron_config and self.neuron_config.continuous_batching
-        )
 
-        if seq_ids is None or not continuous_batching:
+        if seq_ids is None or not self.neuron_config.continuous_batching:
             # static batching
             return input_ids, cache_ids, seq_ids
 
-        batch_size = self.neuron_config.continuous_batching.batch_size_for_shared_caches
+        batch_size = self.neuron_config.batch_size
 
         if (n_active_tokens > 1) and cache_ids.flatten()[0].item() == 0:
             # context encoding

@@ -21,31 +21,6 @@ from .constants import GQA, Layout
 import torch
 
 
-class ContinuousBatchingConfig:
-    """
-    The config class that contains all continuous batching related settings
-    """
-
-    def __init__(self, **kwargs):
-        self.max_num_seqs = (
-            kwargs.pop("max_num_seqs")
-            if kwargs.get("max_num_seqs", None) is not None
-            else kwargs.pop("batch_size_for_shared_caches")
-        )
-        self.max_model_len = (
-            kwargs.pop("max_model_len")
-            if kwargs.get("max_model_len", None) is not None
-            else None
-        )
-        self.block_size = None
-        self.num_blocks = None
-        assert len(kwargs) == 0, f"unexpected key word arguments: {kwargs.keys()}"
-
-    @property
-    def batch_size_for_shared_caches(self) -> int:
-        return self.max_num_seqs
-
-
 valid_dtypes = [
     "float32",
     "float16",
@@ -98,7 +73,7 @@ class NeuronConfig:
         amp: str = "bf16",
         tp_degree: int = 2,
         *,
-        continuous_batching: Optional[ContinuousBatchingConfig] = None,
+        continuous_batching: Optional[bool] = False,
         attention_layout: Layout = Layout.HSB,
         collectives_layout: Layout = Layout.HSB,
         padding_side: str = "left",
