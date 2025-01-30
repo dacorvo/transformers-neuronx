@@ -317,11 +317,7 @@ class NeuronHloDecoderModel(NeuronModelBase):
         is_bsh = (
             self.neuron_config and self.neuron_config.attention_layout == LAYOUT_BSH
         )
-        input_batch_size = (
-            hidden.shape[0]
-            if is_bsh or self.neuron_config.on_device_embedding
-            else hidden.shape[2]
-        )
+        input_batch_size = hidden.shape[0] if is_bsh else hidden.shape[2]
 
         running_batch_size = 1
         if input_batch_size > running_batch_size:
@@ -334,7 +330,7 @@ class NeuronHloDecoderModel(NeuronModelBase):
             for iter_id in range(n_iters):
                 start_idx = iter_id * running_batch_size
                 end_idx = (iter_id + 1) * running_batch_size
-                if is_bsh or self.neuron_config.on_device_embedding:
+                if is_bsh:
                     hidden_per_batch = hidden[start_idx:end_idx, ...]
                 else:
                     hidden_per_batch = hidden[..., start_idx:end_idx]

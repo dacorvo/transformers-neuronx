@@ -53,8 +53,6 @@ class NeuronConfig:
             heads. Neuron attempts to select the best configuration by default.
         bf16_rms_norm: Uses BF16 weights and hidden states input for RMS norm operations.
             By default, the RMS norm operates on FP32 dtype of inputs.
-        on_device_embedding: Enables the input embedding to be performed on
-            Neuron. By default, the embedding is computed on CPU.
         all_reduce_dtype: The data type that is used for AllReduce collectives.
             To be selected from `["float32", "float16", "bfloat16"]`.
         cast_logits_dtype: The data type to cast logits to in the forward
@@ -79,7 +77,6 @@ class NeuronConfig:
         padding_side: str = "left",
         group_query_attention: Optional[GQA] = None,
         bf16_rms_norm: bool = False,
-        on_device_embedding: bool = False,
         all_reduce_dtype: Optional[str] = None,
         cast_logits_dtype: str = "float32",
         fuse_qkv: bool = False,
@@ -129,7 +126,6 @@ class NeuronConfig:
         if self.group_query_attention is not None:
             self.group_query_attention = GQA(self.group_query_attention)
         self.bf16_rms_norm = bf16_rms_norm
-        self.on_device_embedding = on_device_embedding
         self.output_all_logits = output_all_logits
 
         assert len(kwargs) == 0, f"Unexpected NeuronConfig keyword arguments: {kwargs}"

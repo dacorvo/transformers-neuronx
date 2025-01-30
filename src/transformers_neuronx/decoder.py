@@ -330,7 +330,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         lm_head_params,
     ):
         last_token_id = tensors[2]
-        hidden = self._hlo_embedding(hidden, tensors, pre_layer_params)
         hidden, tensors = self._hlo_pre_layer(hidden, tensors, pre_layer_params)
         hidden, out_caches = self._hlo_layers(
             hidden,
@@ -446,17 +445,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         if self.pre_layer_builder is not None:
             (hidden, *tensors) = self.pre_layer_builder(hidden, *tensors, *params)
         return hidden, tensors
-
-    def _hlo_embedding(self, hidden, tensors, params):
-        # Only insert embedding operation when on-device embedding is being used
-        if not self.neuron_config.on_device_embedding:
-            return hidden
-
-        assert self.embedding_builder is not None, (
-            "On-device embedding may only be used on models which provide this functionality"
-        )
-        hidden = self.embedding_builder(hidden, *tensors, *params)
-        return hidden
 
     def _hlo_layers_params(self, param_builder, layers, n_positions):
         layers_caches = []

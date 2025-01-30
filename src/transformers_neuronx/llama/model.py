@@ -97,22 +97,12 @@ class LlamaHloModel(NeuronHloDecoderModel):
         self.decoder_lm_head.add_lm_head(lm_head.weight.detach().T)
         lm_head.nullify()
 
-        if self.neuron_config.on_device_embedding:
-            self.decoder_lm_head.add_pre_layer_parameter(
-                self.chkpt_model.model.embed_tokens.weight,
-                sharding=1,
-            )
         self.decoder_lm_head.to_neuron()
         self.init_rest_of_model()
-        self.maybe_nullify_embeddings()
 
     def materialize_embeddings(self):
         # Materialize the embedding to CPU
         self.chkpt_model.model.embed_tokens.materialize()
-
-    def maybe_nullify_embeddings(self):
-        if self.neuron_config.on_device_embedding:
-            self.chkpt_model.model.embed_tokens.nullify()
 
     def init_rest_of_model(self):
         self.decoder_lm_head.use_executor = True
