@@ -115,7 +115,6 @@ class NeuronConfig:
         output_all_logits: bool = False,
         attn_output_transposed: bool = False,
         compilation_worker_count: Optional[int] = None,
-        duplicate_q_weight_sos: bool = False,
         **kwargs,
     ):
         self.n_positions = n_positions
@@ -168,8 +167,6 @@ class NeuronConfig:
         self.layer_partition = {}
 
         self.attn_output_transposed = attn_output_transposed
-
-        self.duplicate_q_weight_sos = duplicate_q_weight_sos
 
         self.compilation_worker_count = compilation_worker_count
 
