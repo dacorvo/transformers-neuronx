@@ -16,11 +16,10 @@ from typing import Optional
 
 from transformers_neuronx import hlo
 from transformers_neuronx.layers import attention, attention_utils
-from transformers_neuronx.nki.compile import nki_call
 
 
 from ..config import Layout, NeuronConfig
-from ..constants import FUSED_QKV_TP_FACTOR
+from ..nki import nki_call
 from ..utils import parse_dtype_replica_groups
 
 
@@ -65,7 +64,8 @@ def query_key_value(
             kv_hidden_size_tp = d_head * n_kv_heads_tp
         # KV head count not specified, assume same as Q
         else:
-            hidden_size_tp //= FUSED_QKV_TP_FACTOR
+            fused_qkv_ratio = 3  # Q + K + V
+            hidden_size_tp //= fused_qkv_ratio
             kv_hidden_size_tp = hidden_size_tp
             n_heads_tp = hidden_size_tp // d_head
             n_kv_heads_tp = kv_hidden_size_tp // d_head

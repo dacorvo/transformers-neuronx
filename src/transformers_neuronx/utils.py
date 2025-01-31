@@ -18,7 +18,6 @@ import itertools
 import torch
 import torch.nn.functional as F
 
-from .constants import FUSED_QKV_TP_FACTOR
 from .config import GQA, NeuronConfig
 
 
@@ -135,14 +134,15 @@ def interleave_qkv(q, k, v, tp_degree, dim=1):
             yield idx, shard_tensors
 
     if q.shape[dim] == k.shape[dim]:
+        fused_qkv_ratio = 3  # Q + K + V
         size, shard_size, slices = get_slice_params(q, dim, tp_degree)
         is_single_dim = len(q.shape) == 1
         if is_single_dim:
-            tensor = torch.zeros((size * FUSED_QKV_TP_FACTOR), dtype=q.dtype)
+            tensor = torch.zeros((size * fused_qkv_ratio), dtype=q.dtype)
         else:
             hidden_dim, interleave_dim = q.shape
             tensor = torch.zeros(
-                (hidden_dim, interleave_dim * FUSED_QKV_TP_FACTOR), dtype=q.dtype
+                (hidden_dim, interleave_dim * fused_qkv_ratio), dtype=q.dtype
             )
         for idx, shard_tensors in get_shard_tensors(
             (q, k, v), size, shard_size, slices, dim

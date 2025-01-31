@@ -14,14 +14,16 @@
 # ==============================================================================
 
 import torch
-from transformers_neuronx import compiler
 import neuronxcc.nki.language as nl
 from neuronxcc.nki import FrameworkKernel
 from torch_neuronx.pyhlo.scribe import HloShape
 
 
+from .compiler import DataTypeConverter
+
+
 class PyTorchTracedKernel(FrameworkKernel):
-    dtype_converter = compiler.DataTypeConverter()
+    dtype_converter = DataTypeConverter()
 
     @staticmethod
     def get_shape(hloShape):

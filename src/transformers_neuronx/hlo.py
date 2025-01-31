@@ -21,9 +21,9 @@ import torch
 from transformers_neuronx import activations
 from transformers_neuronx import compiler
 from transformers_neuronx import dtypes
-from transformers_neuronx.nki.compile import nki_call
 
 from .config import Layout
+from .nki import nki_call
 from .utils import build_replica_groups, parse_dtype_replica_groups
 
 
