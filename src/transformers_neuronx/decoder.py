@@ -39,16 +39,12 @@ from .utils import (
 
 
 class GraphBuilder(ABC):
-
-    def __init__(
-        self, config: PretrainedConfig, neuron_config: NeuronConfig
-    ):
+    def __init__(self, config: PretrainedConfig, neuron_config: NeuronConfig):
         self.config = config
         self.neuron_config = neuron_config
 
 
 class DecoderGraphBuilder(GraphBuilder):
-
     def inputs(
         self,
         scribe,
@@ -122,11 +118,11 @@ class DecoderGraphBuilder(GraphBuilder):
         return hidden, cache_ids, start_ids, last_token_id, sequence_slice_dimensions
 
     @abstractmethod
-    def pre_layer(self, hidden, cache_ids, start_ids, last_token_id):
+    def pre_layer(self, hidden, cache_ids, start_ids):
         raise NotImplementedError
 
 
-class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
+class DecoderGraph(NeuronBaseSerializer):
     def __init__(
         self,
         n_active_tokens,
@@ -375,7 +371,7 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         layers_weights,
         lm_head_params,
     ):
-        hidden, tensors = self.builder.pre_layer(hidden, cache_ids, start_ids, last_token_id)
+        hidden, tensors = self.builder.pre_layer(hidden, cache_ids, start_ids)
         hidden, out_caches = self._hlo_layers(
             hidden,
             tensors,
@@ -399,8 +395,8 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             dtype = getattr(scribe, self.neuron_config.amp)
 
             # Create user parameters
-            hidden, cache_ids, start_ids, last_token_id, self.inputs_sdim = self.builder.inputs(
-                scribe, dtype, batch_size, self.n_active_tokens
+            hidden, cache_ids, start_ids, last_token_id, self.inputs_sdim = (
+                self.builder.inputs(scribe, dtype, batch_size, self.n_active_tokens)
             )
             param_builder = DecoderParameterBuilder(scribe, len(self.inputs_sdim))
 

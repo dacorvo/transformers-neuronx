@@ -22,12 +22,11 @@ from ..layers import transformer, rotary, attention
 from ..config import Layout, NeuronConfig
 
 
-class LlamaForSamplingNoEmbeddingHlo(DecoderGraphBuilder):
+class LlamaGraphBuilder(DecoderGraphBuilder):
     def __init__(
         self, config: LlamaConfig, neuron_config: Optional[NeuronConfig] = None
     ):
-        self.config = config
-        self.neuron_config = neuron_config
+        super().__init__(config, neuron_config)
         self.n_positions = None
 
     def pre_layer(
@@ -35,10 +34,7 @@ class LlamaForSamplingNoEmbeddingHlo(DecoderGraphBuilder):
         hidden,
         cache_ids,
         start_ids,
-        last_token_id,
     ):
-        block_to_seq = None
-
         head_dim = self.config.hidden_size // self.config.num_attention_heads
         pos_embed = rotary.hlo_rotary_embedding(
             hidden.dtype,
@@ -55,11 +51,9 @@ class LlamaForSamplingNoEmbeddingHlo(DecoderGraphBuilder):
         )
 
         return hidden, (
-            last_token_id,
             pos_embed,
             cache_ids,
             start_ids,
-            block_to_seq,
             mask,
             active_mask,
         )
@@ -67,11 +61,9 @@ class LlamaForSamplingNoEmbeddingHlo(DecoderGraphBuilder):
     def layer(
         self,
         hidden,
-        last_token_id,
         pos_embed,
         cache_ids,
         start_ids,
-        block_to_seq,
         mask,
         active_mask,
         attn_k_cache,
@@ -115,8 +107,6 @@ class LlamaForSamplingNoEmbeddingHlo(DecoderGraphBuilder):
             ln_hidden,
             cache_ids,
             start_ids,
-            last_token_id,
-            block_to_seq,
             pos_embed,
             mask,
             active_mask,
@@ -181,8 +171,6 @@ class LlamaForSamplingNoEmbeddingHlo(DecoderGraphBuilder):
         hidden,
         cache_ids,
         start_ids,
-        last_token_id,
-        block_to_seq,
         pos_embed,
         mask,
         active_mask,

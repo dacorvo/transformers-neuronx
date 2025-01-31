@@ -16,9 +16,9 @@
 
 from ..base import NeuronHloDecoderModel
 from ..config import NeuronConfig
-from ..decoder import DecoderLmHeadForSamplingNoEmbedding
+from ..decoder import DecoderGraph
 from ..dtypes import to_torch_dtype
-from .hlo import LlamaForSamplingNoEmbeddingHlo
+from .hlo import LlamaGraphBuilder
 from .modules import LlamaForCausalLM
 
 
@@ -32,10 +32,8 @@ class LlamaHloModel(NeuronHloDecoderModel):
         super().__init__(LlamaForCausalLM, config, dtype)
         self.config = config
         self.neuron_config = neuron_config if neuron_config else NeuronConfig()
-        hlo_builder = LlamaForSamplingNoEmbeddingHlo(
-            config, neuron_config=self.neuron_config
-        )
-        self.decoder_param_set = DecoderLmHeadForSamplingNoEmbedding(
+        hlo_builder = LlamaGraphBuilder(config, neuron_config=self.neuron_config)
+        self.decoder_param_set = DecoderGraph(
             n_active_tokens=1,
             config=config,
             neuron_config=self.neuron_config,
