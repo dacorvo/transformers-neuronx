@@ -16,9 +16,9 @@ from typing import Optional
 
 from transformers.models.llama import LlamaConfig
 from transformers_neuronx import hlo, utils
-from transformers_neuronx.layers import transformer, rotary, attention
-from transformers_neuronx.config import NeuronConfig
-from ..constants import Layout
+
+from ..layers import transformer, rotary, attention
+from ..config import Layout, NeuronConfig
 
 
 class LlamaForSamplingNoEmbeddingHlo:

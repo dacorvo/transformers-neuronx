@@ -18,8 +18,8 @@ import itertools
 import torch
 import torch.nn.functional as F
 
-from .constants import FUSED_QKV_TP_FACTOR, GQA
-from .config import NeuronConfig
+from .constants import FUSED_QKV_TP_FACTOR
+from .config import GQA, NeuronConfig
 
 
 def parse_dtype_replica_groups(neuron_config):

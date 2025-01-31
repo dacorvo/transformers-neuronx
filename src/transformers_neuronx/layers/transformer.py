@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 from transformers_neuronx import hlo
-from transformers_neuronx.constants import Layout
+from ..config import Layout
 
 
 def inputs(

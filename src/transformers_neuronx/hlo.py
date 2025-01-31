@@ -23,7 +23,7 @@ from transformers_neuronx import compiler
 from transformers_neuronx import dtypes
 from transformers_neuronx.nki.compile import nki_call
 
-from .constants import Layout
+from .config import Layout
 from .utils import build_replica_groups, parse_dtype_replica_groups
 
 

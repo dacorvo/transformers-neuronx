@@ -23,12 +23,11 @@ from transformers_neuronx import dtypes
 from transformers_neuronx import hlo
 from transformers_neuronx import ops
 from transformers_neuronx import parallel
-from transformers_neuronx import constants
-from transformers_neuronx.config import NeuronConfig
 from transformers_neuronx.llama.hlo import LlamaForSamplingNoEmbeddingHlo
 
 
 from .base import NeuronModelBase, NeuronBaseSerializer
+from .config import NeuronConfig, GQA
 from .utils import (
     maybe_pad_tensor,
     round_up_to_divisor,
@@ -98,9 +97,9 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             # MHA Early exit - This avoids emitting irrelevant GQA warnings
             if self.config.num_attention_heads == self.config.num_key_value_heads:
                 return
-            self.neuron_config.group_query_attention = constants.GQA.SHARD_OVER_HEADS
+            self.neuron_config.group_query_attention = GQA.SHARD_OVER_HEADS
 
-        if gqa == constants.GQA.REPLICATED_HEADS:
+        if gqa == GQA.REPLICATED_HEADS:
             return
 
         if self.config.num_key_value_heads % self.neuron_config.tp_degree != 0:
@@ -109,7 +108,7 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
                 f"heads ({self.config.num_key_value_heads}) is not evenly divisible by the "
                 f"tensor parallel degree ({self.neuron_config.tp_degree})"
             )
-            self.neuron_config.group_query_attention = constants.GQA.REPLICATED_HEADS
+            self.neuron_config.group_query_attention = GQA.REPLICATED_HEADS
 
     def init_context_decoder(
         self,
@@ -703,8 +702,7 @@ class DecoderLayer:
         extra_heads = n_head_padded - n_heads
         if (
             self.n_head != self.n_kv_head
-            and self.neuron_config.group_query_attention
-            == constants.GQA.REPLICATED_HEADS
+            and self.neuron_config.group_query_attention == GQA.REPLICATED_HEADS
             and self.neuron_config.tp_degree % self.n_kv_head == 0
             and extra_heads % self.n_kv_head == 0
             and extra_heads > 0

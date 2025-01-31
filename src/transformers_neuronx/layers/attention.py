@@ -15,13 +15,12 @@
 from typing import Optional
 
 from transformers_neuronx import hlo
-from transformers_neuronx.constants import FUSED_QKV_TP_FACTOR
-from transformers_neuronx.constants import Layout
-from transformers_neuronx.config import NeuronConfig
 from transformers_neuronx.layers import attention, attention_utils
 from transformers_neuronx.nki.compile import nki_call
 
 
+from ..config import Layout, NeuronConfig
+from ..constants import FUSED_QKV_TP_FACTOR
 from ..utils import parse_dtype_replica_groups
 
 

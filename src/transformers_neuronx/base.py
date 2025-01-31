@@ -20,7 +20,7 @@ from abc import ABC, abstractmethod
 from concurrent.futures import ProcessPoolExecutor
 
 from .compiler import ParallelKernel
-from .constants import Layout
+from .config import Layout
 from .module import PretrainedModel
 from .ops import init_neuron
 from .utils import maybe_pad_tensor
