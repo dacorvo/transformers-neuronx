@@ -168,7 +168,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         self.logits_indices = None
         self.inputs_sdim = None
         self.inputs_builder = None
-        self.embedding_builder = None
         self.layer_builder = None
         self.ln_lm_head_params = []
         self.ln_lm_head_builder = None
@@ -248,16 +247,11 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             decoder_lm_head.add_pre_layer_builder(self.builder.pre_layer)
         decoder_lm_head.add_layer_builder(self.builder.layer)
         decoder_lm_head.add_ln_lm_head_builder(self.builder.ln_lm_head)
-        if hasattr(self.builder, "embedding"):
-            decoder_lm_head.add_embedding_builder(self.builder.embedding)
         return decoder_lm_head
 
     def enable_executor(self, return_ranks=-1):
         self.return_ranks = return_ranks
         self.program.enable_executor()
-
-    def add_embedding_builder(self, embedding_builder):
-        self.embedding_builder = embedding_builder
 
     def add_pre_layer_parameter(self, param, sharding=None):
         self.pre_layer_parameters.append((param, sharding))
@@ -335,7 +329,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
                 neuron_config=self.neuron_config,
                 is_prefill=self.is_prefill,
             )
-        new.add_embedding_builder(self.embedding_builder)
         new.add_pre_layer_builder(self.pre_layer_builder)
         new.add_layer_builder(self.layer_builder)
         new.add_ln_lm_head_builder(self.ln_lm_head_builder)
