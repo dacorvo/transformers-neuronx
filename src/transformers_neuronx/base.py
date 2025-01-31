@@ -154,9 +154,6 @@ class NeuronHloDecoderModel(NeuronModelBase):
         """
         batch_size, context_length = input_ids.shape
 
-        block_tables = torch.tensor([0])
-        context_lens = torch.tensor([0])
-
         # if last_token_id not used, simply set to 0
         if self.neuron_config.vectorize_last_token_id:
             last_token_id = torch.zeros(batch_size, dtype=torch.int32)
@@ -164,7 +161,7 @@ class NeuronHloDecoderModel(NeuronModelBase):
             last_token_id = torch.as_tensor([0], dtype=torch.int32)
         if context_length == 1:
             # token generation
-            return input_ids, cache_ids, last_token_id, block_tables, context_lens
+            return input_ids, cache_ids, last_token_id
 
         estimate = self.neuron_config.n_positions
 
@@ -182,7 +179,7 @@ class NeuronHloDecoderModel(NeuronModelBase):
                     cache_ids, batch_size, context_length, estimate
                 )
 
-        return input_ids, cache_ids, last_token_id, block_tables, context_lens
+        return input_ids, cache_ids, last_token_id
 
     def _pad_cache_ids(self, cache_ids, batch_size, context_length, estimate):
         if self.neuron_config.use_2d_cache_ids:
@@ -260,10 +257,8 @@ class NeuronHloDecoderModel(NeuronModelBase):
         )
 
         # right pad the input_ids if neccessary
-        input_ids, cache_ids, last_token_id, block_tables, context_lens = (
-            self._prepare_for_par_ctx_rhs_padding(
-                input_ids, cache_ids, start_ids, **kwargs
-            )
+        input_ids, cache_ids, last_token_id = self._prepare_for_par_ctx_rhs_padding(
+            input_ids, cache_ids, start_ids, **kwargs
         )
         start_ids = new_start_ids
 
@@ -278,14 +273,7 @@ class NeuronHloDecoderModel(NeuronModelBase):
             if self.neuron_config.use_2d_cache_ids:
                 cache_ids = cache_ids.unsqueeze(0).expand(batch_size, context_length)
 
-        return (
-            input_ids,
-            cache_ids,
-            start_ids,
-            last_token_id,
-            block_tables,
-            context_lens,
-        )
+        return input_ids, cache_ids, start_ids, last_token_id
 
     def _postprocess(self, input_ids, logits, start_ids):
         if start_ids is None or (

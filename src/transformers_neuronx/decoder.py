@@ -103,22 +103,12 @@ class DecoderGraphBuilder(GraphBuilder):
 
         start_ids = s32[batch_size].Parameter(parameter_number=2)
 
-        block_table = None
-        context_lens = None
         # Build parameters for last_token_id and others
         if cache_2d:
             # regular token gen
             last_token_id = s32[batch_size].Parameter(parameter_number=3)
         else:
             last_token_id = s32[1].Parameter(parameter_number=3)
-
-        # add block tables and context lens parameters as single length tensors
-        # when chunked prefill is not enabled. In this case, these inputs are not used
-        # but are kept for consistency and are defined as length 1 tensors.
-        if not block_table:
-            block_table = s32[1].Parameter(parameter_number=4)
-        if not context_lens:
-            context_lens = s32[1].Parameter(parameter_number=5)
 
         sequence_slice_dimensions = (
             1,  # hidden        | In both HSB/BSH the sequence dim is 1
@@ -127,8 +117,6 @@ class DecoderGraphBuilder(GraphBuilder):
             else 0,  # cache_ids     | Sequence dim varies based on alignment
             None,  # start_ids     | Offset is per batch, no slicing required
             0 if cache_2d else None,  # last_token_id | Scalar, no slicing required
-            None,  # block_table   | No sequence dim
-            None,  # context_lens  | No sequence dim
         )
 
         return (
@@ -136,8 +124,6 @@ class DecoderGraphBuilder(GraphBuilder):
             cache_ids,
             start_ids,
             last_token_id,
-            block_table,
-            context_lens,
         ), sequence_slice_dimensions
 
 

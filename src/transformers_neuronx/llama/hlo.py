@@ -36,8 +36,6 @@ class LlamaForSamplingNoEmbeddingHlo(DecoderGraphBuilder):
         cache_ids,
         start_ids,
         last_token_id,
-        block_tables,
-        context_lens,
         *weights,
         position_ids=None,
     ):
