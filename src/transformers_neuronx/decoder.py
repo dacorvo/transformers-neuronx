@@ -23,7 +23,6 @@ from transformers_neuronx import dtypes
 from transformers_neuronx import hlo
 from transformers_neuronx import ops
 from transformers_neuronx import parallel
-from transformers_neuronx.llama.hlo import LlamaForSamplingNoEmbeddingHlo
 
 
 from .base import NeuronModelBase, NeuronBaseSerializer
@@ -471,20 +470,9 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         ):
             in_caches = [maybe_transfer_with_static_ring(cache) for cache in caches]
             weights = [maybe_transfer_with_static_ring(weight) for weight in weights]
-            is_first_last_layer = True if idx == 0 or idx == len(layers) - 1 else False
-            if isinstance(self.layer_builder.__self__, LlamaForSamplingNoEmbeddingHlo):
-                # Positional information is needed for fused residual adds in kernels in Llama 3
-                hidden, *out_caches = self.layer_builder(
-                    hidden,
-                    *tensors,
-                    *in_caches,
-                    *weights,
-                    is_first_last_layer=is_first_last_layer,
-                )
-            else:
-                hidden, *out_caches = self.layer_builder(
-                    hidden, *tensors, *in_caches, *weights
-                )
+            hidden, *out_caches = self.layer_builder(
+                hidden, *tensors, *in_caches, *weights
+            )
             output_caches.append(out_caches)
 
         if alias_caches:

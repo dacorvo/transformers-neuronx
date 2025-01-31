@@ -142,7 +142,6 @@ class LlamaForSamplingNoEmbeddingHlo:
         in0_weight=None,
         in1_weight=None,
         out_weight=None,
-        is_first_last_layer=False,
     ):
         eps = self.config.rms_norm_eps
         is_bsh = (
