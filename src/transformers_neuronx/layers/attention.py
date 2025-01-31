@@ -15,12 +15,48 @@
 from typing import Optional
 
 from transformers_neuronx import hlo
-from transformers_neuronx.layers import attention, attention_utils
+
+try:
+    from neuronxcc.nki.kernels.attention import attention_isa_kernel
+except ImportError:
+    from neuronxcc.nki._private_kernels.attention import attention_isa_kernel
 
 
 from ..config import Layout, NeuronConfig
 from ..nki import nki_call
 from ..utils import parse_dtype_replica_groups
+
+
+def update_indices_decode(cached_keys, cache_ids, neuron_config=None):
+    n_positions, n_seqs, n_kv_heads, d_head = cached_keys.sizes
+    cache_ids_dtype = cache_ids.dtype
+    # [6,3,9] -> [(0,6),(1,3),(2,9)] -> [6*3,3*3+1,9*3+2] -> [18,10,29]
+    # cache_ids * n_seqs + iota
+    batch_size_br = hlo.full(n_seqs, cache_ids_dtype, cache_ids.sizes)
+    indices = cache_ids_dtype[cache_ids.sizes].Multiply(cache_ids, batch_size_br)
+    offset = cache_ids_dtype[cache_ids.sizes].Iota(dimensions=[1])
+    indices = cache_ids_dtype[cache_ids.sizes].Add(indices, offset)
+    return indices
+
+
+def update_indices_context(cached_keys, cache_ids, start_ids, neuron_config=None):
+    # Check K/V cache layout
+    n_positions, n_seqs, n_kv_heads, d_head = cached_keys.sizes
+    cache_ids_dtype = cache_ids.dtype
+    # [0,1,2,3] -> [(1,0),(1,1),(1,2),(1,3)] -> [1+0*3,1+1*3,1+2*3,1+3*3] -> [1,4,7,10]
+    # start_ids + iota * n_seqs
+    batch_size_br = hlo.full(n_seqs, cache_ids_dtype, cache_ids.sizes)
+    start_ids_br = hlo.broadcast(start_ids, cache_ids.sizes, [1])
+    indices = cache_ids_dtype[cache_ids.sizes].Iota(dimensions=[0])
+    indices = cache_ids_dtype[cache_ids.sizes].Multiply(indices, batch_size_br)
+    indices = cache_ids_dtype[cache_ids.sizes].Add(indices, start_ids_br)
+    return indices
+
+
+def wrapper_flash_attention_bir(
+    q, k, v, out, scale=1.0, kernel_name="CausalAttentionMMSoftmaxMMWithoutSwap"
+):
+    attention_isa_kernel(q, k, v, scale, out, kernel_name)
 
 
 def query_key_value(
@@ -170,9 +206,7 @@ def fused_kv_update_cache(
         keys_r = hlo.reshape(keys, [n_active_seqs, kv_hidden_size])
         vals_r = hlo.reshape(vals, [n_active_seqs, kv_hidden_size])
 
-        indices = attention_utils.update_indices_decode(
-            cached_keys, cache_ids, neuron_config
-        )
+        indices = update_indices_decode(cached_keys, cache_ids, neuron_config)
         indices = hlo.transpose(indices, 0, 1)
 
         scatter_dims = dict(
@@ -215,7 +249,7 @@ def fused_kv_update_cache(
         keys_r = hlo.reshape(keys, [n_active_tokens, kv_hidden_size])
         vals_r = hlo.reshape(vals, [n_active_tokens, kv_hidden_size])
 
-        indices = attention_utils.update_indices_context(
+        indices = update_indices_context(
             cached_keys, cache_ids, start_ids, neuron_config
         )
 
@@ -403,7 +437,7 @@ def context(
     score_shifted = hlo.subtract(past_scores, reduce_max_br)
     exp = hlo.exp(score_shifted)
     if past_mask is not None:
-        exp = attention.mask(
+        exp = mask(
             exp,
             past_mask,
             tp_degree=tp_degree,
@@ -419,7 +453,7 @@ def context(
     active_score_shifted = hlo.subtract(active_score, reduce_max_bra)
     active_prob = hlo.exp(active_score_shifted)
     if active_mask is not None:
-        active_prob = attention.mask(
+        active_prob = mask(
             active_prob,
             active_mask,
             tp_degree=tp_degree,
@@ -686,7 +720,7 @@ def flash_attention(query, key, value):
         (batch_size * n_q_heads_tp, n_active_tokens, d_head),
     )
     nki_output = nki_call(
-        attention_utils.wrapper_flash_attention_bir,
+        wrapper_flash_attention_bir,
         query_nki,
         key_nki,
         value_nki,
