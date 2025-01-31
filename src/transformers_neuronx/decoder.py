@@ -119,12 +119,7 @@ class DecoderGraphBuilder(GraphBuilder):
             0 if cache_2d else None,  # last_token_id | Scalar, no slicing required
         )
 
-        return (
-            hidden,
-            cache_ids,
-            start_ids,
-            last_token_id,
-        ), sequence_slice_dimensions
+        return hidden, cache_ids, start_ids, last_token_id, sequence_slice_dimensions
 
 
 class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
@@ -399,14 +394,17 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
     def _hlo_unroll(
         self,
         hidden,
-        tensors,
+        cache_ids,
+        start_ids,
+        last_token_id,
         layers_caches,
         layers_weights,
         pre_layer_params,
         lm_head_params,
     ):
-        last_token_id = tensors[2]
-        hidden, tensors = self._hlo_pre_layer(hidden, tensors, pre_layer_params)
+        hidden, tensors = self._hlo_pre_layer(
+            hidden, cache_ids, start_ids, last_token_id, pre_layer_params
+        )
         hidden, out_caches = self._hlo_layers(
             hidden,
             tensors,
@@ -430,7 +428,7 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             dtype = getattr(scribe, self.neuron_config.amp)
 
             # Create user parameters
-            (hidden, *tensors), self.inputs_sdim = self.builder.inputs(
+            hidden, cache_ids, start_ids, last_token_id, self.inputs_sdim = self.builder.inputs(
                 scribe, dtype, batch_size, self.n_active_tokens
             )
             param_builder = DecoderParameterBuilder(scribe, len(self.inputs_sdim))
@@ -443,7 +441,9 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             # Unroll the graph
             logits, out_caches = self._hlo_unroll(
                 hidden,
-                tensors,
+                cache_ids,
+                start_ids,
+                last_token_id,
                 in_caches,
                 layers_weights,
                 pre_layer_params,
@@ -517,9 +517,13 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             params.append(param)
         return params
 
-    def _hlo_pre_layer(self, hidden, tensors, params, position_ids=None):
+    def _hlo_pre_layer(
+        self, hidden, cache_ids, start_ids, last_token_id, params, position_ids=None
+    ):
         if self.pre_layer_builder is not None:
-            (hidden, *tensors) = self.pre_layer_builder(hidden, *tensors, *params)
+            (hidden, *tensors) = self.pre_layer_builder(
+                hidden, cache_ids, start_ids, last_token_id, *params
+            )
         return hidden, tensors
 
     def _hlo_layers_params(self, param_builder, layers, n_positions):
