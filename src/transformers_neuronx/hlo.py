@@ -19,11 +19,11 @@ from typing import List, Callable, Union
 import torch
 
 from transformers_neuronx import activations
-from transformers_neuronx.constants import LAYOUT_BSH
 from transformers_neuronx import compiler
 from transformers_neuronx import dtypes
 from transformers_neuronx.nki.compile import nki_call
 
+from .constants import Layout
 from .utils import build_replica_groups, parse_dtype_replica_groups
 
 
@@ -397,7 +397,7 @@ def mlp(
         # (b * s, i) @ (i, h) contract=(1, 0) => (b * s, h)
         hidden = dot10_add1(hidden, out_weight, out_bias)
 
-    is_bsh = neuron_config and neuron_config.collectives_layout == LAYOUT_BSH
+    is_bsh = neuron_config and neuron_config.collectives_layout == Layout.BSH
     if is_bsh:
         # (b * s, h) => (b, s, h)
         hidden = reshape(hidden, (batch_size, n_active_tokens, hidden_size))
@@ -509,7 +509,7 @@ def gated_mlp(
     # (b * s, i) @ (h, i) contract=(1, 1) => (b * s, h)
     result = dot11_add1(hidden_states, out_weight, out_bias)
 
-    is_bsh = neuron_config and neuron_config.collectives_layout == LAYOUT_BSH
+    is_bsh = neuron_config and neuron_config.collectives_layout == Layout.BSH
 
     if is_bsh:
         # (b * s, h) => (b, s, h)

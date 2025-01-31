@@ -16,7 +16,7 @@ from typing import Optional
 
 from transformers_neuronx import hlo
 from transformers_neuronx.constants import FUSED_QKV_TP_FACTOR
-from transformers_neuronx.constants import LAYOUT_BSH
+from transformers_neuronx.constants import Layout
 from transformers_neuronx.config import NeuronConfig
 from transformers_neuronx.layers import attention, attention_utils
 from transformers_neuronx.nki.compile import nki_call
@@ -49,7 +49,7 @@ def query_key_value(
     n_kv_heads != 0 -> outputs shapes [n_active_tokens, n_seqs, n_kv_heads, n_repeats, d_head] (query)
     and [n_active_tokens, n_seqs, n_kv_heads, d_head] (key/value)
     """
-    if neuron_config and neuron_config.attention_layout == LAYOUT_BSH:
+    if neuron_config and neuron_config.attention_layout == Layout.BSH:
         hidden = hlo.transpose210(hidden)
 
     hidden_size, n_active_tokens, n_seqs = hidden.sizes
@@ -628,8 +628,8 @@ def output(
         bias_dimension=1,
     )
 
-    bsh_collective = neuron_config and neuron_config.collectives_layout == LAYOUT_BSH
-    bsh_output = neuron_config and neuron_config.attention_layout == LAYOUT_BSH
+    bsh_collective = neuron_config and neuron_config.collectives_layout == Layout.BSH
+    bsh_output = neuron_config and neuron_config.attention_layout == Layout.BSH
 
     if bsh_output or bsh_collective:
         # (s * b, h) => (b, s, h)

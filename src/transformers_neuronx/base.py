@@ -20,7 +20,7 @@ from abc import ABC, abstractmethod
 from concurrent.futures import ProcessPoolExecutor
 
 from .compiler import ParallelKernel
-from .constants import LAYOUT_BSH, LAYOUT_HSB
+from .constants import Layout
 from .module import PretrainedModel
 from .ops import init_neuron
 from .utils import maybe_pad_tensor
@@ -315,7 +315,7 @@ class NeuronHloDecoderModel(NeuronModelBase):
 
     def _context_dynamic_batching(self, hidden, *args):
         is_bsh = (
-            self.neuron_config and self.neuron_config.attention_layout == LAYOUT_BSH
+            self.neuron_config and self.neuron_config.attention_layout == Layout.BSH
         )
         input_batch_size = hidden.shape[0] if is_bsh else hidden.shape[2]
 
@@ -385,7 +385,7 @@ class NeuronHloDecoderModel(NeuronModelBase):
             input_ids, start_ids=start_ids, cache_ids=cache_ids
         )
         input_embeddings = self.chkpt_model.model.embed_tokens(padded_inputs)
-        if self.neuron_config.attention_layout == LAYOUT_HSB:
+        if self.neuron_config.attention_layout == Layout.HSB:
             input_embeddings = input_embeddings.transpose(0, -1).contiguous()
         logits = self._forward(input_embeddings, *rst)
         return self._postprocess(original_input_ids, logits, start_ids=start_ids)

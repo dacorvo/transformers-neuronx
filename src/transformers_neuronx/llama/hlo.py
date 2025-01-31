@@ -18,7 +18,7 @@ from transformers.models.llama import LlamaConfig
 from transformers_neuronx import hlo, utils
 from transformers_neuronx.layers import transformer, rotary, attention
 from transformers_neuronx.config import NeuronConfig
-from transformers_neuronx.constants import LAYOUT_BSH, LAYOUT_HSB
+from ..constants import Layout
 
 
 class LlamaForSamplingNoEmbeddingHlo:
@@ -60,7 +60,7 @@ class LlamaForSamplingNoEmbeddingHlo:
             hidden = hlo.slice_along(
                 hidden, dim=-1, limit=self.config.hidden_size, start=0
             )
-        if self.neuron_config.attention_layout == LAYOUT_HSB:
+        if self.neuron_config.attention_layout == Layout.HSB:
             hidden = hlo.transpose210(hidden)
         return hidden
 
@@ -146,7 +146,7 @@ class LlamaForSamplingNoEmbeddingHlo:
     ):
         eps = self.config.rms_norm_eps
         is_bsh = (
-            self.neuron_config and self.neuron_config.attention_layout == LAYOUT_BSH
+            self.neuron_config and self.neuron_config.attention_layout == Layout.BSH
         )
         ln_hidden = hlo.rms_norm(
             hidden,

@@ -17,14 +17,6 @@ import enum
 # Size used to determine fused QKV operation.
 FUSED_QKV_TP_FACTOR = 3
 
-# KV sharding pad for flash decoding
-KV_SHARD_PAD = 128
-
-# Layout for attention
-LAYOUT_BSH = "BSH"
-LAYOUT_HSB = "HSB"
-LAYOUT_SBH = "SBH"
-
 
 class Layout(enum.Enum):
     HSB = "HSB"

@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 from transformers_neuronx import hlo
-from transformers_neuronx.constants import LAYOUT_BSH
+from transformers_neuronx.constants import Layout
 
 
 def inputs(
@@ -59,7 +59,7 @@ def inputs(
     """
     s32 = scribe.s32
 
-    if neuron_config and neuron_config.attention_layout == LAYOUT_BSH:
+    if neuron_config and neuron_config.attention_layout == Layout.BSH:
         hidden_sizes = batch_size, n_active_tokens, hidden_size
     else:  # HASB LAyout
         hidden_sizes = hidden_size, n_active_tokens, batch_size
@@ -136,7 +136,7 @@ def ln_lm_head(
 
     logits = (layer_norm(H) @ W) + B
     """
-    is_bsh = neuron_config and neuron_config.attention_layout == LAYOUT_BSH
+    is_bsh = neuron_config and neuron_config.attention_layout == Layout.BSH
     if is_bsh:
         batch_size, n_active_tokens, hidden_size = hidden.sizes
     else:
@@ -196,7 +196,7 @@ def rms_lm_head(
 
     logits = (rms_norm(H) @ W) + B
     """
-    is_bsh = neuron_config and neuron_config.attention_layout == LAYOUT_BSH
+    is_bsh = neuron_config and neuron_config.attention_layout == Layout.BSH
     if is_bsh:
         batch_size, n_active_tokens, hidden_size = hidden.sizes
     else:
@@ -226,7 +226,7 @@ def rms_lm_head(
 
 
 def _dynamic_logits_slice(hidden, last_token_id, neuron_config=None):
-    is_bsh = neuron_config and neuron_config.attention_layout == LAYOUT_BSH
+    is_bsh = neuron_config and neuron_config.attention_layout == Layout.BSH
     if is_bsh:
         batch_size, n_active_tokens, hidden_size = hidden.sizes
     else:
