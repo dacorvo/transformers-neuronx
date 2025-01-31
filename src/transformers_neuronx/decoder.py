@@ -15,7 +15,7 @@
 import os
 import itertools
 import warnings
-from abc import ABC
+from abc import ABC, abstractmethod
 
 import torch
 from transformers import PretrainedConfig
@@ -39,15 +39,15 @@ from .utils import (
 
 
 class GraphBuilder(ABC):
-    def __init__(self, config: PretrainedConfig, neuron_config: NeuronConfig):
+
+    def __init__(
+        self, config: PretrainedConfig, neuron_config: NeuronConfig
+    ):
         self.config = config
         self.neuron_config = neuron_config
 
 
 class DecoderGraphBuilder(GraphBuilder):
-    def __init__(self, config: PretrainedConfig, neuron_config: NeuronConfig):
-        self.config = config
-        self.neuron_config = neuron_config
 
     def inputs(
         self,
@@ -121,6 +121,10 @@ class DecoderGraphBuilder(GraphBuilder):
 
         return hidden, cache_ids, start_ids, last_token_id, sequence_slice_dimensions
 
+    @abstractmethod
+    def pre_layer(self, hidden, cache_ids, start_ids, last_token_id):
+        raise NotImplementedError
+
 
 class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
     def __init__(
@@ -148,13 +152,10 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         self.lm_head_bias = None
         self.logits_indices = None
         self.inputs_sdim = None
-        self.inputs_builder = None
         self.layer_builder = None
         self.ln_lm_head_params = []
         self.ln_lm_head_builder = None
         self.program = None
-        self.pre_layer_parameters = []
-        self.pre_layer_builder = None
         self.use_executor = False
         self.return_ranks = -1
         self.builder = builder
@@ -224,8 +225,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             tag="token",
         )
         model_obj.register_for_serialization(decoder_lm_head)
-        if hasattr(self.builder, "pre_layer"):
-            decoder_lm_head.add_pre_layer_builder(self.builder.pre_layer)
         decoder_lm_head.add_layer_builder(self.builder.layer)
         decoder_lm_head.add_ln_lm_head_builder(self.builder.ln_lm_head)
         return decoder_lm_head
@@ -233,12 +232,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
     def enable_executor(self, return_ranks=-1):
         self.return_ranks = return_ranks
         self.program.enable_executor()
-
-    def add_pre_layer_parameter(self, param, sharding=None):
-        self.pre_layer_parameters.append((param, sharding))
-
-    def add_pre_layer_builder(self, builder):
-        self.pre_layer_builder = builder
 
     def add_layer_builder(self, layer_builder):
         self.layer_builder = layer_builder
@@ -270,9 +263,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
     def to_neuron(self):
         manipulator = MaybeParallelTensorManipulator(
             self.neuron_config.tp_degree, on_cpu=self._cpu_compile
-        )
-        self.pre_layer_parameters = self._prepare_pre_layer_params(
-            manipulator, self.pre_layer_parameters
         )
 
         self.ln_f_weight = manipulator.duplicate(self.ln_f_weight)
@@ -310,7 +300,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
                 neuron_config=self.neuron_config,
                 is_prefill=self.is_prefill,
             )
-        new.add_pre_layer_builder(self.pre_layer_builder)
         new.add_layer_builder(self.layer_builder)
         new.add_ln_lm_head_builder(self.ln_lm_head_builder)
         new._cpu_compile = self._cpu_compile
@@ -322,7 +311,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             else:
                 new_layer.init_caches()
             new_layer.extra_parameters = layer.extra_parameters
-        new.pre_layer_parameters = self.pre_layer_parameters
         new.add_final_layer_norm(self.ln_f_weight, self.ln_f_bias)
         new.add_lm_head(self.lm_head_weight, self.lm_head_bias)
         ln_lm_head_params = [new.ln_f_weight, new.ln_f_bias, new.lm_head_weight]
@@ -334,9 +322,7 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         return new
 
     def setup(self):
-        self.program.setup(
-            self.layers, self.pre_layer_parameters, self.ln_lm_head_params
-        )
+        self.program.setup(self.layers, self.ln_lm_head_params)
         if self.use_executor:
             self.enable_executor()
 
@@ -364,18 +350,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
 
         return outputs
 
-    def _prepare_pre_layer_params(self, manipulator, pre_layer_parameters):
-        extras = []
-        for param, dim in pre_layer_parameters:
-            if dim is not None:
-                if param.shape[dim] % self.neuron_config.tp_degree != 0:
-                    size = round_up_to_divisor(
-                        param.shape[dim], self.neuron_config.tp_degree
-                    )
-                    param = maybe_pad_tensor(param, dim, size)
-            extras.append(manipulator.duplicate_or_shard_along(param, dim))
-        return extras
-
     def _build_program(self):
         hlo_module = self._hlo_fully_unrolled(
             self.neuron_config.n_positions, self.batch_size
@@ -399,12 +373,9 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         last_token_id,
         layers_caches,
         layers_weights,
-        pre_layer_params,
         lm_head_params,
     ):
-        hidden, tensors = self._hlo_pre_layer(
-            hidden, cache_ids, start_ids, last_token_id, pre_layer_params
-        )
+        hidden, tensors = self.builder.pre_layer(hidden, cache_ids, start_ids, last_token_id)
         hidden, out_caches = self._hlo_layers(
             hidden,
             tensors,
@@ -434,8 +405,8 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
             param_builder = DecoderParameterBuilder(scribe, len(self.inputs_sdim))
 
             # Create inputs for all weights & caches
-            in_caches, layers_weights, pre_layer_params, lm_head_params = (
-                self._hlo_parameters(n_positions, batch_size, param_builder)
+            in_caches, layers_weights, lm_head_params = self._hlo_parameters(
+                n_positions, batch_size, param_builder
             )
 
             # Unroll the graph
@@ -446,7 +417,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
                 last_token_id,
                 in_caches,
                 layers_weights,
-                pre_layer_params,
                 lm_head_params,
             )
             self._hlo_cache_aliases(in_caches, out_caches)
@@ -470,9 +440,8 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         layers_caches, layers_weights = self._hlo_layers_params(
             param_builder, self.layers, n_positions
         )
-        pre_layer_params = self._hlo_pre_layer_params(param_builder)
         lm_head_params = self._hlo_lm_head_params(param_builder)
-        return layers_caches, layers_weights, pre_layer_params, lm_head_params
+        return layers_caches, layers_weights, lm_head_params
 
     def all_parameters(self, n_positions, batch_size):
         """
@@ -494,9 +463,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
         for layer in self.layers:
             parameters.extend(layer.all_parameters())
 
-        # Prelayer parameters
-        parameters.extend(self.pre_layer_parameters)
-
         # LM head parameters
         parameters.append(self.ln_f_weight)
         parameters.append(self.ln_f_bias)
@@ -508,23 +474,6 @@ class DecoderLmHeadForSamplingNoEmbedding(NeuronBaseSerializer):
     def valid_parameters(self, n_positions, batch_size):
         parameters = self.all_parameters(n_positions, batch_size)
         return [par for par in parameters if par is not None]
-
-    def _hlo_pre_layer_params(self, param_builder):
-        params = []
-        for param in self.pre_layer_parameters:
-            param = param_builder.from_tensor(param)
-            param = hlo.transfer_with_static_ring(param)
-            params.append(param)
-        return params
-
-    def _hlo_pre_layer(
-        self, hidden, cache_ids, start_ids, last_token_id, params, position_ids=None
-    ):
-        if self.pre_layer_builder is not None:
-            (hidden, *tensors) = self.pre_layer_builder(
-                hidden, cache_ids, start_ids, last_token_id, *params
-            )
-        return hidden, tensors
 
     def _hlo_layers_params(self, param_builder, layers, n_positions):
         layers_caches = []
@@ -1233,7 +1182,7 @@ class DecoderProgramFullyUnrolled(DecoderProgram):
         self.memory = None
         self.executor = None
 
-    def setup(self, layers, pre_layer_params, ln_lm_head_params):
+    def setup(self, layers, ln_lm_head_params):
         super().setup(io_ring_cache_size=1)
 
         self.memory = self.kernel.build_memory()
@@ -1242,7 +1191,6 @@ class DecoderProgramFullyUnrolled(DecoderProgram):
         input_tensors = self.input_buffers
         output_tensors = [self.logits_buffer]
         self._fill_io_tensors(input_tensors, output_tensors, layers)
-        input_tensors.extend(pre_layer_params)
         input_tensors.extend(ln_lm_head_params)
         self.memory.setup(input_tensors, output_tensors)
 

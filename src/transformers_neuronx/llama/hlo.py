@@ -36,17 +36,14 @@ class LlamaForSamplingNoEmbeddingHlo(DecoderGraphBuilder):
         cache_ids,
         start_ids,
         last_token_id,
-        *weights,
-        position_ids=None,
     ):
         block_to_seq = None
 
         head_dim = self.config.hidden_size // self.config.num_attention_heads
-        position_ids = cache_ids if position_ids is None else position_ids
         pos_embed = rotary.hlo_rotary_embedding(
             hidden.dtype,
             head_dim,
-            position_ids,
+            cache_ids,
             base=self.config.rope_theta,
             rope_scaling=self.config.rope_scaling,
         )
@@ -57,8 +54,7 @@ class LlamaForSamplingNoEmbeddingHlo(DecoderGraphBuilder):
             self.n_positions,
         )
 
-        return (
-            hidden,
+        return hidden, (
             last_token_id,
             pos_embed,
             cache_ids,
