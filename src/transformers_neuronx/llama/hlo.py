@@ -80,9 +80,6 @@ class LlamaForSamplingNoEmbeddingHlo(DecoderGraphBuilder):
             cache_ids,
             start_ids,
             self.n_positions,
-            last_token_id=last_token_id,
-            neuron_config=self.neuron_config,
-            context_lens=context_lens,
         )
 
         return (

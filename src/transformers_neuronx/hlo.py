@@ -567,9 +567,6 @@ def attention_mask(
     cache_ids,
     start_ids,
     n_positions,
-    last_token_id=None,
-    neuron_config=None,
-    context_lens=None,
 ):
     """
     Create decomposed prior/active attention masks.
