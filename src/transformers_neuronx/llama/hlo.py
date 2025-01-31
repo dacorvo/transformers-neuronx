@@ -17,29 +17,18 @@ from typing import Optional
 from transformers.models.llama import LlamaConfig
 from transformers_neuronx import hlo, utils
 
+from ..decoder import DecoderGraphBuilder
 from ..layers import transformer, rotary, attention
 from ..config import Layout, NeuronConfig
 
 
-class LlamaForSamplingNoEmbeddingHlo:
+class LlamaForSamplingNoEmbeddingHlo(DecoderGraphBuilder):
     def __init__(
         self, config: LlamaConfig, neuron_config: Optional[NeuronConfig] = None
     ):
         self.config = config
         self.neuron_config = neuron_config
         self.n_positions = None
-
-    def inputs(self, scribe, dtype, n_active_tokens, batch_size):
-        tensors, dims = transformer.inputs(
-            scribe,
-            dtype,
-            batch_size,
-            n_active_tokens,
-            self.config.hidden_size,
-            self.neuron_config,
-        )
-
-        return tensors, dims
 
     def embedding(
         self,
