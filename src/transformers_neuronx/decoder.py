@@ -119,6 +119,25 @@ class DecoderGraphBuilder(GraphBuilder):
 
     @abstractmethod
     def pre_layer(self, hidden, cache_ids, start_ids):
+        """
+
+        Args:
+            hidden: The hidden state (Assumed to be embedded on CPU)
+            cache_ids: The positions to update in the KV cache. This is 1d when
+                using RHS-alignment since all batch lines update the same
+                places in the KV cache. This is 2d when LHS-alignment since
+                each batch line can update a different offset in the KV cache.
+            start_ids: The offset into each batch line. When using
+                LHS-alignment, this indicates the start offset. When using
+                RHS-alignment, this indicates the batch line to update.
+        Returns:
+            hidden: The updated hidden state
+            cache_ids: The updated cached_ids
+            start_ids: The updated start_ids
+            pos_embed:  a tuple containing the position embeddings
+            mask: The mask used for the score calculations based on KV cached values
+            active_mask: Thye mask used for the score calculations based on the active token only.
+        """
         raise NotImplementedError
 
 
@@ -371,10 +390,16 @@ class DecoderGraph(NeuronBaseSerializer):
         layers_weights,
         lm_head_params,
     ):
-        hidden, tensors = self.builder.pre_layer(hidden, cache_ids, start_ids)
+        hidden, cache_ids, start_ids, pos_embed, mask, active_mask = (
+            self.builder.pre_layer(hidden, cache_ids, start_ids)
+        )
         hidden, out_caches = self._hlo_layers(
             hidden,
-            tensors,
+            cache_ids,
+            start_ids,
+            pos_embed,
+            mask,
+            active_mask,
             self.layers,
             layers_caches,
             layers_weights,
@@ -489,7 +514,17 @@ class DecoderGraph(NeuronBaseSerializer):
         return layers_caches, layers_weights
 
     def _hlo_layers(
-        self, hidden, tensors, layers, layers_caches, layers_weights, alias_caches=True
+        self,
+        hidden,
+        cache_ids,
+        start_ids,
+        pos_embed,
+        mask,
+        active_mask,
+        layers,
+        layers_caches,
+        layers_weights,
+        alias_caches=True,
     ):
         output_caches = []
         for idx, (layer, caches, weights) in enumerate(
@@ -498,7 +533,14 @@ class DecoderGraph(NeuronBaseSerializer):
             in_caches = [maybe_transfer_with_static_ring(cache) for cache in caches]
             weights = [maybe_transfer_with_static_ring(weight) for weight in weights]
             hidden, *out_caches = self.layer_builder(
-                hidden, *tensors, *in_caches, *weights
+                hidden,
+                cache_ids,
+                start_ids,
+                pos_embed,
+                mask,
+                active_mask,
+                *in_caches,
+                *weights,
             )
             output_caches.append(out_caches)
 

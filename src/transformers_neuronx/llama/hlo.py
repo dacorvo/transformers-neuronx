@@ -50,20 +50,14 @@ class LlamaGraphBuilder(DecoderGraphBuilder):
             self.n_positions,
         )
 
-        return hidden, (
-            pos_embed,
-            cache_ids,
-            start_ids,
-            mask,
-            active_mask,
-        )
+        return hidden, cache_ids, start_ids, pos_embed, mask, active_mask
 
     def layer(
         self,
         hidden,
-        pos_embed,
         cache_ids,
         start_ids,
+        pos_embed,
         mask,
         active_mask,
         attn_k_cache,
