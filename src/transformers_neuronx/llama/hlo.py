@@ -27,7 +27,6 @@ class LlamaGraphBuilder(DecoderGraphBuilder):
         self, config: LlamaConfig, neuron_config: Optional[NeuronConfig] = None
     ):
         super().__init__(config, neuron_config)
-        self.n_positions = None
 
     def pre_layer(
         self,
@@ -47,7 +46,7 @@ class LlamaGraphBuilder(DecoderGraphBuilder):
         mask, active_mask = hlo.attention_mask(
             cache_ids,
             start_ids,
-            self.n_positions,
+            self.neuron_config.n_positions,
         )
 
         return hidden, cache_ids, start_ids, pos_embed, mask, active_mask

@@ -414,8 +414,6 @@ class DecoderGraph(NeuronBaseSerializer):
         return logits, out_caches
 
     def _hlo_fully_unrolled(self, n_positions, batch_size):
-        self.builder.n_positions = n_positions
-
         def fully_unrolled(scribe):
             dtype = getattr(scribe, self.neuron_config.amp)
 
