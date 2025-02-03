@@ -45,7 +45,8 @@ class LlamaHloModel(NeuronHloDecoderModel):
         )
 
     def load_weights(self):
-        self.materialize_embeddings()
+        # Materialize the embedding to CPU
+        self.chkpt_model.model.embed_tokens.materialize()
 
         for layer in self.chkpt_model.model.layers:
             layer.materialize()
@@ -96,13 +97,6 @@ class LlamaHloModel(NeuronHloDecoderModel):
         lm_head.nullify()
 
         self.decoder_lm_head.to_neuron()
-        self.init_rest_of_model()
-
-    def materialize_embeddings(self):
-        # Materialize the embedding to CPU
-        self.chkpt_model.model.embed_tokens.materialize()
-
-    def init_rest_of_model(self):
         self.decoder_lm_head.use_executor = True
 
         model = self.decoder_lm_head.build_weight_shared(
