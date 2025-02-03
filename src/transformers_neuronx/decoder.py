@@ -45,6 +45,8 @@ class GraphBuilder(ABC):
 
 
 class DecoderGraphBuilder(GraphBuilder):
+    NUM_INPUTS = 4
+
     def inputs(
         self,
         scribe,
@@ -106,16 +108,7 @@ class DecoderGraphBuilder(GraphBuilder):
         else:
             last_token_id = s32[1].Parameter(parameter_number=3)
 
-        sequence_slice_dimensions = (
-            1,  # hidden        | In both HSB/BSH the sequence dim is 1
-            1
-            if cache_2d
-            else 0,  # cache_ids     | Sequence dim varies based on alignment
-            None,  # start_ids     | Offset is per batch, no slicing required
-            0 if cache_2d else None,  # last_token_id | Scalar, no slicing required
-        )
-
-        return hidden, cache_ids, start_ids, last_token_id, sequence_slice_dimensions
+        return hidden, cache_ids, start_ids, last_token_id
 
     @abstractmethod
     def pre_layer(self, hidden, cache_ids, start_ids):
@@ -227,7 +220,6 @@ class DecoderGraph(NeuronBaseSerializer):
         self.ln_f_bias = None
         self.lm_head_weight = None
         self.lm_head_bias = None
-        self.logits_indices = None
         self.inputs_sdim = None
         self.ln_lm_head_params = []
         self.program = None
@@ -420,12 +412,10 @@ class DecoderGraph(NeuronBaseSerializer):
             dtype = getattr(scribe, self.neuron_config.amp)
 
             # Create user parameters
-            hidden, cache_ids, start_ids, last_token_id, self.inputs_sdim = (
-                self.builder.inputs(
-                    scribe, dtype, self.batch_size, self.n_active_tokens
-                )
+            hidden, cache_ids, start_ids, last_token_id = self.builder.inputs(
+                scribe, dtype, self.batch_size, self.n_active_tokens
             )
-            param_builder = DecoderParameterBuilder(scribe, len(self.inputs_sdim))
+            param_builder = DecoderParameterBuilder(scribe, self.builder.NUM_INPUTS)
 
             # Create inputs for all weights & caches
             in_caches, layers_weights, lm_head_params = self._hlo_parameters(
@@ -458,12 +448,11 @@ class DecoderGraph(NeuronBaseSerializer):
             return scribe.tuple(*root_shapes).Tuple(*outputs)
 
         hlo_module = compiler.compile_py_func(hlo_forward_wrapper)
-        num_inputs = len(self.inputs_sdim)
         return DecoderProgramFullyUnrolled(
             self.neuron_config,
             self.layers,
             hlo_module,
-            num_inputs,
+            self.builder.NUM_INPUTS,
             self.batch_size,
             tag=self.tag,
             on_cpu=self._cpu_compile,
