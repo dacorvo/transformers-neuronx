@@ -345,37 +345,20 @@ class DecoderGraph(NeuronBaseSerializer):
         self.ln_lm_head_params = ln_lm_head_params
         self.program = self._build_program()
 
-    def build_weight_shared(
-        self,
-        share_caches=False,
-        new=None,
-    ):
-        if new is None:
-            cls = type(self)
-            new = cls(
-                n_active_tokens=self.n_active_tokens,
-                config=self.config,
-                neuron_config=self.neuron_config,
-                is_prefill=self.is_prefill,
-            )
-        new._cpu_compile = self._cpu_compile
-        for layer in self.layers:
-            new_layer = new.new_layer()
+    def load_shared_weights(self, src_graph):
+        for layer in src_graph.layers:
+            new_layer = self.new_layer()
             new_layer.assign_parameters(layer)
-            if share_caches:
-                new_layer.assign_caches(layer)
-            else:
-                new_layer.init_caches()
+            new_layer.assign_caches(layer)
             new_layer.extra_parameters = layer.extra_parameters
-        new.add_final_layer_norm(self.ln_f_weight, self.ln_f_bias)
-        new.add_lm_head(self.lm_head_weight, self.lm_head_bias)
-        ln_lm_head_params = [new.ln_f_weight, new.ln_f_bias, new.lm_head_weight]
+        self.add_final_layer_norm(src_graph.ln_f_weight, src_graph.ln_f_bias)
+        self.add_lm_head(src_graph.lm_head_weight, src_graph.lm_head_bias)
+        ln_lm_head_params = [self.ln_f_weight, self.ln_f_bias, self.lm_head_weight]
         ln_lm_head_params = [param for param in ln_lm_head_params if param is not None]
-        if new.lm_head_bias is not None:
-            ln_lm_head_params.append(new.lm_head_bias)
-        new.ln_lm_head_params = ln_lm_head_params
-        new.program = new._build_program()
-        return new
+        if self.lm_head_bias is not None:
+            ln_lm_head_params.append(self.lm_head_bias)
+        self.ln_lm_head_params = ln_lm_head_params
+        self.program = self._build_program()
 
     def setup(self):
         self.program.setup(self.layers, self.ln_lm_head_params)
