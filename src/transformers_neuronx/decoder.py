@@ -366,9 +366,7 @@ class DecoderGraph(NeuronBaseSerializer):
         return outputs
 
     def _build_program(self):
-        hlo_module = self._hlo_fully_unrolled(
-            self.neuron_config.n_positions, self.batch_size
-        )
+        hlo_module = self._hlo_fully_unrolled()
         num_inputs = len(self.inputs_sdim)
         return DecoderProgramFullyUnrolled(
             self.neuron_config,
@@ -413,19 +411,21 @@ class DecoderGraph(NeuronBaseSerializer):
         )
         return logits, out_caches
 
-    def _hlo_fully_unrolled(self, n_positions, batch_size):
+    def _hlo_fully_unrolled(self):
         def fully_unrolled(scribe):
             dtype = getattr(scribe, self.neuron_config.amp)
 
             # Create user parameters
             hidden, cache_ids, start_ids, last_token_id, self.inputs_sdim = (
-                self.builder.inputs(scribe, dtype, batch_size, self.n_active_tokens)
+                self.builder.inputs(
+                    scribe, dtype, self.batch_size, self.n_active_tokens
+                )
             )
             param_builder = DecoderParameterBuilder(scribe, len(self.inputs_sdim))
 
             # Create inputs for all weights & caches
             in_caches, layers_weights, lm_head_params = self._hlo_parameters(
-                n_positions, batch_size, param_builder
+                self.neuron_config.n_positions, self.batch_size, param_builder
             )
 
             # Unroll the graph
@@ -462,7 +462,7 @@ class DecoderGraph(NeuronBaseSerializer):
         lm_head_params = self._hlo_lm_head_params(param_builder)
         return layers_caches, layers_weights, lm_head_params
 
-    def all_parameters(self, n_positions, batch_size):
+    def all_parameters(self):
         """
         Get all the parameters for the current model.
 
@@ -490,8 +490,8 @@ class DecoderGraph(NeuronBaseSerializer):
 
         return parameters
 
-    def valid_parameters(self, n_positions, batch_size):
-        parameters = self.all_parameters(n_positions, batch_size)
+    def valid_parameters(self):
+        parameters = self.all_parameters()
         return [par for par in parameters if par is not None]
 
     def _hlo_layers_params(self, param_builder, layers, n_positions):
