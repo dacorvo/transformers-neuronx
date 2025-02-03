@@ -52,8 +52,7 @@ class LlamaHloModel(NeuronHloDecoderModel):
             layer.materialize()
             attn = layer.self_attn
             mlp = layer.mlp
-            is_unit_scale = False
-            new_layer = self.decoder_lm_head.new_layer(is_unit_scale=is_unit_scale)
+            new_layer = self.decoder_lm_head.new_layer()
             new_layer.add_pre_attention_layer_norm(
                 layer.input_layernorm.weight.detach(), None
             )

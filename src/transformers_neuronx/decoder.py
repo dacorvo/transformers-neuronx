@@ -298,14 +298,13 @@ class DecoderGraph(NeuronBaseSerializer):
         self.return_ranks = return_ranks
         self.program.enable_executor()
 
-    def new_layer(self, is_unit_scale=False):
+    def new_layer(self):
         layer = DecoderLayer(
             self.config,
             self.neuron_config,
             self.batch_size,
             n_active_tokens=self.n_active_tokens,
             layer_num=len(self.layers),
-            is_unit_scale=is_unit_scale,
         )
         layer._cpu_compile = self._cpu_compile
         self.layers.append(layer)
@@ -648,7 +647,6 @@ class DecoderLayer:
         batch_size,
         n_active_tokens=None,
         layer_num=None,
-        is_unit_scale=False,
     ):
         super().__init__()
         self.config = config
@@ -688,7 +686,6 @@ class DecoderLayer:
         self.mlp_out_transposed = True
         self.kv_replication = 1  # default value to denote weight replication factor
         self.layer_num = layer_num
-        self.is_unit_scale = is_unit_scale
         self._cpu_compile = False
 
     def add_parameter(self, param, sharding=None, allow_transform=False):
