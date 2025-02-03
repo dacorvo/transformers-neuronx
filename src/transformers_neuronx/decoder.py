@@ -366,52 +366,7 @@ class DecoderGraph(NeuronBaseSerializer):
         return outputs
 
     def _build_program(self):
-        hlo_module = self._hlo_fully_unrolled()
-        num_inputs = len(self.inputs_sdim)
-        return DecoderProgramFullyUnrolled(
-            self.neuron_config,
-            self.layers,
-            hlo_module,
-            num_inputs,
-            self.batch_size,
-            tag=self.tag,
-            on_cpu=self._cpu_compile,
-        )
-
-    def _hlo_unroll(
-        self,
-        hidden,
-        cache_ids,
-        start_ids,
-        last_token_id,
-        layers_caches,
-        layers_weights,
-        lm_head_params,
-    ):
-        hidden, cache_ids, start_ids, pos_embed, mask, active_mask = (
-            self.builder.pre_layer(hidden, cache_ids, start_ids)
-        )
-        hidden, out_caches = self._hlo_layers(
-            hidden,
-            cache_ids,
-            start_ids,
-            pos_embed,
-            mask,
-            active_mask,
-            self.layers,
-            layers_caches,
-            layers_weights,
-        )
-        logits = self.ln_lm_head_builder(
-            hidden,
-            last_token_id,
-            *lm_head_params,
-            is_prefill=self.is_prefill,
-        )
-        return logits, out_caches
-
-    def _hlo_fully_unrolled(self):
-        def fully_unrolled(scribe):
+        def hlo_forward_wrapper(scribe):
             dtype = getattr(scribe, self.neuron_config.amp)
 
             # Create user parameters
@@ -428,7 +383,7 @@ class DecoderGraph(NeuronBaseSerializer):
             )
 
             # Unroll the graph
-            logits, out_caches = self._hlo_unroll(
+            logits, out_caches = self.hlo_forward(
                 hidden,
                 cache_ids,
                 start_ids,
@@ -452,7 +407,57 @@ class DecoderGraph(NeuronBaseSerializer):
             root_shapes = [shape.dtype[shape.sizes] for shape in outputs]
             return scribe.tuple(*root_shapes).Tuple(*outputs)
 
-        return compiler.compile_py_func(fully_unrolled)
+        hlo_module = compiler.compile_py_func(hlo_forward_wrapper)
+        num_inputs = len(self.inputs_sdim)
+        return DecoderProgramFullyUnrolled(
+            self.neuron_config,
+            self.layers,
+            hlo_module,
+            num_inputs,
+            self.batch_size,
+            tag=self.tag,
+            on_cpu=self._cpu_compile,
+        )
+
+    def hlo_forward(
+        self,
+        hidden,
+        cache_ids,
+        start_ids,
+        last_token_id,
+        layers_caches,
+        layers_weights,
+        lm_head_params,
+    ):
+        """Only used at compilation time to create the HLO graph"""
+        hidden, cache_ids, start_ids, pos_embed, mask, active_mask = (
+            self.builder.pre_layer(hidden, cache_ids, start_ids)
+        )
+        output_caches = []
+        for caches, weights in zip(layers_caches, layers_weights):
+            attn_k_cache, attn_v_cache = [
+                maybe_transfer_with_static_ring(cache) for cache in caches
+            ]
+            weights = [maybe_transfer_with_static_ring(weight) for weight in weights]
+            hidden, attn_k_cache, attn_v_cache = self.layer_builder(
+                hidden,
+                cache_ids,
+                start_ids,
+                pos_embed,
+                mask,
+                active_mask,
+                attn_k_cache,
+                attn_v_cache,
+                *weights,
+            )
+            output_caches.append([attn_k_cache, attn_v_cache])
+        logits = self.ln_lm_head_builder(
+            hidden,
+            last_token_id,
+            *lm_head_params,
+            is_prefill=self.is_prefill,
+        )
+        return logits, output_caches
 
     def _hlo_parameters(self, n_positions, batch_size, param_builder):
         layers_caches, layers_weights = self._hlo_layers_params(
@@ -509,38 +514,6 @@ class DecoderGraph(NeuronBaseSerializer):
             ]
             layers_weights.append(layer_weights)
         return layers_caches, layers_weights
-
-    def _hlo_layers(
-        self,
-        hidden,
-        cache_ids,
-        start_ids,
-        pos_embed,
-        mask,
-        active_mask,
-        layers,
-        layers_caches,
-        layers_weights,
-    ):
-        output_caches = []
-        for caches, weights in zip(layers_caches, layers_weights):
-            attn_k_cache, attn_v_cache = [
-                maybe_transfer_with_static_ring(cache) for cache in caches
-            ]
-            weights = [maybe_transfer_with_static_ring(weight) for weight in weights]
-            hidden, attn_k_cache, attn_v_cache = self.layer_builder(
-                hidden,
-                cache_ids,
-                start_ids,
-                pos_embed,
-                mask,
-                active_mask,
-                attn_k_cache,
-                attn_v_cache,
-                *weights,
-            )
-            output_caches.append([attn_k_cache, attn_v_cache])
-        return hidden, output_caches
 
     def _hlo_cache_aliases(self, in_caches, out_caches):
         assert len(in_caches) == len(out_caches)
