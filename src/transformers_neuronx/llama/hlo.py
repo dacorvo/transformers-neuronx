@@ -140,11 +140,11 @@ class LlamaGraphBuilder(DecoderGraphBuilder):
         self,
         hidden,
         last_token_id,
+        is_prefill,
         rms_weight,
         unused_bias,
         lm_head_weight,
         lm_head_bias,
-        is_prefill=True,
     ):
         logits = transformer.rms_lm_head(
             self.neuron_config.tp_degree,

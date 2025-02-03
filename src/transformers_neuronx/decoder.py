@@ -120,6 +120,14 @@ class DecoderGraphBuilder(GraphBuilder):
     @abstractmethod
     def pre_layer(self, hidden, cache_ids, start_ids):
         """
+        Provides the pre-layer graph.
+
+        Provides the graph for the initializations to be performed after the creation of the embeddings and before
+        going through the Decoder layers.
+
+        It includes in particular the creation of:
+        - the position embeddings,
+        - the masks (see details in parameters).
 
         Args:
             hidden: The hidden state (Assumed to be embedded on CPU)
@@ -136,7 +144,61 @@ class DecoderGraphBuilder(GraphBuilder):
             start_ids: The updated start_ids
             pos_embed:  a tuple containing the position embeddings
             mask: The mask used for the score calculations based on KV cached values
-            active_mask: Thye mask used for the score calculations based on the active token only.
+            active_mask: The mask used for the score calculations based on the active token only.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def layer(
+        self,
+        hidden,
+        cache_ids,
+        start_ids,
+        pos_embed,
+        mask,
+        active_mask,
+        attn_k_cache,
+        attn_v_cache,
+        *weights,
+    ):
+        """
+        Provides the graph for each Decoder layer forward.
+
+        Args:
+            hidden: The hidden state before that layer
+            cache_ids: The positions to update in the KV cache. This is 1d when
+                using RHS-alignment since all batch lines update the same
+                places in the KV cache. This is 2d when LHS-alignment since
+                each batch line can update a different offset in the KV cache.
+            start_ids: The offset into each batch line. When using
+                LHS-alignment, this indicates the start offset. When using
+                RHS-alignment, this indicates the batch line to update.
+            cache_ids: The updated cached_ids
+            start_ids: The updated start_ids
+            pos_embed:  a tuple containing the position embeddings
+            mask: The mask used for the score calculations based on KV cached values
+            active_mask: The mask used for the score calculations based on the active token only.
+            attn_k_cache: the attention key cache for that layer.
+            attn_v_cache: the attention value cache for that layer.
+            weights: the layer weights (as a list of model specific args)
+        Returns:
+            hidden: The updated hidden state
+            attn_k_cache: the updated attention key cache.
+            attn_v_cache: the updated attention value cache.
+        """
+        raise NotImplementedError
+
+    def ln_lm_head(self, hidden, last_token_id, is_prefill, *weights):
+        """
+        Provides the graph for the Decoder normalization + generation head.
+
+        Args:
+            hidden: The hidden state as evaluated by all layers.
+            last_token_id: the id of the last token.
+            is_prefill: a boolean indicating if the current graph is doing prefill (context encoding) or decode (token generation)
+            weights: the combined normalization + head weights (as a list of model specific args)
+        Returns:
+            logits: the scores for each candidate token in the batch.
         """
         raise NotImplementedError
 
@@ -167,9 +229,7 @@ class DecoderGraph(NeuronBaseSerializer):
         self.lm_head_bias = None
         self.logits_indices = None
         self.inputs_sdim = None
-        self.layer_builder = None
         self.ln_lm_head_params = []
-        self.ln_lm_head_builder = None
         self.program = None
         self.use_executor = False
         self.return_ranks = -1
@@ -240,19 +300,11 @@ class DecoderGraph(NeuronBaseSerializer):
             tag="token",
         )
         model_obj.register_for_serialization(decoder_lm_head)
-        decoder_lm_head.add_layer_builder(self.builder.layer)
-        decoder_lm_head.add_ln_lm_head_builder(self.builder.ln_lm_head)
         return decoder_lm_head
 
     def enable_executor(self, return_ranks=-1):
         self.return_ranks = return_ranks
         self.program.enable_executor()
-
-    def add_layer_builder(self, layer_builder):
-        self.layer_builder = layer_builder
-
-    def add_ln_lm_head_builder(self, ln_lm_head_builder):
-        self.ln_lm_head_builder = ln_lm_head_builder
 
     def new_layer(self, is_unit_scale=False):
         layer = DecoderLayer(
@@ -315,8 +367,6 @@ class DecoderGraph(NeuronBaseSerializer):
                 neuron_config=self.neuron_config,
                 is_prefill=self.is_prefill,
             )
-        new.add_layer_builder(self.layer_builder)
-        new.add_ln_lm_head_builder(self.ln_lm_head_builder)
         new._cpu_compile = self._cpu_compile
         for layer in self.layers:
             new_layer = new.new_layer()
@@ -439,7 +489,7 @@ class DecoderGraph(NeuronBaseSerializer):
                 maybe_transfer_with_static_ring(cache) for cache in caches
             ]
             weights = [maybe_transfer_with_static_ring(weight) for weight in weights]
-            hidden, attn_k_cache, attn_v_cache = self.layer_builder(
+            hidden, attn_k_cache, attn_v_cache = self.builder.layer(
                 hidden,
                 cache_ids,
                 start_ids,
@@ -451,11 +501,11 @@ class DecoderGraph(NeuronBaseSerializer):
                 *weights,
             )
             output_caches.append([attn_k_cache, attn_v_cache])
-        logits = self.ln_lm_head_builder(
+        logits = self.builder.ln_lm_head(
             hidden,
             last_token_id,
+            self.is_prefill,
             *lm_head_params,
-            is_prefill=self.is_prefill,
         )
         return logits, output_caches
 
