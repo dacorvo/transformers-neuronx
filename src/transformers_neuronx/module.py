@@ -383,10 +383,12 @@ def maybe_download_weights(path_or_repo_id, safe_serialization=True, **kwargs):
 
 class PretrainedModel(LowMemoryModule):
     @classmethod
-    def from_pretrained(cls, pretrained_model_path, *model_args, **kwargs):
+    def from_pretrained(cls, pretrained_model_path, neuron_config):
+        if not os.path.isdir(pretrained_model_path):
+            raise ValueError(f"{pretrained_model_path} directory does not exist.")
         config = AutoConfig.from_pretrained(pretrained_model_path)
-        model = cls(config, *model_args, **kwargs)
-        pretrained_model_path = maybe_download_weights(pretrained_model_path, **kwargs)
+        model = cls(config, neuron_config)
+        pretrained_model_path = maybe_download_weights(pretrained_model_path)
         model.load_state_dict_dir(pretrained_model_path)
         return model
 
