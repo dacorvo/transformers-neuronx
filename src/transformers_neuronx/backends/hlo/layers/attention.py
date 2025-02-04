@@ -14,7 +14,6 @@
 # ==============================================================================
 from typing import Optional
 
-from transformers_neuronx import hlo
 
 try:
     from neuronxcc.nki.kernels.attention import attention_isa_kernel
@@ -22,6 +21,7 @@ except ImportError:
     from neuronxcc.nki._private_kernels.attention import attention_isa_kernel
 
 
+from .. import functional
 from ..config import Layout, NeuronConfig
 from ..nki import nki_call
 from ..utils import parse_dtype_replica_groups
@@ -32,7 +32,7 @@ def update_indices_decode(cached_keys, cache_ids, neuron_config=None):
     cache_ids_dtype = cache_ids.dtype
     # [6,3,9] -> [(0,6),(1,3),(2,9)] -> [6*3,3*3+1,9*3+2] -> [18,10,29]
     # cache_ids * n_seqs + iota
-    batch_size_br = hlo.full(n_seqs, cache_ids_dtype, cache_ids.sizes)
+    batch_size_br = functional.full(n_seqs, cache_ids_dtype, cache_ids.sizes)
     indices = cache_ids_dtype[cache_ids.sizes].Multiply(cache_ids, batch_size_br)
     offset = cache_ids_dtype[cache_ids.sizes].Iota(dimensions=[1])
     indices = cache_ids_dtype[cache_ids.sizes].Add(indices, offset)
@@ -45,8 +45,8 @@ def update_indices_context(cached_keys, cache_ids, start_ids, neuron_config=None
     cache_ids_dtype = cache_ids.dtype
     # [0,1,2,3] -> [(1,0),(1,1),(1,2),(1,3)] -> [1+0*3,1+1*3,1+2*3,1+3*3] -> [1,4,7,10]
     # start_ids + iota * n_seqs
-    batch_size_br = hlo.full(n_seqs, cache_ids_dtype, cache_ids.sizes)
-    start_ids_br = hlo.broadcast(start_ids, cache_ids.sizes, [1])
+    batch_size_br = functional.full(n_seqs, cache_ids_dtype, cache_ids.sizes)
+    start_ids_br = functional.broadcast(start_ids, cache_ids.sizes, [1])
     indices = cache_ids_dtype[cache_ids.sizes].Iota(dimensions=[0])
     indices = cache_ids_dtype[cache_ids.sizes].Multiply(indices, batch_size_br)
     indices = cache_ids_dtype[cache_ids.sizes].Add(indices, start_ids_br)
@@ -84,7 +84,7 @@ def query_key_value(
     and [n_active_tokens, n_seqs, n_kv_heads, d_head] (key/value)
     """
     if neuron_config and neuron_config.attention_layout == Layout.BSH:
-        hidden = hlo.transpose210(hidden)
+        hidden = functional.transpose210(hidden)
 
     hidden_size, n_active_tokens, n_seqs = hidden.sizes
     _, hidden_size_tp = q_weight.sizes
@@ -111,23 +111,25 @@ def query_key_value(
         n_kv_heads_tp = kv_hidden_size_tp // d_head
 
     # (h, s, b) => (h, s * b)
-    hidden_r = hlo.reshape(hidden, (hidden_size, n_active_tokens * n_seqs))
+    hidden_r = functional.reshape(hidden, (hidden_size, n_active_tokens * n_seqs))
 
     # Fused MHA
     if fuse_qkv:
         # QKV = (hidden @ wQKV) + bQKV
-        active_qkv = hlo.dot00_add1(hidden_r, q_weight, q_bias)
+        active_qkv = functional.dot00_add1(hidden_r, q_weight, q_bias)
 
         # Split
         slice_lim = active_qkv.sizes[-1] // (n_heads_tp + 2 * n_kv_heads_tp)
-        active_q = hlo.slice_along(active_qkv, -1, n_heads_tp * slice_lim, start=0)
-        active_k = hlo.slice_along(
+        active_q = functional.slice_along(
+            active_qkv, -1, n_heads_tp * slice_lim, start=0
+        )
+        active_k = functional.slice_along(
             active_qkv,
             -1,
             (n_heads_tp + n_kv_heads_tp) * slice_lim,
             start=n_heads_tp * slice_lim,
         )
-        active_v = hlo.slice_along(
+        active_v = functional.slice_along(
             active_qkv,
             -1,
             (n_heads_tp + 2 * n_kv_heads_tp) * slice_lim,
@@ -137,20 +139,20 @@ def query_key_value(
     # MHA & Non-sharded KV GQA
     else:
         # Q = (hidden @ wQ) + bQ
-        active_q = hlo.dot00_add1(hidden_r, q_weight, q_bias)
+        active_q = functional.dot00_add1(hidden_r, q_weight, q_bias)
 
         # K = (hidden @ wK) + bK
-        active_k = hlo.dot00_add1(hidden_r, k_weight, k_bias)
+        active_k = functional.dot00_add1(hidden_r, k_weight, k_bias)
 
         # V = (hidden @ wV) + bV
-        active_v = hlo.dot00_add1(hidden_r, v_weight, v_bias)
+        active_v = functional.dot00_add1(hidden_r, v_weight, v_bias)
 
     # shard over head
     active_q_sizes = n_active_tokens, n_seqs, n_heads_tp, d_head
     active_kv_sizes = n_active_tokens, n_seqs, n_kv_heads_tp, d_head
-    active_q = hlo.reshape(active_q, active_q_sizes)
-    active_k = hlo.reshape(active_k, active_kv_sizes)
-    active_v = hlo.reshape(active_v, active_kv_sizes)
+    active_q = functional.reshape(active_q, active_q_sizes)
+    active_k = functional.reshape(active_k, active_kv_sizes)
+    active_v = functional.reshape(active_v, active_kv_sizes)
 
     return active_q, active_k, active_v
 
@@ -173,8 +175,8 @@ def fused_kv_update_cache(
         return updated_keys, updated_vals
 
     # 2D cache_ids
-    cache_ids = hlo.transpose(cache_ids, 0, 1)
-    assign_func = hlo.gen_assign_func(dtype)
+    cache_ids = functional.transpose(cache_ids, 0, 1)
+    assign_func = functional.gen_assign_func(dtype)
     # K/V cache layout is always SBH
     n_positions, n_seqs, n_kv_heads, d_head = cached_keys.sizes
     n_active_tokens, n_active_seqs, _, _ = keys.sizes
@@ -184,12 +186,16 @@ def fused_kv_update_cache(
 
     # reshape cache, and scatter values in a for loop.
     #
-    # NOTE: Due to limitation in hlo.scatter, we make cache flatten: (p0 as positions, s0 as sequences)
+    # NOTE: Due to limitation in functional.scatter, we make cache flatten: (p0 as positions, s0 as sequences)
     #       (p0, s0), (p0, s1), (p0, s2), (p1, s0), (p1, s1), (p1, s2)
     #       This means we cannot update the sequence in the cache with one scatter op, without reordering the cache.
     kv_hidden_size = n_kv_heads * d_head
-    cached_keys_r = hlo.reshape(cached_keys, [n_positions * n_seqs, kv_hidden_size])
-    cached_vals_r = hlo.reshape(cached_vals, [n_positions * n_seqs, kv_hidden_size])
+    cached_keys_r = functional.reshape(
+        cached_keys, [n_positions * n_seqs, kv_hidden_size]
+    )
+    cached_vals_r = functional.reshape(
+        cached_vals, [n_positions * n_seqs, kv_hidden_size]
+    )
 
     if n_active_tokens == 1 and (n_seqs == n_active_seqs):
         # cache (2D): [n_positions * n_seqs, n_kv_heads * d_head]
@@ -203,11 +209,11 @@ def fused_kv_update_cache(
         # seq 1          [3,4],                                   [C,D],
         # seq 2          [9,10]]                                  [E,F]]
         #
-        keys_r = hlo.reshape(keys, [n_active_seqs, kv_hidden_size])
-        vals_r = hlo.reshape(vals, [n_active_seqs, kv_hidden_size])
+        keys_r = functional.reshape(keys, [n_active_seqs, kv_hidden_size])
+        vals_r = functional.reshape(vals, [n_active_seqs, kv_hidden_size])
 
         indices = update_indices_decode(cached_keys, cache_ids, neuron_config)
-        indices = hlo.transpose(indices, 0, 1)
+        indices = functional.transpose(indices, 0, 1)
 
         scatter_dims = dict(
             update_window_dims=[1],
@@ -215,14 +221,14 @@ def fused_kv_update_cache(
             scatter_dims_to_operand_dims=[0],
             index_vector_dim=1,
         )
-        updated_keys = hlo.scatter(
+        updated_keys = functional.scatter(
             cached_keys_r,
             indices,
             keys_r,
             scatter_dims=scatter_dims,
             to_apply=assign_func,
         )
-        updated_vals = hlo.scatter(
+        updated_vals = functional.scatter(
             cached_vals_r,
             indices,
             vals_r,
@@ -230,10 +236,10 @@ def fused_kv_update_cache(
             to_apply=assign_func,
         )
 
-        updated_keys = hlo.reshape(
+        updated_keys = functional.reshape(
             updated_keys, [n_positions, n_seqs, n_kv_heads, d_head]
         )
-        updated_vals = hlo.reshape(
+        updated_vals = functional.reshape(
             updated_vals, [n_positions, n_seqs, n_kv_heads, d_head]
         )
 
@@ -246,8 +252,8 @@ def fused_kv_update_cache(
         #        +-----------------------------------------------
         # seq_ids:      cache_ids: (n_active_tokens, n_seqs)     values: (n_active_tokens, n_seqs, n_heads, d_head)
         # seq 1         [[0,1,2,3,4,5]]                          [[A,B,C,D,E,F]]
-        keys_r = hlo.reshape(keys, [n_active_tokens, kv_hidden_size])
-        vals_r = hlo.reshape(vals, [n_active_tokens, kv_hidden_size])
+        keys_r = functional.reshape(keys, [n_active_tokens, kv_hidden_size])
+        vals_r = functional.reshape(vals, [n_active_tokens, kv_hidden_size])
 
         indices = update_indices_context(
             cached_keys, cache_ids, start_ids, neuron_config
@@ -262,14 +268,14 @@ def fused_kv_update_cache(
             scatter_dims_to_operand_dims=[0],
             index_vector_dim=1,
         )
-        updated_keys = hlo.scatter(
+        updated_keys = functional.scatter(
             cached_keys_r,
             indices,
             keys_r,
             scatter_dims=scatter_dims,
             to_apply=assign_func,
         )
-        updated_vals = hlo.scatter(
+        updated_vals = functional.scatter(
             cached_vals_r,
             indices,
             vals_r,
@@ -277,10 +283,10 @@ def fused_kv_update_cache(
             to_apply=assign_func,
         )
 
-        updated_keys = hlo.reshape(
+        updated_keys = functional.reshape(
             updated_keys, [n_positions, n_seqs, n_kv_heads, d_head]
         )
-        updated_vals = hlo.reshape(
+        updated_vals = functional.reshape(
             updated_vals, [n_positions, n_seqs, n_kv_heads, d_head]
         )
 
@@ -306,8 +312,8 @@ def update_cache(cache, cache_ids, values):
         scatter_dims_to_operand_dims=[0],
         index_vector_dim=1,
     )
-    assign_func = hlo.gen_assign_func(dtype)
-    updated = hlo.scatter(
+    assign_func = functional.gen_assign_func(dtype)
+    updated = functional.scatter(
         cache, cache_ids, values, scatter_dims=scatter_dims, to_apply=assign_func
     )
     return updated
@@ -340,7 +346,7 @@ def score(query, keys, n_kv_heads=0):
         _, _, n_kv_heads_tp, _ = keys.sizes
         _, _, n_heads_tp, _ = query.sizes
         n_repeats = n_heads_tp // n_kv_heads_tp
-        keys = hlo.repeat_kv(keys, n_repeats=n_repeats, repeat_dim=2)
+        keys = functional.repeat_kv(keys, n_repeats=n_repeats, repeat_dim=2)
 
     # Q @ K
     batch_dimensions = [1, 2]
@@ -351,7 +357,7 @@ def score(query, keys, n_kv_heads=0):
         rhs_batch_dimensions=batch_dimensions,
     )
 
-    result_dot = hlo.dot_general(query, keys, dimension_numbers=dot_dims)
+    result_dot = functional.dot_general(query, keys, dimension_numbers=dot_dims)
 
     return result_dot
 
@@ -372,11 +378,11 @@ def mask(score, mask, tp_degree=None, constant_value=-30000):
     large_neg_br = dtype[score_sizes].Broadcast(large_neg, dimensions=[])
     if len(mask.sizes) == 2:
         # broadcast from [n_seqs, n_active_tokens] to [n_seqs, n_heads, n_active_tokens, n_positions]
-        mask_br = hlo.broadcast(mask, score_sizes, [0, 2])
+        mask_br = functional.broadcast(mask, score_sizes, [0, 2])
     else:
         # broadcast from [n_seqs, n_active_tokens, n_positions] to [n_seqs, n_heads, n_active_tokens, n_positions]
-        mask_br = hlo.broadcast(mask, score_sizes, [0, 2, 3])
-    score = hlo.masked_select(mask_br, score, large_neg_br)
+        mask_br = functional.broadcast(mask, score_sizes, [0, 2, 3])
+    score = functional.masked_select(mask_br, score, large_neg_br)
     return score
 
 
@@ -420,22 +426,22 @@ def context(
     _, n_heads_tp, _, _ = active_score.sizes
 
     # Upcast to f32 before computation
-    past_scores = hlo.cast(past_scores, f32)
-    active_score = hlo.cast(active_score, f32)
+    past_scores = functional.cast(past_scores, f32)
+    active_score = functional.cast(active_score, f32)
 
     # Compute maximum of both past_scores and active_scores
-    reduce_max = hlo.reduce_max(past_scores, dim=3)
-    active_reduce_max = hlo.reduce_max(active_score, dim=3)
+    reduce_max = functional.reduce_max(past_scores, dim=3)
+    active_reduce_max = functional.reduce_max(active_score, dim=3)
 
-    reduce_max = hlo.maximum(reduce_max, active_reduce_max)
-    reduce_max_br = hlo.broadcast(
+    reduce_max = functional.maximum(reduce_max, active_reduce_max)
+    reduce_max_br = functional.broadcast(
         reduce_max, past_scores.sizes, broadcast_dimensions=[0, 1, 2]
     )
 
     # Pa = softmax(Sa)
     # Pp = softmax(Sp)
-    score_shifted = hlo.subtract(past_scores, reduce_max_br)
-    exp = hlo.exp(score_shifted)
+    score_shifted = functional.subtract(past_scores, reduce_max_br)
+    exp = functional.exp(score_shifted)
     if past_mask is not None:
         exp = mask(
             exp,
@@ -443,15 +449,15 @@ def context(
             tp_degree=tp_degree,
             constant_value=0,
         )
-    denom = hlo.reduce_sum(exp, dim=3)
-    past_prob = hlo.cast(exp, dtype)
-    reduce_max_bra = hlo.broadcast(
+    denom = functional.reduce_sum(exp, dim=3)
+    past_prob = functional.cast(exp, dtype)
+    reduce_max_bra = functional.broadcast(
         reduce_max,
         list(reduce_max.sizes) + [n_active_tokens],
         broadcast_dimensions=[0, 1, 2],
     )
-    active_score_shifted = hlo.subtract(active_score, reduce_max_bra)
-    active_prob = hlo.exp(active_score_shifted)
+    active_score_shifted = functional.subtract(active_score, reduce_max_bra)
+    active_prob = functional.exp(active_score_shifted)
     if active_mask is not None:
         active_prob = mask(
             active_prob,
@@ -459,10 +465,10 @@ def context(
             tp_degree=tp_degree,
             constant_value=0,
         )
-    active_denom = hlo.reduce_sum(active_prob, dim=3)
+    active_denom = functional.reduce_sum(active_prob, dim=3)
 
-    denom = hlo.add(denom, active_denom)
-    active_prob = hlo.cast(active_prob, dtype)
+    denom = functional.add(denom, active_denom)
+    active_prob = functional.cast(active_prob, dtype)
 
     # Ca = Pa @ Va
     # Cp = Pp @ Vp
@@ -481,8 +487,12 @@ def context(
         n_repeats = n_heads_tp // n_kv_heads_tp
 
         # values layout: (n_positions, n_seqs_per_nc, n_kv_heads, d_head) -> repeat_dim=2
-        past_values = hlo.repeat_kv(past_values, n_repeats=n_repeats, repeat_dim=2)
-        active_values = hlo.repeat_kv(active_values, n_repeats=n_repeats, repeat_dim=2)
+        past_values = functional.repeat_kv(
+            past_values, n_repeats=n_repeats, repeat_dim=2
+        )
+        active_values = functional.repeat_kv(
+            active_values, n_repeats=n_repeats, repeat_dim=2
+        )
 
     # lhs (past_prob): (n_seqs, n_heads, n_active_tokens, n_positions)
     # rhs (value):
@@ -496,17 +506,19 @@ def context(
         rhs_batch_dimensions=rhs_batch_dimensions,
     )
 
-    output_dot = hlo.dot_general(past_prob, past_values, dimension_numbers=dot_dims)
-    active_output_dot = hlo.dot_general(
+    output_dot = functional.dot_general(
+        past_prob, past_values, dimension_numbers=dot_dims
+    )
+    active_output_dot = functional.dot_general(
         active_prob, active_values, dimension_numbers=dot_dims
     )
-    output = hlo.add(output_dot, active_output_dot)
+    output = functional.add(output_dot, active_output_dot)
 
     sizes = n_seqs, n_heads_tp, n_active_tokens, d_head
-    denom_br = hlo.broadcast(denom, sizes, broadcast_dimensions=[0, 1, 2])
-    output = hlo.divide(output, denom_br)
+    denom_br = functional.broadcast(denom, sizes, broadcast_dimensions=[0, 1, 2])
+    output = functional.divide(output, denom_br)
     # (n_seqs, n_heads_tp, n_active_tokens, d_head) -> (n_active_tokens, n_seqs, n_heads_tp, d_head)
-    output = hlo.permute(output, dimensions=[2, 0, 1, 3])
+    output = functional.permute(output, dimensions=[2, 0, 1, 3])
     return output
 
 
@@ -535,19 +547,19 @@ def context_combined(
     if skip_softmax:
         probs = score
     else:
-        probs = hlo.softmax(score)
+        probs = functional.softmax(score)
 
     n_seqs, n_heads_tp, n_active_tokens, n_positions = probs.sizes
     _, _, n_kv_heads_tp, d_head = values.sizes
 
     if dtype is None:
         dtype = values.dtype
-    probs = hlo.cast(probs, dtype)
+    probs = functional.cast(probs, dtype)
 
     if n_kv_heads != 0:
         _, n_seqs, n_kv_heads_tp, d_head = values.sizes
         n_repeats = n_heads_tp // n_kv_heads_tp
-        values = hlo.repeat_kv(values, n_repeats=n_repeats, repeat_dim=2)
+        values = functional.repeat_kv(values, n_repeats=n_repeats, repeat_dim=2)
 
     rhs_contracting_dimensions = [0]
     rhs_batch_dimensions = [1, 2]
@@ -557,11 +569,13 @@ def context_combined(
         rhs_contracting_dimensions=rhs_contracting_dimensions,
         rhs_batch_dimensions=rhs_batch_dimensions,
     )
-    result = hlo.dot_general(probs, values, dimension_numbers=dot_dims, dtype=dtype)
+    result = functional.dot_general(
+        probs, values, dimension_numbers=dot_dims, dtype=dtype
+    )
 
     if n_kv_heads != 0:
         result_sizes = n_seqs, n_heads_tp, n_active_tokens, d_head
-        result = hlo.reshape(result, result_sizes)
+        result = functional.reshape(result, result_sizes)
 
     sizes = n_active_tokens, n_seqs, n_heads_tp, d_head
     result = dtype[sizes].Transpose(result, dimensions=[2, 0, 1, 3])
@@ -631,11 +645,11 @@ def output(
     else:
         result_sizes = n_active_tokens * n_seqs, n_heads_tp * d_head
 
-    result = hlo.reshape(context, result_sizes)
+    result = functional.reshape(context, result_sizes)
 
     if three_dims:
         # (s * b, n_heads_tp, d_head) -> (s * b, d_head, n_heads_tp)
-        result = hlo.permute(result, (0, 2, 1))
+        result = functional.permute(result, (0, 2, 1))
 
     if three_dims:
         if transposed:
@@ -652,7 +666,7 @@ def output(
             lhs_contract_dims = [1]
             rhs_contract_dims = [1]
 
-    result = hlo.dot_add(
+    result = functional.dot_add(
         lhs=result,
         rhs=out_weight,
         bias=out_bias,
@@ -666,21 +680,21 @@ def output(
 
     if bsh_output or bsh_collective:
         # (s * b, h) => (b, s, h)
-        result = hlo.reshape(result, (n_active_tokens, n_seqs, hidden_size))
-        result = hlo.transpose(result, 0, 1)
+        result = functional.reshape(result, (n_active_tokens, n_seqs, hidden_size))
+        result = functional.transpose(result, 0, 1)
     else:
         # (s * b, h) => (h, s, b)
-        result = hlo.transpose(result, 0, 1)
-        result = hlo.reshape(result, hidden_sizes)
+        result = functional.transpose(result, 0, 1)
+        result = functional.reshape(result, hidden_sizes)
 
     dtype, replica_groups = parse_dtype_replica_groups(neuron_config)
-    result = hlo.all_reduce_sum(
+    result = functional.all_reduce_sum(
         result, neuron_config.tp_degree, dtype=dtype, replica_groups=replica_groups
     )
 
     # Transpose back to HSB if applicable
     if bsh_collective and not bsh_output:
-        return hlo.permute(result, (2, 1, 0))
+        return functional.permute(result, (2, 1, 0))
     return result
 
 
@@ -698,8 +712,8 @@ def flash_attention(query, key, value):
     # handle GQA by broadcasting kv
     if query.sizes[2] != key.sizes[2]:
         n_repeats = query.sizes[2] // key.sizes[2]
-        key = hlo.repeat_kv(key, n_repeats=n_repeats, repeat_dim=2)
-        value = hlo.repeat_kv(value, n_repeats=n_repeats, repeat_dim=2)
+        key = functional.repeat_kv(key, n_repeats=n_repeats, repeat_dim=2)
+        value = functional.repeat_kv(value, n_repeats=n_repeats, repeat_dim=2)
 
     if query.sizes[2] != key.sizes[2]:  # condition required by kernel
         return None
@@ -707,16 +721,16 @@ def flash_attention(query, key, value):
     # incoming qkv has shape: (n_active_tokens, batch_size, n_q_heads_tp, d_head)
     # we transpose to match expected shape by kernel
     # we also need a reshape since kernel combines batch and n heads into single dim
-    query_nki = hlo.reshape(
-        hlo.permute(query, [1, 2, 3, 0]),
+    query_nki = functional.reshape(
+        functional.permute(query, [1, 2, 3, 0]),
         (batch_size * n_q_heads_tp, d_head, n_active_tokens),
     )
-    key_nki = hlo.reshape(
-        hlo.permute(key, [1, 2, 3, 0]),
+    key_nki = functional.reshape(
+        functional.permute(key, [1, 2, 3, 0]),
         (batch_size * n_q_heads_tp, d_head, n_active_tokens),
     )
-    value_nki = hlo.reshape(
-        hlo.permute(value, [1, 2, 0, 3]),
+    value_nki = functional.reshape(
+        functional.permute(value, [1, 2, 0, 3]),
         (batch_size * n_q_heads_tp, n_active_tokens, d_head),
     )
     nki_output = nki_call(
@@ -731,8 +745,10 @@ def flash_attention(query, key, value):
     # kernel output (after separating batch and n heads dims) has shape:
     # (batch_size, n_q_heads_tp, n_active_tokens, d_head)
     # we permute it to (n_active_tokens, batch_size, n_q_heads_tp, d_head)
-    context = hlo.permute(
-        hlo.reshape(nki_output, (batch_size, n_q_heads_tp, n_active_tokens, d_head)),
+    context = functional.permute(
+        functional.reshape(
+            nki_output, (batch_size, n_q_heads_tp, n_active_tokens, d_head)
+        ),
         [2, 0, 1, 3],
     )
 

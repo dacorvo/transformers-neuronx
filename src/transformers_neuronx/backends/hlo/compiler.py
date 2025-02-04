@@ -30,10 +30,11 @@ from torch_neuronx.pyhlo import xla_data_pb2
 from torch_neuronx.pyhlo.scribe import HloScribe
 from torch_neuronx.pyhlo.constant.serialize_torch import serialize_torch
 from torch_neuronx.proto import metaneff_pb2
-from transformers_neuronx import ops
 from libneuronxla import neuron_xla_compile
 from libneuronxla.neuron_cc_cache import CacheUrl, create_compile_cache
 from neuronxcc import __version__ as compiler_version
+
+from . import ops
 
 
 def get_hash_module(hlo_module, flags):

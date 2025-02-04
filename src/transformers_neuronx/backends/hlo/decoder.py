@@ -19,15 +19,19 @@ from abc import ABC, abstractmethod
 
 import torch
 from transformers import PretrainedConfig
-from transformers_neuronx import compiler
-from transformers_neuronx import dtypes
-from transformers_neuronx import hlo
-from transformers_neuronx import ops
-from transformers_neuronx import parallel
 
-
+from . import ops, functional
 from .base import NeuronModelBase, NeuronBaseSerializer
+from .compiler import (
+    compile_py_func,
+    DataTypeConverter,
+    gen_zero_input,
+    gen_zero_output,
+    ParallelKernel,
+)
 from .config import Layout, NeuronConfig, GQA
+from .dtypes import to_torch_dtype
+from .parallel import ParallelTensorManipulator
 from .utils import (
     maybe_pad_tensor,
     round_up_to_divisor,
@@ -414,7 +418,7 @@ class DecoderGraph(NeuronBaseSerializer):
             root_shapes = [shape.dtype[shape.sizes] for shape in outputs]
             return scribe.tuple(*root_shapes).Tuple(*outputs)
 
-        hlo_module = compiler.compile_py_func(hlo_forward_wrapper)
+        hlo_module = compile_py_func(hlo_forward_wrapper)
         return DecoderProgramFullyUnrolled(
             self.neuron_config,
             self.layers,
@@ -554,7 +558,7 @@ def read_n_active_tokens(hlo_module):
 def maybe_transfer_with_static_ring(shape):
     if shape is None:
         return None
-    return hlo.transfer_with_static_ring(shape)
+    return functional.transfer_with_static_ring(shape)
 
 
 class MaybePadder:
@@ -916,7 +920,7 @@ class DecoderLayer:
             self.n_kv_head, self.neuron_config.tp_degree
         )
         # Select manipulator based on device
-        manipulator = parallel.ParallelTensorManipulator(self.neuron_config.tp_degree)
+        manipulator = ParallelTensorManipulator(self.neuron_config.tp_degree)
         cpu_cache_shape = [
             self.neuron_config.n_positions,
             self.batch_size,
@@ -929,7 +933,7 @@ class DecoderLayer:
             n_heads_kv_cache // self.neuron_config.tp_degree,
             self.attention_head_size,
         ]
-        cache_dtype = dtypes.to_torch_dtype(self.neuron_config.amp)
+        cache_dtype = to_torch_dtype(self.neuron_config.amp)
         cpu_cache = torch.zeros(cpu_cache_shape, dtype=cache_dtype)
         assert (n_heads_kv_cache >= self.neuron_config.tp_degree) and (
             n_heads_kv_cache % self.neuron_config.tp_degree == 0
@@ -1010,7 +1014,7 @@ class DecoderLayer:
 
 class MaybeParallelTensorManipulator:
     def __init__(self, tp_degree):
-        self.manipulator = parallel.ParallelTensorManipulator(tp_degree)
+        self.manipulator = ParallelTensorManipulator(tp_degree)
 
     def duplicate(self, tensor):
         if tensor is None:
@@ -1043,7 +1047,7 @@ class DecoderParameterBuilder:
     def __init__(self, scribe, parameter_number):
         self.scribe = scribe
         self.parameter_number = parameter_number
-        self.dtype_converter = compiler.DataTypeConverter()
+        self.dtype_converter = DataTypeConverter()
 
     def from_tensor(self, tensor, dim_size=None):
         if tensor is None:
@@ -1077,12 +1081,12 @@ class DecoderProgram:
         self.layers = layers
         self.batch_size = batch_size
         self.input_buffers = [
-            compiler.gen_zero_input(hlo_module, idx) for idx in range(num_inputs)
+            gen_zero_input(hlo_module, idx) for idx in range(num_inputs)
         ]
         kernel_tag = f"seqlen{neuron_config.n_positions}-batch{batch_size}"
         if tag is not None:
             kernel_tag = f"{tag}-seqlen{neuron_config.n_positions}-batch{batch_size}"
-        self.kernel = compiler.ParallelKernel(
+        self.kernel = ParallelKernel(
             hlo_module,
             neuron_config.tp_degree,
             g_start_device_id=0,
@@ -1092,7 +1096,7 @@ class DecoderProgram:
         )
         self.n_active_tokens = read_n_active_tokens(hlo_module)
         self.tag = tag
-        self.manipulator = parallel.ParallelTensorManipulator(neuron_config.tp_degree)
+        self.manipulator = ParallelTensorManipulator(neuron_config.tp_degree)
 
     def setup(self, io_ring_cache_size):
         self.input_buffers = [
@@ -1155,7 +1159,7 @@ class DecoderProgramFullyUnrolled(DecoderProgram):
             batch_size,
             tag=tag,
         )
-        self.logits_buffer = compiler.gen_zero_output(hlo_module, 0)
+        self.logits_buffer = gen_zero_output(hlo_module, 0)
         self.memory = None
         self.executor = None
 

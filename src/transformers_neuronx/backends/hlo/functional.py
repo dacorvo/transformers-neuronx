@@ -18,10 +18,9 @@ from typing import List, Callable, Union
 
 import torch
 
-from transformers_neuronx import activations
-from transformers_neuronx import compiler
-from transformers_neuronx import dtypes
-
+from . import activations
+from .compiler import DataTypeConverter
+from .dtypes import to_pyhlo_type
 from .config import Layout
 from .nki import nki_call
 from .utils import build_replica_groups, parse_dtype_replica_groups
@@ -753,7 +752,7 @@ def all_reduce(tensor, replica_groups, to_apply, dtype=None):
     if dtype is None:
         all_reduce_dtype = tensor_dtype
     elif isinstance(dtype, str):
-        all_reduce_dtype = dtypes.to_pyhlo_type(scribe, dtype)
+        all_reduce_dtype = to_pyhlo_type(scribe, dtype)
     else:
         all_reduce_dtype = dtype
 
@@ -794,7 +793,7 @@ def all_reduce_sum(tensor, tp_degree, dtype=None, replica_groups=None):
     if dtype is None:
         all_reduce_dtype = tensor.dtype
     elif isinstance(dtype, str):
-        all_reduce_dtype = dtypes.to_pyhlo_type(scribe, dtype)
+        all_reduce_dtype = to_pyhlo_type(scribe, dtype)
     else:
         all_reduce_dtype = dtype
 
@@ -1143,7 +1142,7 @@ def all_reduce_max(tensor, tp_degree=1, dtype=None, replica_groups=None):
     if dtype is None:
         all_reduce_dtype = tensor.dtype
     elif isinstance(dtype, str):
-        all_reduce_dtype = dtypes.to_pyhlo_type(scribe, dtype)
+        all_reduce_dtype = to_pyhlo_type(scribe, dtype)
     else:
         all_reduce_dtype = dtype
 
@@ -1224,7 +1223,7 @@ def literal(dtype, tensor):
         torch.int16: "s16s",  # Stored as bytes
     }
 
-    converter = compiler.DataTypeConverter()
+    converter = DataTypeConverter()
 
     # Convert boolean tensors to int8 to avoid an error in Python 3.11:
     #   `TypeError: True has type <class 'numpy.bool_'>, but expected one of: (<class 'bool'>, <class 'numbers.Integral'>)`
@@ -1430,7 +1429,7 @@ def reduce_scatter(tensor, dim, replica_groups, to_apply, dtype=None):
     if dtype is None:
         all_reduce_dtype = tensor_dtype
     elif isinstance(dtype, str):
-        all_reduce_dtype = dtypes.to_pyhlo_type(scribe, dtype)
+        all_reduce_dtype = to_pyhlo_type(scribe, dtype)
     else:
         all_reduce_dtype = dtype
     tensor = cast(tensor, all_reduce_dtype)

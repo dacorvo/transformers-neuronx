@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-from transformers_neuronx import hlo
+from .. import functional
 from ..config import Layout
 
 
@@ -54,26 +54,26 @@ def ln_lm_head(
         n_active_tokens = 1
 
     if is_bsh:
-        ln_hidden = hlo.layer_norm_bsh(
+        ln_hidden = functional.layer_norm_bsh(
             hidden, ln_f_weight, ln_f_bias, neuron_config=None, tp_degree=tp_degree
         )
-        ln_hidden = hlo.transpose210(ln_hidden)
+        ln_hidden = functional.transpose210(ln_hidden)
     else:
-        ln_hidden = hlo.layer_norm(
+        ln_hidden = functional.layer_norm(
             hidden, ln_f_weight, ln_f_bias, neuron_config=None, tp_degree=tp_degree
         )
-    ln_hidden = hlo.reshape(
+    ln_hidden = functional.reshape(
         ln_hidden, shape=(hidden_size, n_active_tokens * batch_size)
     )
 
-    logits = hlo.dot00(lm_head_weight, ln_hidden)
+    logits = functional.dot00(lm_head_weight, ln_hidden)
     if lm_head_bias is not None:
-        lm_head_bias = hlo.broadcast(
+        lm_head_bias = functional.broadcast(
             lm_head_bias, out_dim_size=logits.sizes, broadcast_dimensions=[0]
         )
-        logits = hlo.add(logits, lm_head_bias)
+        logits = functional.add(logits, lm_head_bias)
     vocab_size, _ = logits.sizes
-    return hlo.reshape(logits, shape=(vocab_size, n_active_tokens, batch_size))
+    return functional.reshape(logits, shape=(vocab_size, n_active_tokens, batch_size))
 
 
 def rms_lm_head(
@@ -115,20 +115,22 @@ def rms_lm_head(
         n_active_tokens = 1
 
     rms_hidden = (
-        hlo.rms_norm(hidden, rms_weight, eps, neuron_config=None)
+        functional.rms_norm(hidden, rms_weight, eps, neuron_config=None)
         if is_bsh
-        else hlo.rms_norm(hidden, rms_weight, eps, dim=0, neuron_config=None)
+        else functional.rms_norm(hidden, rms_weight, eps, dim=0, neuron_config=None)
     )
 
     if is_bsh:
-        rms_hidden = hlo.transpose210(rms_hidden)
-    rms_hidden = hlo.reshape(rms_hidden, (hidden_size, n_active_tokens * batch_size))
-    logits = hlo.dot00(lm_head_weight, rms_hidden)
+        rms_hidden = functional.transpose210(rms_hidden)
+    rms_hidden = functional.reshape(
+        rms_hidden, (hidden_size, n_active_tokens * batch_size)
+    )
+    logits = functional.dot00(lm_head_weight, rms_hidden)
     if lm_head_bias is not None:
         lm_head_bias = dtype[logits.sizes].Broadcast(lm_head_bias, dimensions=[0])
         logits = dtype[logits.sizes].Add(logits, lm_head_bias)
     vocab_size, _ = logits.sizes
-    return hlo.reshape(logits, (vocab_size, n_active_tokens, batch_size))
+    return functional.reshape(logits, (vocab_size, n_active_tokens, batch_size))
 
 
 def _dynamic_logits_slice(hidden, last_token_id, neuron_config=None):
@@ -139,23 +141,23 @@ def _dynamic_logits_slice(hidden, last_token_id, neuron_config=None):
         hidden_size, n_active_tokens, batch_size = hidden.sizes
     if neuron_config and neuron_config.lhs_aligned:
         if not is_bsh:
-            hidden = hlo.transpose210(hidden)
-        hidden = hlo.reshape(hidden, (batch_size * n_active_tokens, hidden_size))
+            hidden = functional.transpose210(hidden)
+        hidden = functional.reshape(hidden, (batch_size * n_active_tokens, hidden_size))
 
         # [6,3,9] -> [(0,6),(1,3),(2,9)] -> [6+0*128,3+1*128,9+2*128] -> [6,131,265]
         # last_token_id + iota * n_active_tokens
         assert last_token_id.sizes[0] == batch_size, (
             f"vectorized last_token_id length ({last_token_id.sizes[0]}) is expected to equal to batch size ({batch_size})"
         )
-        offset = hlo.iota(last_token_id.dtype, last_token_id.sizes, [0])
-        offset = hlo.multiply(offset, n_active_tokens)
-        last_token_id = hlo.add(last_token_id, offset)
-        hidden = hlo.index_select(hidden, dim=0, index=last_token_id)
-        hidden = hlo.reshape(hidden, (last_token_id.sizes[0], 1, hidden_size))
+        offset = functional.iota(last_token_id.dtype, last_token_id.sizes, [0])
+        offset = functional.multiply(offset, n_active_tokens)
+        last_token_id = functional.add(last_token_id, offset)
+        hidden = functional.index_select(hidden, dim=0, index=last_token_id)
+        hidden = functional.reshape(hidden, (last_token_id.sizes[0], 1, hidden_size))
         if not is_bsh:
-            hidden = hlo.transpose210(hidden)
+            hidden = functional.transpose210(hidden)
     else:
-        hidden = hlo.transpose102(hidden)
-        hidden = hlo.index_select(hidden, dim=0, index=last_token_id)
-        hidden = hlo.transpose102(hidden)
+        hidden = functional.transpose102(hidden)
+        hidden = functional.index_select(hidden, dim=0, index=last_token_id)
+        hidden = functional.transpose102(hidden)
     return hidden

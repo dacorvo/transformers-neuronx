@@ -14,7 +14,8 @@
 # ==============================================================================
 from concurrent.futures import ThreadPoolExecutor
 import torch
-from transformers_neuronx import ops
+
+from . import ops  # FIXME
 
 
 def to_nc(sharded_tensors):

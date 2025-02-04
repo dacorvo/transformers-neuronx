@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-from transformers_neuronx import module
+from ..backends.hlo import module
 
 
 class LlamaForCausalLM(module.PretrainedModel):
