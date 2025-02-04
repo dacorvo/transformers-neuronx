@@ -25,10 +25,14 @@ class LlamaHloModel(NeuronHloDecoderModel):
         self,
         config,
         neuron_config,
+        cpu_model=None,
+        hlo_builder=None,
     ):
-        dtype = to_torch_dtype(neuron_config.amp)
-        cpu_model = LlamaForCausalLM(config, dtype)
-        hlo_builder = LlamaGraphBuilder(config, neuron_config)
+        if cpu_model is None:
+            dtype = to_torch_dtype(neuron_config.amp)
+            cpu_model = LlamaForCausalLM(config, dtype)
+        if hlo_builder is None:
+            hlo_builder = LlamaGraphBuilder(config, neuron_config)
         super().__init__(config, neuron_config, cpu_model, hlo_builder)
 
     def load_weights(self):
