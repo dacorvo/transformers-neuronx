@@ -49,15 +49,15 @@ class LlamaHloModel(NeuronHloDecoderModel):
             )
             new_layer.add_attention_query(
                 attn.q_proj.weight.detach().T,
-                attn.q_proj.bias.detach() if attn.q_proj.bias else None,
+                None if attn.q_proj.bias is None else attn.q_proj.bias.detach(),
             )
             new_layer.add_attention_key(
                 attn.k_proj.weight.detach().T,
-                attn.k_proj.bias.detach() if attn.k_proj.bias else None,
+                None if attn.k_proj.bias is None else attn.k_proj.bias.detach(),
             )
             new_layer.add_attention_value(
                 attn.v_proj.weight.detach().T,
-                attn.v_proj.bias.detach() if attn.v_proj.bias else None,
+                None if attn.v_proj.bias is None else attn.v_proj.bias.detach(),
             )
             if self.neuron_config and self.neuron_config.attn_output_transposed:
                 new_layer.add_attention_output(
