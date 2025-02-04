@@ -261,34 +261,31 @@ class DecoderGraph(NeuronBaseSerializer):
             )
             self.neuron_config.group_query_attention = GQA.REPLICATED_HEADS
 
+    @classmethod
     def init_context_decoder(
-        self,
-        model_obj: NeuronModelBase,
+        cls, config, neuron_config, builder, model_obj: NeuronModelBase
     ):
-        cls = type(self)
-        decoder_lm_head = {}
-        assert (
-            self.neuron_config.batch_size == 1 or self.neuron_config.continuous_batching
-        )
         decoder_lm_head = cls(
-            config=self.config,
-            neuron_config=self.neuron_config,
-            n_active_tokens=self.neuron_config.n_positions,
+            config=config,
+            neuron_config=neuron_config,
+            n_active_tokens=neuron_config.n_positions,
             is_prefill=True,
-            builder=self.builder,
+            builder=builder,
             tag="context",
         )
         model_obj.register_for_serialization(decoder_lm_head)
         return decoder_lm_head
 
-    def init_token_decoder(self, model_obj: NeuronModelBase):
-        cls = type(self)
+    @classmethod
+    def init_token_decoder(
+        cls, config, neuron_config, builder, model_obj: NeuronModelBase
+    ):
         decoder_lm_head = cls(
             n_active_tokens=1,
-            config=self.config,
-            neuron_config=self.neuron_config,
+            config=config,
+            neuron_config=neuron_config,
             is_prefill=False,
-            builder=self.builder,
+            builder=builder,
             tag="token",
         )
         model_obj.register_for_serialization(decoder_lm_head)
