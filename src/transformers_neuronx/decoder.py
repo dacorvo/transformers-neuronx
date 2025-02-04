@@ -228,7 +228,6 @@ class DecoderGraph(NeuronBaseSerializer):
         self.builder = builder
         self.check_gqa_fallback()
         self.tag = tag
-        self._cpu_compile = False
 
     def check_gqa_fallback(self):
         """
@@ -295,7 +294,6 @@ class DecoderGraph(NeuronBaseSerializer):
             n_active_tokens=self.n_active_tokens,
             layer_num=len(self.layers),
         )
-        layer._cpu_compile = self._cpu_compile
         self.layers.append(layer)
         return layer
 
@@ -308,9 +306,7 @@ class DecoderGraph(NeuronBaseSerializer):
         self.lm_head_bias = bias
 
     def to_neuron(self):
-        manipulator = MaybeParallelTensorManipulator(
-            self.neuron_config.tp_degree, on_cpu=self._cpu_compile
-        )
+        manipulator = MaybeParallelTensorManipulator(self.neuron_config.tp_degree)
 
         self.ln_f_weight = manipulator.duplicate(self.ln_f_weight)
         self.ln_f_bias = manipulator.duplicate(self.ln_f_bias)
@@ -426,7 +422,6 @@ class DecoderGraph(NeuronBaseSerializer):
             self.builder.NUM_INPUTS,
             self.batch_size,
             tag=self.tag,
-            on_cpu=self._cpu_compile,
         )
 
     def hlo_forward(
@@ -658,7 +653,6 @@ class DecoderLayer:
         self.mlp_out_transposed = True
         self.kv_replication = 1  # default value to denote weight replication factor
         self.layer_num = layer_num
-        self._cpu_compile = False
 
     def add_parameter(self, param, sharding=None, allow_transform=False):
         self.extra_parameters.append((param, sharding, allow_transform))
@@ -861,10 +855,7 @@ class DecoderLayer:
             )
         # End of replication + padding code
 
-        maybe_manipulator = MaybeParallelTensorManipulator(
-            self.neuron_config.tp_degree,
-            on_cpu=self._cpu_compile,
-        )
+        maybe_manipulator = MaybeParallelTensorManipulator(self.neuron_config.tp_degree)
         maybe_duplicate = maybe_manipulator.duplicate
         maybe_shard_along = maybe_manipulator.shard_along
         maybe_primary_only = maybe_manipulator.primary_only
@@ -925,12 +916,7 @@ class DecoderLayer:
             self.n_kv_head, self.neuron_config.tp_degree
         )
         # Select manipulator based on device
-        if self._cpu_compile:
-            manipulator = parallel.CPUTensorManipulator(self.neuron_config.tp_degree)
-        else:
-            manipulator = parallel.ParallelTensorManipulator(
-                self.neuron_config.tp_degree
-            )
+        manipulator = parallel.ParallelTensorManipulator(self.neuron_config.tp_degree)
         cpu_cache_shape = [
             self.neuron_config.n_positions,
             self.batch_size,
@@ -995,12 +981,8 @@ class DecoderLayer:
             dtype=self.attn_k_cache.dtype,
         )
         zero_cache = [zero_cache for _ in range(self.neuron_config.tp_degree)]
-        if not self._cpu_compile:
-            ops.parallel_write(self.attn_k_cache, zero_cache)
-            ops.parallel_write(self.attn_v_cache, zero_cache)
-        else:
-            self.attn_k_cache = zero_cache
-            self.attn_v_cache = zero_cache
+        ops.parallel_write(self.attn_k_cache, zero_cache)
+        ops.parallel_write(self.attn_v_cache, zero_cache)
 
     def assign_parameters(self, layer):
         self.pre_attn_ln_weight = layer.pre_attn_ln_weight
@@ -1027,12 +1009,8 @@ class DecoderLayer:
 
 
 class MaybeParallelTensorManipulator:
-    def __init__(self, tp_degree, on_cpu=False):
-        self.use_cpu = on_cpu
-        if on_cpu:
-            self.manipulator = parallel.CPUTensorManipulator(tp_degree)
-        else:
-            self.manipulator = parallel.ParallelTensorManipulator(tp_degree)
+    def __init__(self, tp_degree):
+        self.manipulator = parallel.ParallelTensorManipulator(tp_degree)
 
     def duplicate(self, tensor):
         if tensor is None:
@@ -1058,9 +1036,7 @@ class MaybeParallelTensorManipulator:
         if tensor is None:
             return None
         tensors = self.manipulator.shard_along_on_cpu(tensor, dim)
-        if not self.use_cpu:
-            tensors = ops.parallel_to_nc(tensors)
-        return tensors
+        return ops.parallel_to_nc(tensors)
 
 
 class DecoderParameterBuilder:
@@ -1096,7 +1072,6 @@ class DecoderProgram:
         batch_size,
         tag=None,
         num_exec_repetition=1,
-        on_cpu=False,
     ):
         self.neuron_config = neuron_config
         self.layers = layers
@@ -1117,14 +1092,7 @@ class DecoderProgram:
         )
         self.n_active_tokens = read_n_active_tokens(hlo_module)
         self.tag = tag
-        self._cpu_compile = on_cpu
-        # Select manipulator based on device
-        if self._cpu_compile:
-            self.manipulator = parallel.CPUTensorManipulator(neuron_config.tp_degree)
-        else:
-            self.manipulator = parallel.ParallelTensorManipulator(
-                neuron_config.tp_degree
-            )
+        self.manipulator = parallel.ParallelTensorManipulator(neuron_config.tp_degree)
 
     def setup(self, io_ring_cache_size):
         self.input_buffers = [
@@ -1141,8 +1109,7 @@ class DecoderProgram:
             assert buf.shape == tensor[0].shape, (
                 f"Copying tensor from host to device: buffer ({buf.shape}) and tensor ({tensor[0].shape}) have different shapes!"
             )
-            if not self._cpu_compile:
-                ops.parallel_write(buf, tensor)
+            ops.parallel_write(buf, tensor)
 
     def run(self):
         raise NotImplementedError(DecoderProgram)
@@ -1179,7 +1146,6 @@ class DecoderProgramFullyUnrolled(DecoderProgram):
         num_inputs,
         batch_size,
         tag=None,
-        on_cpu=False,
     ):
         super().__init__(
             neuron_config,
@@ -1188,7 +1154,6 @@ class DecoderProgramFullyUnrolled(DecoderProgram):
             num_inputs,
             batch_size,
             tag=tag,
-            on_cpu=on_cpu,
         )
         self.logits_buffer = compiler.gen_zero_output(hlo_module, 0)
         self.memory = None

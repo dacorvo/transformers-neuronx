@@ -72,7 +72,6 @@ class NeuronModelBase(PretrainedModel):
         raise NotImplementedError
 
     def to_neuron(self):
-        self.decoder_lm_head._cpu_compile = False
         init_neuron()
         self.load_weights()
         if hasattr(self, "_compiled_artifacts_directory"):
